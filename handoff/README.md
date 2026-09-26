@@ -53,21 +53,21 @@ Six GitHub releases, all built by `tools/PACKAGE_RELEASE.ps1`:
   the runtimes that run before Super Resolution (section 5, "0.4.0").
 - `v0.4.1-amd-nr`: danielblnc runtime 0.4.0 next to 0.3.1 and 0.3.0 (section 5, "danielblnc
   runtime 0.4.0").
+- `v0.4.2-amd-nr`: danielblnc runtime 0.4.1 next to 0.4.0, 0.3.1 and 0.3.0 (section 5,
+  "danielblnc runtime 0.4.1").
 
-The build reports itself as `0.4.1-amd-nr`, and the packager writes
-`dist/OptiScaler-0.4.1-amd-nr.zip`.
+The build reports itself as `0.4.2-amd-nr`, and the packager writes
+`dist/OptiScaler-0.4.2-amd-nr.zip`.
 
 The [AMD-NR ReShade Installer](https://github.com/zmodelerlover/AMD-NR-ReShade-Installer) installs
 this build as its OptiScaler route. v0.4.0 knows only `v0.1.1-amd-nr`; v0.5.0 and later offer every
 version its payload manifest lists, newest first, and install the newest with the lmxxf weights. The
-manifest has pinned `v0.4.1-amd-nr` since installer v0.6.1 (2026-09-26); v0.5.x installs it without
+manifest has pinned `v0.4.2-amd-nr` since installer v0.6.3 (2026-09-26); v0.5.x installs it without
 mochizuki. The manifest pins each release zip by URL and SHA-256, and every file it extracts from it
-by hash. The danielblnc runtime (0.4.0, `d62be3d8…`, inside the `v0.4.1-amd-nr` release entry as its
-own `opti-runtime`; 0.3.1, `b108d640…`, at the top level for every older release, which does not
-accept 0.4.0) and the lmxxf weights (`native-game-tiled-assets.zip`) come from the Hugging Face
-dataset `zmodelerlover/amd-nr`, never from this repository. The host now also accepts runtime 0.4.0
-(`d62be3d8…`, section 5, "danielblnc runtime 0.4.0"); the installer keeps pinning 0.3.1 until its
-payload carries 0.4.0. v0.6.0 and later also offer mochizuki: with **NR runtime: mochizuki** ticked
+by hash. The danielblnc runtime (0.4.1, `823063eb…`, inside the `v0.4.2-amd-nr` release entry as its
+own `opti-runtime`, and 0.4.0 inside `v0.4.1-amd-nr`; 0.3.1, `b108d640…`, at the top level for every older release, which does not
+accept 0.4.x) and the lmxxf weights (`native-game-tiled-assets.zip`) come from the Hugging Face
+dataset `zmodelerlover/amd-nr`, never from this repository. v0.6.0 and later also offer mochizuki: with **NR runtime: mochizuki** ticked
 on an RDNA4 card it installs `MochizukiNrRuntime.dll` with `dlssnr-amd\shaders\`,
 `dlssnr-amd\prewarm\manifest.txt` and the model, `dlssnr-amd\dlssnr.bin`, and sets
 `NrBackend=mochizuki`. The manifest is not in this repository and
@@ -747,6 +747,34 @@ the converter's 153-tensor table is identical, so a file made by any 0.3.x setup
 
 **Open.** An A/B in a game against 0.3.1 (picture and frame time). Whether to drive `Style` from
 `DlssNrStyle`, which needs that comparison first. The AMD-NR installer still installs 0.3.1.
+
+### danielblnc runtime 0.4.1
+
+Released in `v0.4.2-amd-nr`, after an in-game test in Cyberpunk 2077.
+[DLSS-NR-on-AMD v0.4.1](https://github.com/danielblnc/DLSS-NR-on-AMD/releases/tag/v0.4.1) is
+accepted next to 0.4.0, 0.3.1 and 0.3.0: `kAmd041` in `AmdLayout.h` (SHA `823063eb…`, 9,916,928
+bytes, in the setup's `.rdata` at file offset `0x2609c7`) and its bootstrap entry in
+`RuntimeHostLoad.h` (DllMain `0x58c0` calls CreateThread at `0x71bd`; worker `0x8c90`).
+`install-amd-presr.ps1` knows the hash and ranks it newest.
+
+**How the table was mapped.** From 0.4.0, in `daniel-runtime/analysis-opti`: instruction windows
+(`map_layout_040_041.txt`) and the aligned-function data map (`datamap_040_041.txt`) agree on every
+field. Init, Notify, shutdown, the wait helper, DllMain and the bootstrap worker are 0.4.0's
+instruction for instruction. Record gained the QueuePriority block and some engine members moved
++0x18; the host uses none of those offsets. The data block moved +0x2020 up to `historyValid` and
++0x2038 from `initDone` on. The 0.4.1 rows of `ANCHORS` are 0.4.0's sites carried through the same
+alignment (`implement/anchors/derive_041.py`), and `amd_layout_binary_check.py` passes on all four
+binaries.
+
+**What changed in the runtime.** One new `[DlssNrOnAmd]` key, `QueuePriority` (default 1): Record
+creates the HIP stream with `hipStreamCreateWithPriority` at the highest priority instead of the
+null stream. DllMain reads it, so with no ini the host gets the default; the host does not pin it.
+The weights are unchanged (the loader is 0.4.0's).
+
+**Checked without a game.** `tools/test-amd-runtime-init.cmd` on an RX 9070 XT: init true in about
+1 s, 64 of 64 frames in both wait modes with no timeout. Three alternating runs: 0.4.1 14.4-14.6 ms
+per frame, 0.4.0 15.1-15.3 ms. The harness keeps the GPU otherwise idle, so it does not show what
+the priority stream buys under a game's load.
 
 ---
 

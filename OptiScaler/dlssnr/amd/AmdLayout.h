@@ -265,7 +265,72 @@ inline constexpr AmdLayout kAmd040 {
     .useGameExposure = 0xa863c,
 };
 
-inline constexpr const AmdLayout* kAmdLayouts[] = { &kAmd0217, &kAmd03, &kAmd031, &kAmd040 };
+// 0.4.1 version.dll (SHA 823063eb), carved from dlssnr_on_amd_setup.exe v0.4.1 at file offset
+// 0x2609c7, size 0x975200. Mapped from 0.4.0 two ways that agree on every field (map_layout.py and
+// datamap.py in daniel-runtime/analysis-opti, map_layout_040_041.txt and datamap_040_041.txt).
+// Init, Notify, shutdown, the wait helper and the bootstrap are 0.4.0's instruction for
+// instruction; Record adds the QueuePriority stream (a high-priority HIP stream, default 1, read by
+// DllMain) and some engine members moved +0x18. The data block moved +0x2020 up to historyValid and
+// +0x2038 from initDone on.
+inline constexpr AmdLayout kAmd041 {
+    .name = "0.4.1",
+    .size = 9916928,
+    .sha256 = Sha256FromHex("823063eb4c76b1334fd1800c41798873ae61d4016af0406f1f0b9dce57b1d376"),
+    .d3dCompileIat = 0,
+    .init = 0x26130,
+    .record = 0x14c40,
+    .notify = 0x9d80,
+    .shutdown = 0x188d0,
+    .trampoline = 0xaa7d8,
+    .device = 0xa98e0,
+    .queue = 0xa98e8,
+    .engine = 0xa98f8,
+    .historyView = 0xa9a40,
+    .historyValid = 0xa9a48,
+    .initDone = 0xa9d48,
+    .nativeFailure = 0xa9d4a,
+    .configuredInline = 0xaa250,
+    .jobDone = 0xaa284,
+    .timeoutCount = 0xaa288,
+    .watchdog = 0xaa2b4,
+    .interop = 0xaa4a0,
+    .pendingList = 0xaa580,
+    .jobId = 0xaa58c,
+    .depthInverted = 0xaa630,
+    .explicitDepth = 0xaa634,
+    .enabled = 0xaa63c,
+    .temporal = 0xaa63d,
+    .fsrInputs = 0xaa63e,
+    .depthPresent = 0xaa63f,
+    .tonemap = 0xaa640,
+    .tone = 0xaa650,
+    .structure = 0xaa654,
+    .skin = 0xaa658,
+    .charMask = 0xaa660,
+    .toneChannels = 0xaa664,
+    .hipOrdinal = 0xaa760,
+    .recreate = 0xaa738,
+    .recordLock = 0xaa6c0,
+    .gate4c = 0xaa56c,
+    .gate68 = 0xaa588,
+    .counter78 = 0xaa598,
+    .spinDraw = 0xaa454,
+    .graphicsPso = 0xaa468,
+    .predicateReady = 0xaa3c8,
+    .graphicsWaitBegin = 0x19120,
+    .graphicsWaitEnd = 0x19846,
+    .waitDispatchInit = 0x19310,
+    .waitDispatchFallback = 0x196b0,
+    .waitDispatchSlices = 0x1970a,
+    .waitDispatchFinish = 0x197f7,
+    .scale = 0xaa65c,
+    .style = 0xaa668,
+    .toneCurve = 0xaa66c,
+    .toneLift = 0xaa670,
+    .useGameExposure = 0xaa674,
+};
+
+inline constexpr const AmdLayout* kAmdLayouts[] = { &kAmd0217, &kAmd03, &kAmd031, &kAmd040, &kAmd041 };
 
 // Compile-time sanity: the hex helper must land on the first/last digest byte
 // of each known runtime. A wrong-length literal already fails Sha256FromHex;
@@ -274,4 +339,5 @@ static_assert(kAmd0217.sha256.bytes[0] == 0xbc && kAmd0217.sha256.bytes[31] == 0
 static_assert(kAmd03.sha256.bytes[0] == 0x83 && kAmd03.sha256.bytes[31] == 0x38);
 static_assert(kAmd031.sha256.bytes[0] == 0xb1 && kAmd031.sha256.bytes[31] == 0x54);
 static_assert(kAmd040.sha256.bytes[0] == 0xd6 && kAmd040.sha256.bytes[31] == 0x80);
+static_assert(kAmd041.sha256.bytes[0] == 0x82 && kAmd041.sha256.bytes[31] == 0x76);
 } // namespace AmdPreSr

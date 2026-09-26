@@ -55,11 +55,45 @@ BEHAVIOUR_CHECKED = {"enabled", "nativeFailure", "initDone", "trampoline"}
 # rip disp32, bytes after it, layout function the site must lie in or None, layout function the
 # next call goes to or None[, offset the site adds to the field]). The instruction at the site must
 # have exactly these bytes around its disp32, and the disp32 must reach the field. The 0.4.0 sites
-# are the ones the verified maps cite; the 0.3.1 and 0.3.0 rows are the same instructions in the
-# same order, found by shape (daniel-runtime/analysis-opti/implement/anchors/derive_anchors.py and
+# are the ones the verified maps cite. The 0.4.1 rows are the same instructions, found through the
+# aligned instructions of each matched function (analysis-opti/implement/anchors/derive_041.py).
+# The 0.3.1 and 0.3.0 rows are the same instructions in the same order, found by shape (daniel-runtime/analysis-opti/implement/anchors/derive_anchors.py and
 # anchors.txt, which prints each site with its neighbours). 0.3.0 has no Notify-side jobDone wait
 # and no mapped wait helper, so it lacks those rows.
 ANCHORS = {
+    "0.4.1": [
+        ("device", 0x9db2, "48 83 3d", "00", "notify", None),
+        ("queue", 0x9da8, "48 83 3d", "00", "notify", None),
+        ("queue", 0x9e11, "48 89 35", "", "notify", None),
+        ("engine", 0xbeab, "48 8d 0d", "", None, "init"),
+        ("engine", 0x172ba, "48 8d 0d", "", "record", None),
+        ("historyView", 0x1ca56, "4c 8b 05", "", None, None),
+        ("historyValid", 0x172d0, "c6 05", "00", "record", None),
+        ("jobDone", 0x14fdb, "39 05", "", "record", None),
+        ("jobDone", 0x9fe8, "39 2d", "", "notify", None),
+        ("timeoutCount", 0x18c1f, "c7 05", "00 00 00 00", "shutdown", None),
+        ("timeoutCount", 0x1df37, "3b 05", "", None, None),
+        ("watchdog", 0x17e71, "44 8b 05", "", "record", "graphicsWaitBegin"),
+        ("pendingList", 0x9e65, "f0 48 0f b1 0d", "", "notify", None),
+        ("pendingList", 0x183f6, "48 87 05", "", "record", None),
+        ("jobId", 0x14fd5, "8b 05", "", "record", None),
+        ("jobId", 0x183d0, "44 89 25", "", "record", None),
+        ("depthInverted", 0x1703d, "44 8b 15", "", "record", None),
+        ("depthInverted", 0x13880, "44 89 0d", "", None, None),
+        ("explicitDepth", 0x1386e, "c6 05", "01", None, None),
+        ("hipOrdinal", 0x14cd4, "8b 0d", "", "record", None),
+        ("recreate", 0x14fa9, "80 3d", "01", "record", None),
+        ("recreate", 0x152e1, "c6 05", "00", "record", None),
+        ("recordLock", 0x152b8, "48 8d 0d", "", "record", None),
+        ("recordLock", 0x152cc, "81 3d", "ff ff ff 7f", "record", "shutdown", 0x4c),
+        ("gate4c", 0x14fb6, "83 3d", "00", "record", None),
+        ("gate68", 0x14fbf, "83 3d", "00", "record", None),
+        ("gate68", 0x9e79, "87 2d", "", "notify", None),
+        ("counter78", 0x178c3, "ff 05", "", "record", None),
+        ("graphicsPso", 0x1946f, "48 83 3d", "00", "graphicsWaitBegin", None),
+        ("graphicsPso", 0x19490, "48 8b 15", "", "graphicsWaitBegin", None),
+        ("predicateReady", 0x19179, "80 3d", "01", "graphicsWaitBegin", None),
+    ],
     "0.4.0": [
         ("device", 0x9e42, "48 83 3d", "00", "notify", None),  # cmp qword [device],0 after call [trampoline]
         ("queue", 0x9e38, "48 83 3d", "00", "notify", None),  # cmp qword [queue],0 after call [trampoline]

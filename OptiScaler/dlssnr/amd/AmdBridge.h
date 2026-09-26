@@ -29,7 +29,7 @@ float NeuralMs();
 // Dynamic NR resolution: the scale in use and the rendered frame rate, or empty while it is off.
 std::string DynamicStatus();
 bool GraphicsRestartNeeded(UINT activePasses);
-// pass1 SHA name ("0.3.0" / "0.3.1" / "0.4.0" / …) or nullptr if missing/unknown.
+// pass1 SHA name ("0.3.0" / "0.3.1" / "0.4.0" / "0.4.1" / …) or nullptr if missing/unknown.
 // Cached for menu display until the DLL path, size, or write time changes.
 const char* RuntimeName();
 void UpdateConfirmedRenderQueue(ID3D12CommandQueue* q);

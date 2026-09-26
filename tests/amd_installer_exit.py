@@ -195,7 +195,7 @@ class InstallerExitTests(unittest.TestCase):
         self.assertEqual((self.package / "version.dll").read_bytes(), blob)
 
     def trust(self, **digests):
-        """Replace the named trusted runtime SHAs ($expectedA030 / A031 / A040) in the fixture Setup."""
+        """Replace the named trusted runtime SHAs ($expectedA030 / A031 / A040 / A041) in the fixture Setup."""
         script = self.package / "Setup.ps1"
         source = script.read_text(encoding="utf-8-sig")
         for var, data in digests.items():
@@ -216,13 +216,13 @@ class InstallerExitTests(unittest.TestCase):
         # the package copy updated with the old one kept under its version name.
         old = FAKE_RUNTIME
         new = embedded_pe(b"Harmless newer embedded runtime; not an executable.")
-        self.trust(A030=old, A040=new)
+        self.trust(A030=old, A041=new)
         (self.package / "version.dll").write_bytes(old)
         self.author_setup(new)
         code, output = self.run_direct()
         self.assertEqual(code, 0, output)
-        self.assertIn("holds runtime 0.4.0, newer than the 0.3.0", output)
-        self.assertIn("danielblnc runtime 0.4.0 (SHA256", output)
+        self.assertIn("holds runtime 0.4.1, newer than the 0.3.0", output)
+        self.assertIn("danielblnc runtime 0.4.1 (SHA256", output)
         self.assertNotIn("Launching danielblnc setup", output)
         self.assertEqual((self.game / "dlssnr_amd_pass1.dll").read_bytes(), new)
         self.assertEqual((self.package / "version.dll").read_bytes(), new)
@@ -231,36 +231,36 @@ class InstallerExitTests(unittest.TestCase):
     def test_older_runtime_in_setup_does_not_downgrade(self):
         new = FAKE_RUNTIME
         old = embedded_pe(b"Harmless older embedded runtime; not an executable.")
-        self.trust(A030=old, A040=new)
+        self.trust(A030=old, A041=new)
         (self.package / "version.dll").write_bytes(new)
         self.author_setup(old)
         code, output = self.run_direct()
         self.assertEqual(code, 0, output)
-        self.assertIn("holds runtime 0.3.0, older than the 0.4.0", output)
+        self.assertIn("holds runtime 0.3.0, older than the 0.4.1", output)
         self.assertEqual((self.game / "dlssnr_amd_pass1.dll").read_bytes(), new)
         self.assertEqual((self.package / "version.dll").read_bytes(), new)
         self.assertFalse(list(self.package.glob("version-*.dll")))
 
     def test_newest_runtime_found_wins_without_setup(self):
-        # No setup: a 0.3.0 version.dll next to Setup.bat must not shadow the 0.4.0 pass1 an
+        # No setup: a 0.3.0 version.dll next to Setup.bat must not shadow the 0.4.1 pass1 an
         # earlier install put in the game, and must not be overwritten while staging.
         old = FAKE_RUNTIME
         new = b"Harmless newer runtime test data; not an executable."
-        self.trust(A030=old, A040=new)
+        self.trust(A030=old, A041=new)
         (self.package / "version.dll").write_bytes(old)
         (self.game / "dlssnr_amd_pass1.dll").write_bytes(new)
         code, output = self.run_direct()
         self.assertEqual(code, 0, output)
         self.assertIn("Found danielblnc runtime 0.3.0", output)
-        self.assertIn("Found danielblnc runtime 0.4.0", output)
-        self.assertIn("danielblnc runtime 0.4.0 (SHA256", output)
+        self.assertIn("Found danielblnc runtime 0.4.1", output)
+        self.assertIn("danielblnc runtime 0.4.1 (SHA256", output)
         self.assertEqual((self.game / "dlssnr_amd_pass1.dll").read_bytes(), new)
         self.assertEqual((self.package / "version.dll").read_bytes(), new)
         self.assertEqual((self.package / "version-0.3.0.dll").read_bytes(), old)
 
     def test_failed_install_removes_the_runtime_taken_out_of_setup(self):
         new = embedded_pe(b"Harmless newer embedded runtime; not an executable.")
-        self.trust(A040=new)
+        self.trust(A041=new)
         self.author_setup(new)
         (self.package / "Uninstall_OptiScaler_NR.ps1").unlink()
         temp = self.root / "temp"
@@ -275,29 +275,29 @@ class InstallerExitTests(unittest.TestCase):
     def test_explicit_author_dll_is_kept_with_a_warning(self):
         old = FAKE_RUNTIME
         new = embedded_pe(b"Harmless newer embedded runtime; not an executable.")
-        self.trust(A030=old, A040=new)
+        self.trust(A030=old, A041=new)
         chosen = self.root / "chosen" / "version.dll"
         chosen.parent.mkdir()
         chosen.write_bytes(old)
         self.author_setup(new)
         code, output = self.run_direct(flags=("-NonInteractive", "-AuthorDll", str(chosen)))
         self.assertEqual(code, 0, output)
-        self.assertIn("WARNING: dlssnr_on_amd_setup.exe holds runtime 0.4.0, newer than the 0.3.0 given by -AuthorDll",
+        self.assertIn("WARNING: dlssnr_on_amd_setup.exe holds runtime 0.4.1, newer than the 0.3.0 given by -AuthorDll",
                       output)
-        self.assertIn("NOTE: runtime 0.3.0 is supported, but 0.4.0 is recommended", output)
+        self.assertIn("NOTE: runtime 0.3.0 is supported, but 0.4.1 is recommended", output)
         self.assertEqual((self.game / "dlssnr_amd_pass1.dll").read_bytes(), old)
 
     def test_unknown_author_dll_does_not_hold_back_a_newer_setup(self):
         old = FAKE_RUNTIME
         new = embedded_pe(b"Harmless newer embedded runtime; not an executable.")
-        self.trust(A030=old, A040=new)
+        self.trust(A030=old, A041=new)
         (self.package / "version.dll").write_bytes(old)
         unknown = self.root / "unknown.dll"
         unknown.write_bytes(b"not a known runtime")
         self.author_setup(new)
         code, output = self.run_direct(flags=("-NonInteractive", "-AuthorDll", str(unknown)))
         self.assertEqual(code, 0, output)
-        self.assertIn("holds runtime 0.4.0, newer than the 0.3.0", output)
+        self.assertIn("holds runtime 0.4.1, newer than the 0.3.0", output)
         self.assertEqual((self.game / "dlssnr_amd_pass1.dll").read_bytes(), new)
 
     def test_noninteractive_install_failures_do_not_wait(self):

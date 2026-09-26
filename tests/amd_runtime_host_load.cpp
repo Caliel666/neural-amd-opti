@@ -29,7 +29,7 @@ static void ForwardedThread()
     CloseHandle(thread);
 }
 
-// "--layout=0.4.0" picks the runtime whose bootstrap the fixture imitates; 0.3.1 by default.
+// "--layout=0.4.1" picks the runtime whose bootstrap the fixture imitates; 0.3.1 by default.
 static const AmdPreSr::AmdLayout* LayoutArgument(int argc, wchar_t** argv)
 {
     for (int i = 2; i < argc; ++i)

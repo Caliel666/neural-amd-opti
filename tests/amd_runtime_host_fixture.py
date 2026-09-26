@@ -5,7 +5,7 @@ by one runtime's bootstrap filter (0.3.1 unless --layout names another). It
 deliberately is NOT an accepted runtime SHA: only the runtime-load isolation
 unit test bypasses the production IdentifyRuntime gate.
 
-    amd_runtime_host_fixture.py OUT [--no-bootstrap] [--layout 0.4.0]
+    amd_runtime_host_fixture.py OUT [--no-bootstrap] [--layout 0.4.1]
 """
 from pathlib import Path
 import struct
@@ -16,6 +16,7 @@ import sys
 CONTRACTS = {
     "0.3.1": (0x6D8F, 0x8630, 0x8D788),
     "0.4.0": (0x726F, 0x8D20, 0x9A208),
+    "0.4.1": (0x71AF, 0x8C90, 0x9B3B8),
 }
 
 args = sys.argv[1:]

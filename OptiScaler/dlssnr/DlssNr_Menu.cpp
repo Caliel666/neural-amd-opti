@@ -610,7 +610,7 @@ void RenderMenu(Config* config, float menuResScale)
                 if (newWait && restartToTryNewWait)
                     ImGui::OpenPopup("New wait restart");
             }
-            HelpMarker("On: New wait mode (1-pixel draw, runtime 0.3.1 or 0.4.0). Still being tested."
+            HelpMarker("On: New wait mode (1-pixel draw, runtime 0.3.1 or later). Still being tested."
                        "\nOff: Original wait mode (switches immediately)."
                        "\nRestart if prompted: hooks or a pass may not be ready for new wait mode."
                        "\nFrames that cannot use new wait mode still fall back to original wait.");
@@ -765,7 +765,7 @@ void RenderMenu(Config* config, float menuResScale)
                 HelpMarker("How much of the network's result reaches the frame. 100% is the"
                            "\nruntime's own default; 0% leaves the frame as the game drew it while"
                            "\nthe network still runs. Changing it restarts the model's history."
-                           "\n\nNeeds the danielblnc 0.3.1 or 0.4.0 runtime.");
+                           "\n\nNeeds the danielblnc runtime 0.3.1 or later.");
             }
             static int passes = 1;
             static bool editingPasses = false;

@@ -862,7 +862,7 @@ struct Backend::Impl
         At<uint8_t>(h, L->fsrInputs) = 1;
         At<uint8_t>(h, L->depthPresent) = 1;
         At<int>(h, L->tonemap) = -1;
-        // 0.4.0 reads these from dlssnr_on_amd.ini in DllMain, and only its own Present detour
+        // 0.4.x reads these from dlssnr_on_amd.ini in DllMain, and only its own Present detour
         // reads them again, which the isolated bootstrap never installs. Pin the runtime defaults,
         // which reproduce 0.3.1: no style, Reinhard, no lift, the game's exposure when given.
         if (L->style)
@@ -963,8 +963,8 @@ Backend::Backend(ID3D12Device* d, ID3D12CommandQueue* q, const std::filesystem::
     // lands. Three earlier rounds were analysed without a tag and the logs could
     // not be told apart.
     p->LogDiagnostic("AMD graphics build source=" AMD_GRAPHICS_SOURCE_ID);
-    p->Log("AMD submission revision 20260926-1.8.7: multi-slot default; 0.3.1/0.4.0 new wait with guarded restore; "
-           "Every-frame back on Ins menu; runtime 0.4.0" +
+    p->Log("AMD submission revision 20260926-1.8.8: multi-slot default; 0.3.1/0.4.x new wait with guarded restore; "
+           "Every-frame back on Ins menu; runtime 0.4.1" +
            std::string(kBuildTag));
     try
     {
@@ -1635,7 +1635,7 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
             // clear history-valid (0x8d018) each frame.
             At<uint8_t>(r, L->temporal) = cfg.everyFrame ? 0 : 1;
             // The history-valid flag and the current borrowed history view (engine
-            // +0x120/+0x118 in 0.3.1, +0x150/+0x148 in 0.4.0). Clear only at a
+            // +0x120/+0x118 in 0.3.1, +0x150/+0x148 in 0.4.x). Clear only at a
             // quiescent frame boundary.
             if (f.reset || resize || guideChange || passChange || p->resetAfterTimeout || settingsChanged ||
                 explicitReset || gap)
@@ -1680,7 +1680,7 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
             const unsigned recreateBefore = L->recreate ? At<volatile uint8_t>(r, L->recreate) : 0;
             const UINT jobBefore = At<UINT>(r, L->jobId);
             const UINT doneBefore = At<UINT>(r, L->jobDone);
-            // 0.3.1 and 0.4.0 use a blocking mutex. +0x4c is its ownership/recursion
+            // 0.3.1 and 0.4.x use a blocking mutex. +0x4c is its ownership/recursion
             // count, not a waiter count or a measure of worker saturation.
             const UINT lockBefore = L->recordLock ? At<UINT>(r, L->recordLock + 0x4c) : 0;
             const int gate4c = L->gate4c ? At<int>(r, L->gate4c) : 0;
@@ -2200,7 +2200,7 @@ std::string Backend::Status() const
                 reportedTimeouts += count - p->observedTimeouts[i];
         }
     // Menu / Status must name the runtime that was actually identified —
-    // 0.3.0, 0.3.1 and 0.4.0 are all valid, and the user cannot tell them
+    // 0.3.0, 0.3.1, 0.4.0 and 0.4.1 are all valid, and the user cannot tell them
     // apart from pass DLL filenames alone.
     const std::string runtimeTag = L ? (std::string("AMD runtime ") + L->name + " | ") : std::string();
     if (!p->failed && p->lastSubmitted)

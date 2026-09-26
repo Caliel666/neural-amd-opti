@@ -1,18 +1,18 @@
 ﻿<#
 .SYNOPSIS
   Stage and zip a complete user package (no NVIDIA / author proprietary files).
-  Default product: OptiScaler-0.4.1-amd-nr, the version in OptiScaler/resource.h.
-  The danielblnc runtime it drives is 0.4.0 (0.3.1 and 0.3.0 still accepted), supplied by the user.
+  Default product: OptiScaler-0.4.2-amd-nr, the version in OptiScaler/resource.h.
+  The danielblnc runtime it drives is 0.4.1 (0.4.0, 0.3.1 and 0.3.0 still accepted), supplied by the user.
   The mochizuki runtime (MochizukiNrRuntime.dll and dlssnr-amd\) is not packaged: the AMD-NR
   installer or a local build supplies it, and its model is never in this package.
 
 .EXAMPLE
   .\PACKAGE_RELEASE.ps1
-  .\PACKAGE_RELEASE.ps1 -Version 0.4.1-amd-nr -DepsRoot 'C:\path\with\OptiScaler'
+  .\PACKAGE_RELEASE.ps1 -Version 0.4.2-amd-nr -DepsRoot 'C:\path\with\OptiScaler'
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = '0.4.1-amd-nr',
+    [string]$Version = '0.4.2-amd-nr',
     [string]$OutDir = 'dist',
     [string]$Name = '',
     [string]$OptiDll = '',
@@ -178,12 +178,13 @@ $ini = [regex]::Replace($ini, '(?ms)(\[FrameGen\].*?^Enabled=)[^\r\n]*', '$1fals
 $ini = [regex]::Replace($ini, '(?ms)^\[DlssNr\].*?(?=^\[|\z)', @"
 [DlssNr]
 ; Product $Version - NR slots default 3 (2-5 in-game, 1-5 here).
-; Requires DLSS-NR-on-AMD 0.4.0 (0.3.1 and 0.3.0 still work; https://github.com/danielblnc/DLSS-NR-on-AMD)
+; Requires DLSS-NR-on-AMD 0.4.1 (0.4.0, 0.3.1 and 0.3.0 still work;
+; https://github.com/danielblnc/DLSS-NR-on-AMD)
 ; as dlssnr_amd_pass1-3.dll (Setup copies version.dll from the package folder, or takes it
 ; out of dlssnr_on_amd_setup.exe).
 ; AmdEveryFrame=false keeps the model's temporal history (Ins menu: "Disable temporal
 ; stabilization", off by default).
-; AmdGraphicsWait=1 is New wait mode (1-pixel draw of 0.3.1 and 0.4.0; still testing).
+; AmdGraphicsWait=1 is New wait mode (1-pixel draw of 0.3.1 and later; still testing).
 ; Set 0 for Original wait.
 ; Unsafe dirty insert stays off (AmdGraphicsUnsafe=0).
 Enabled=false
