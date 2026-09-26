@@ -741,13 +741,14 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
     s.passes = cfg.DlssNrPasses.value_or_default();
     s.everyFrame = cfg.AmdEveryFrame.value_or_default();
     s.slots = std::clamp(cfg.AmdSlots.value_or_default(), 1, 5);
-    // AmdGraphicsWait=1 requests 0.3.1's 1-pixel draw wait (this project's New wait).
+    // AmdGraphicsWait=1 requests the 1-pixel draw wait of 0.3.1 and 0.4.0 (this project's New wait).
     // InitPass/Record still force SpinDraw=0 unless a freeze+restore plan armed.
     s.spinDraw = Config::Instance()->AmdGraphicsWait.value_or_default() ? 1 : 0;
     // The pinned AMD binary explicitly disables the broad lighting/colour
     // channels. Its embedded UI warns that nonzero tone mostly darkens frames.
     // An old INI's 0 (Auto) converted nothing, the same as Linear, so it reads as Linear.
     s.encoding = std::clamp(cfg.AmdEncoding.value_or_default(), 1, 3);
+    // tone must be 0 whenever toneChannels is: 0.3.1 zeroed it itself, 0.4.0 passes it through.
     s.toneChannels = cfg.AmdNeuralLightingStrength.value_or_default() > 0;
     s.tone = s.toneChannels ? std::clamp(cfg.AmdNeuralLightingStrength.value_or_default(), 0.f, 1.f) : 0.f;
     s.structure = cfg.DlssNrLocalStructure.value_or_default();

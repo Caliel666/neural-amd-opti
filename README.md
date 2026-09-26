@@ -14,7 +14,7 @@ next launch) or `NrBackend` in `OptiScaler.ini`.
 
 | | danielblnc | lmxxf | mochizuki (experimental) |
 |---|---|---|---|
-| Runtime | [DLSS-NR-on-AMD](https://github.com/danielblnc/DLSS-NR-on-AMD) 0.3.1 or 0.3.0, as `dlssnr_amd_pass1-3.dll` | [lmxxf's open-source HIP port](https://github.com/lmxxf/dlss5-on-amd-9070xt-porting), `LmxxfNrRuntime.dll` built here | [mochizuki0323's Vulkan port](https://github.com/mochizuki0323/DLSSNR-AMD), `MochizukiNrRuntime.dll` built here, not in the package |
+| Runtime | [DLSS-NR-on-AMD](https://github.com/danielblnc/DLSS-NR-on-AMD) 0.4.0 (recommended; its faster kernels run on RDNA4), 0.3.1 or 0.3.0, as `dlssnr_amd_pass1-3.dll` | [lmxxf's open-source HIP port](https://github.com/lmxxf/dlss5-on-amd-9070xt-porting), `LmxxfNrRuntime.dll` built here | [mochizuki0323's Vulkan port](https://github.com/mochizuki0323/DLSSNR-AMD), `MochizukiNrRuntime.dll` built here, not in the package |
 | Weights | `dlssnr_on_amd_weights.bin` | `native-game-tiled-assets\` | `dlssnr-amd\dlssnr.bin`, made from your own `nvngx_dlssnr.dll` 310.8.0 |
 | GPUs | RDNA3 and RDNA4 with HIP 7 | RDNA4 (gfx1201 modules) | RDNA4 (Vulkan FP8) |
 | Where it runs | Before Super Resolution, or on the finished frame (the only choice for Ray Reconstruction titles) | Before Super Resolution, render resolution up to 1080p | Before Super Resolution, on a Vulkan device of its own beside the game's DirectX 12 |
@@ -53,8 +53,12 @@ OptiScaler's copy.
 
 1. Extract the release next to the game's executable (for Cyberpunk 2077, `bin\x64`).
 2. For danielblnc, put its `version.dll` or `dlssnr_on_amd_setup.exe` next to `Setup.bat`, plus
-   `dlssnr_on_amd_weights.bin` if you have it. For lmxxf, put `native-game-tiled-assets\` next to
-   `Setup.bat` or in the game folder; the runtime, modules and shaders ship in the package. For
+   `dlssnr_on_amd_weights.bin` if you have it. Setup takes `version.dll` out of the setup without
+   running it, and runs the setup only to make the weights. 0.4.0 uses the same weights as 0.3.x.
+   To update from 0.3.1, drop the 0.4.0 setup next to `Setup.bat` and run Setup again: when more
+   than one known runtime is found, the newest is installed and its version is printed.
+   For lmxxf, put `native-game-tiled-assets\` next to `Setup.bat` or in the game folder; the
+   runtime, modules and shaders ship in the package. For
    mochizuki, copy `MochizukiNrRuntime.dll` and its `dlssnr-amd\` folder (`shaders\`, your
    `dlssnr.bin`, and `prewarm\manifest.txt` if you have one) into the game folder after Setup,
    and set `NrBackend=mochizuki`.
@@ -76,7 +80,7 @@ All in `OptiScaler.ini`, section `[DlssNr]`, and in the **Neural** tab of the ov
 | `NrBackend` | `daniel`, `lmxxf`, `mochizuki`, `off` or `auto` (danielblnc when both danielblnc and lmxxf are present; never mochizuki) |
 | `ApplyAfterRR` | Run on the finished frame instead of before Super Resolution (danielblnc; lmxxf and mochizuki always run before) |
 | `AmdEncoding` | 1 Linear, 2 sRGB (default), 3 Gamma 2.2 |
-| `AmdEffectStrength` | Share of the network's effect, 0 to 1 (danielblnc 0.3.1) |
+| `AmdEffectStrength` | Share of the network's effect, 0 to 1 (danielblnc 0.3.1 and 0.4.0) |
 | `AmdColourGrade` | 0 none, 1 natural, 2 cinematic |
 | `AmdSlots`, `AmdGraphicsWait` | Frames in flight and wait mode (danielblnc) |
 | `AmdDynamicScale`, `AmdDynamicTargetFps` | Lower the NR resolution while under the target frame rate |

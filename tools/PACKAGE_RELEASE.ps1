@@ -1,18 +1,18 @@
 ﻿<#
 .SYNOPSIS
   Stage and zip a complete user package (no NVIDIA / author proprietary files).
-  Default product: OptiScaler-0.4.0-amd-nr, the version in OptiScaler/resource.h.
-  The danielblnc runtime it drives is 0.3.1 (0.3.0 still accepted), supplied by the user.
+  Default product: OptiScaler-0.4.1-amd-nr, the version in OptiScaler/resource.h.
+  The danielblnc runtime it drives is 0.4.0 (0.3.1 and 0.3.0 still accepted), supplied by the user.
   The mochizuki runtime (MochizukiNrRuntime.dll and dlssnr-amd\) is not packaged: the AMD-NR
   installer or a local build supplies it, and its model is never in this package.
 
 .EXAMPLE
   .\PACKAGE_RELEASE.ps1
-  .\PACKAGE_RELEASE.ps1 -Version 0.4.0-amd-nr -DepsRoot 'C:\path\with\OptiScaler'
+  .\PACKAGE_RELEASE.ps1 -Version 0.4.1-amd-nr -DepsRoot 'C:\path\with\OptiScaler'
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = '0.4.0-amd-nr',
+    [string]$Version = '0.4.1-amd-nr',
     [string]$OutDir = 'dist',
     [string]$Name = '',
     [string]$OptiDll = '',
@@ -178,11 +178,12 @@ $ini = [regex]::Replace($ini, '(?ms)(\[FrameGen\].*?^Enabled=)[^\r\n]*', '$1fals
 $ini = [regex]::Replace($ini, '(?ms)^\[DlssNr\].*?(?=^\[|\z)', @"
 [DlssNr]
 ; Product $Version - NR slots default 3 (2-5 in-game, 1-5 here).
-; Requires DLSS-NR-on-AMD 0.3.0 or 0.3.1 (https://github.com/danielblnc/DLSS-NR-on-AMD)
-; as dlssnr_amd_pass1-3.dll (Setup copies version.dll from the package folder).
+; Requires DLSS-NR-on-AMD 0.4.0 (0.3.1 and 0.3.0 still work; https://github.com/danielblnc/DLSS-NR-on-AMD)
+; as dlssnr_amd_pass1-3.dll (Setup copies version.dll from the package folder, or takes it
+; out of dlssnr_on_amd_setup.exe).
 ; AmdEveryFrame=false keeps the model's temporal history (Ins menu: "Disable temporal
 ; stabilization", off by default).
-; AmdGraphicsWait=1 is New wait mode (0.3.1 1-pixel draw; still testing).
+; AmdGraphicsWait=1 is New wait mode (1-pixel draw of 0.3.1 and 0.4.0; still testing).
 ; Set 0 for Original wait.
 ; Unsafe dirty insert stays off (AmdGraphicsUnsafe=0).
 Enabled=false
@@ -393,7 +394,8 @@ Copy-Item $readme (Join-Path $stage 'README.md') -Force
 # 原作者 pass（dlssnr_amd_pass*.dll）必须不在包内 —— README 明写「包里没有原作者 pass」。
 # Keep this filename-only and case-insensitive: the same expression validates the
 # staged tree and every entry in the finished archive.
-$forbidden = '(?i)^(nvngx.*\.dll|dlssnr_amd_pass.*\.dll|dlssnr_on_amd_weights\.bin|version\.dll|dlssnr_on_amd_setup\.exe)$'
+# version-<ver>.dll is an older author runtime that Setup renamed next to Setup.bat.
+$forbidden = '(?i)^(nvngx.*\.dll|dlssnr_amd_pass.*\.dll|dlssnr_on_amd_weights\.bin|version(-[0-9.]+)?\.dll|dlssnr_on_amd_setup\.exe)$'
 $badAll = Get-ChildItem -LiteralPath $stage -Recurse -File -ErrorAction SilentlyContinue |
     Where-Object { $_.Name -match $forbidden }
 if ($badAll) {

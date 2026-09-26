@@ -38,7 +38,7 @@ Everything is on `dlss-neural-rendering`. The work was committed on the branch `
 merge, then formatting), which pull request #1 merged into `dlss-neural-rendering`. Fixes since
 then are committed there directly.
 
-Five GitHub releases, all built by `tools/PACKAGE_RELEASE.ps1`:
+Six GitHub releases, all built by `tools/PACKAGE_RELEASE.ps1`:
 
 - `v0.1.0-amd-nr`: the FidelityFX upscaler, frame generation and denoiser never load from the
   package layout, so FSR falls back to FSR 2 and Ray Reconstruction is greyed out. Do not use it.
@@ -51,9 +51,11 @@ Five GitHub releases, all built by `tools/PACKAGE_RELEASE.ps1`:
   the zip), and host fixes that reach every runtime: process exit, command lists recycled before
   they run, the upscalers' colour barriers, OptiScaler's own Vulkan devices and the placement of
   the runtimes that run before Super Resolution (section 5, "0.4.0").
+- `v0.4.1-amd-nr`: danielblnc runtime 0.4.0 next to 0.3.1 and 0.3.0 (section 5, "danielblnc
+  runtime 0.4.0").
 
-The build reports itself as `0.4.0-amd-nr`, and the packager writes
-`dist/OptiScaler-0.4.0-amd-nr.zip`.
+The build reports itself as `0.4.1-amd-nr`, and the packager writes
+`dist/OptiScaler-0.4.1-amd-nr.zip`.
 
 The [AMD-NR ReShade Installer](https://github.com/zmodelerlover/AMD-NR-ReShade-Installer) installs
 this build as its OptiScaler route. v0.4.0 knows only `v0.1.1-amd-nr`; v0.5.0 and later offer every
@@ -61,7 +63,9 @@ version its payload manifest lists, newest first, and install the newest with th
 manifest has pinned `v0.4.0-amd-nr` since installer v0.6.0 (2026-09-25); v0.5.x installs it without
 mochizuki. The manifest pins each release zip by URL and SHA-256, and every file it extracts from it
 by hash. The runtime 0.3.1 (`b108d640…`) and the lmxxf weights (`native-game-tiled-assets.zip`) come
-from the Hugging Face dataset `zmodelerlover/amd-nr`, never from this repository. v0.6.0 also offers
+from the Hugging Face dataset `zmodelerlover/amd-nr`, never from this repository. The host now
+also accepts runtime 0.4.0 (`d62be3d8…`, section 5, "danielblnc runtime 0.4.0"); the installer
+keeps pinning 0.3.1 until its payload carries 0.4.0. v0.6.0 also offers
 mochizuki: with **NR runtime: mochizuki** ticked on an RDNA4 card it installs
 `MochizukiNrRuntime.dll` with `dlssnr-amd\shaders\`, `dlssnr-amd\prewarm\manifest.txt` and the
 model, `dlssnr-amd\dlssnr.bin`, and sets `NrBackend=mochizuki`. The manifest is not in this
@@ -207,7 +211,7 @@ Everything goes in `<GAME_DIR>`:
 | `dxgi.dll` | `x64/Release/a/OptiScaler.dll`, renamed | The proxy |
 | `OptiScaler.ini` | `x64/Release/a/OptiScaler.ini` | |
 | `OptiScaler/` | `x64/Release/a/OptiScaler/` | FFX / XeSS / Agility deps |
-| `dlssnr_amd_pass1.dll`, `dlssnr_amd_pass2.dll`, `dlssnr_amd_pass3.dll` | three copies of danielblnc's `version.dll` 0.3.0 or 0.3.1 | One **pass**, not one slot |
+| `dlssnr_amd_pass1.dll`, `dlssnr_amd_pass2.dll`, `dlssnr_amd_pass3.dll` | three copies of danielblnc's `version.dll` 0.4.0, 0.3.1 or 0.3.0 | One **pass**, not one slot |
 | `dlssnr_on_amd_weights.bin` | produced by `dlssnr_on_amd_setup.exe` | Game-agnostic; copy between games freely |
 | `amd_fidelityfx_denoiser_dx12.dll` | AMD redistributable | Only needed for FSR-RR. Not built by this repo; loaded by name |
 
@@ -222,8 +226,8 @@ it).
   runtime itself through the `pass` copies. Leaving the author's proxy means two things
   drive the same runtime. The installer moves it aside for this reason.
 - **The pass DLLs are identified by SHA-256**, not by name — see
-  `OptiScaler/dlssnr/amd/AmdLayout.h` (`kAmd0217`, `kAmd03`, `kAmd031`). An unsupported
-  build is refused. All passes must be the same version.
+  `OptiScaler/dlssnr/amd/AmdLayout.h` (`kAmd0217`, `kAmd03`, `kAmd031`, `kAmd040`). An
+  unsupported build is refused. All passes must be the same version.
 - **Proxy choice**: `dxgi.dll` is the safe default. `d3d12.dll` has a reported
   Streamline conflict that **greys out Cyberpunk 2077's Ray Reconstruction option** —
   see the warning in `setup_windows.bat`. For Vulkan titles use `winmm.dll`.
@@ -362,7 +366,7 @@ Release build into `exports/release-local/`) passes end to end. `tools/PACKAGE_R
 from the repository root, packages whichever of `x64/Release/a/OptiScaler.dll` and
 `exports/release-local/OptiScaler.dll` is newer, adds `amd_fidelityfx_denoiser_dx12.dll` for
 FSR-RR, and ships the root `README.md`, which gained an "Installing the release" section. Its
-existing tripwire still refuses the danielblnc runtime (`version.dll`, `dlssnr_amd_pass*.dll`,
+existing tripwire still refuses the danielblnc runtime (`version.dll`, `version-<ver>.dll`, `dlssnr_amd_pass*.dll`,
 `dlssnr_on_amd_setup.exe`), the weights and any `nvngx*.dll`, in the staged folder and again in
 the finished zip, so users supply those themselves as the README explains.
 
@@ -430,13 +434,14 @@ meter works on lmxxf because the two timestamps land on either side of the list 
 the HIP work.
 
 **Effect strength and colour grade (danielblnc).** The runtime's `[DlssNrOnAmd] Scale`
-(0.3.1 RVA `0x9ad14`, default 4/128) scales how much of the network reaches the frame: 0 leaves
-the frame untouched. It sits where NVIDIA's `style/128` would be but is not the style; tested in
-Cyberpunk, 0/128 did nothing and 1/128 and 2/128 were weak. `AmdEffectStrength` (0 to 1 of 4/128,
-layout field `scale`, 0.3.1 only). `AmdColourGrade` applies NVIDIA's post-network grade for
-Model B (natural: -0.10 EV, contrast -0.25, saturation -10%) or C (cinematic: saturation -15%)
-in the AmdLook shader, at full strength. NVIDIA's real style input (network parameter `+0x94`
-in `nvngx_dlssnr.dll`) has no known slot in the danielblnc runtime.
+(0.3.1 RVA `0x9ad14`, 0.4.0 RVA `0xa8624`, default 4/128) scales how much of the network reaches
+the frame: 0 leaves the frame untouched. It sits where NVIDIA's `style/128` would be but is not the
+style; tested in Cyberpunk, 0/128 did nothing and 1/128 and 2/128 were weak. `AmdEffectStrength`
+(0 to 1 of 4/128, layout field `scale`, 0.3.1 and 0.4.0). `AmdColourGrade` applies NVIDIA's
+post-network grade for Model B (natural: -0.10 EV, contrast -0.25, saturation -10%) or C
+(cinematic: saturation -15%) in the AmdLook shader, at full strength. NVIDIA's real style input
+(network parameter `+0x94` in `nvngx_dlssnr.dll`) has no slot in 0.3.1; 0.3.3 added one
+(`[DlssNrOnAmd] Style`, see "danielblnc runtime 0.4.0").
 
 **Logging.** `slEvaluateFeature` logged at Info once per frame (5 MB in 17 minutes); it is Debug
 now.
@@ -666,6 +671,80 @@ unchanged, and so is what the zip ships besides `OptiScaler.dll`, the INI and th
 in-game checks still pending are in `handoff/mochizuki-backend.md`, section 11.7, which has the
 whole record of the mochizuki work in Portuguese: architecture, measurements, tools, risks and open
 items.
+
+### danielblnc runtime 0.4.0
+
+Released in `v0.4.1-amd-nr`, after an in-game A/B against 0.3.1 in Cyberpunk 2077. The host accepts
+[DLSS-NR-on-AMD v0.4.0](https://github.com/danielblnc/DLSS-NR-on-AMD/releases/tag/v0.4.0) next to
+0.3.1 and 0.3.0: `kAmd040` in `AmdLayout.h` (SHA `d62be3d8…`, 10,027,008 bytes) and its bootstrap
+entry in `RuntimeHostLoad.h` (DllMain `0x5980` calls CreateThread at `0x727d`; the thread start
+`0x8d20` has the same prologue). 0.3.3 is not accepted.
+
+**Where the DLL comes from.** Since 0.3.3 the setup is a Tauri app that keeps `version.dll` in its
+own `.rdata` instead of appending it (0.4.0: file offset `0x2609c7`, `0x990000` bytes, written out
+by the setup's `lea r8` at RVA `0x4de3f` and `mov r9d` at `0x4de46`). `install-amd-presr.ps1`
+(`Get-EmbeddedRuntime`) takes it out by its PE headers and keeps it only if its SHA is a known
+runtime, without running the setup; it still runs the setup when the weights are missing. The same
+code finds the DLL appended to the 0.3.0 and 0.3.1 setups. A setup that is present is always
+opened, even when a runtime was already found, and the newest known runtime wins (0.4.0 > 0.3.1 >
+0.3.0): an update from 0.3.1, where the old `version.dll` an earlier install saved next to
+`Setup.bat` or the old pass1 in the game is still around, installs the setup's 0.4.0. The same
+rule picks among the `version.dll` / pass1 candidates. The chosen version is printed by name, an
+older setup or candidate is reported and left alone, and `-AuthorDll` still installs exactly the
+file given (with a warning if the setup holds a newer one). A saved `version.dll` next to
+`Setup.bat` that is an older known runtime is renamed `version-<ver>.dll` and replaced by the one
+installed; staging a runtime out of the game folder never overwrites a `version.dll` there.
+
+**How the table was mapped.** From 0.3.1, outside this repo in
+`daniel-runtime/analysis-opti` (start with `verify_kAmd040.txt`). Every field has at least two
+independent derivations that agree: unique instruction windows and a whole-program data
+map for all of them, difflib-aligned function pairs with a byte-window recheck for the code and
+engine fields, and the `[DlssNrOnAmd]` reader's key-to-store pairs for the options. The traps were
+`charMask` (the window vote said `0xa841c`, which is SpinDraw; the reader stores UseAutoMask at
+`0xa8628`) and `graphicsPso`, which is SpinDraw+0x14 now because 0.4.0 put `PollSpacing`
+(`0xa8420`, a root constant both wait shaders ignore) after SpinDraw. The host code the runtime
+exposes is 0.3.1's apart from data RVAs, which moved in pieces (+0xd7d8 to +0xd920), and the
+engine object's own offsets (historyView, historyValid and initDone at engine+0x148, +0x150 and
++0x438), which the host never derives. `tests/amd_layout_binary_check.py` checks every field
+of the 0.3.0, 0.3.1 and 0.4.0 tables against its binary: `.pdata` starts for the code entries,
+the wait helper's four Dispatch returns in order, Record's three gates, Notify's call through the
+trampoline, the INI key stores for the options, and for every other data field one or two pinned
+instruction sites (opcode bytes around the disp32, the function they sit in, and for `engine`,
+`watchdog` and `recordLock+0x4c` the call that follows), plus `.data` membership and the bootstrap
+bytes. A header-level check fails when a non-zero data field of any table but 0.2.17 (no binary
+here) has none of these. A mutation run moved every non-zero member of the three tables by
+-8..+0x10 and swapped neighbours, 1218 cases, and every one failed the check
+(`daniel-runtime/analysis-opti/implement/anchors/mutate.py`). `tools/test-amd-host-contracts.cmd`
+runs it on the folder in `AMD_RUNTIME_DIR`, or on the headers alone.
+
+**Checked without a game.** `tools/test-amd-runtime-init.cmd <version.dll> <weights>` loads the
+real runtime as `InitPass` does and runs 1080p frames through Record, ExecuteCommandLists, Notify
+and a fence in both wait modes. On an RX 9070 XT, 0.4.0: bootstrap suppressed on the real DllMain,
+init true in about 1 s, 48 of 48 frames recorded and completed in each mode with no timeout,
+`graphicsPso` and `predicateReady` set in the draw wait, shutdown and process exit clean. 15.2 ms
+per frame from submit to fence against 27.9 ms for 0.3.1 through the same harness. The inputs are
+blank, so this says nothing about the picture.
+
+**What changed in the runtime.** The speed-up is in the HIP kernels: register-resident Swin and
+ViT kernels that run only on `gfx12` (RDNA4; `DLSSNR_NO_REG` turns them off). RDNA3 gets the
+0.3.3 kernels. A persistent "chain" kernel is opt-in through `DLSSNR_CHAIN`; its flag waits give
+up after 100 ms and mark the frame untrustworthy, so the host must never set it. 0.3.3 added four
+`[DlssNrOnAmd]` options: `Style` (0 to 2, fed to the network as style/128: NVIDIA's style input,
+which 0.3.1 had no slot for), `ToneCurve` (Reinhard or ACES), `ToneLift` (0 to 0.25) and
+`UseGameExposure` (default 1). DllMain reads them from `dlssnr_on_amd.ini`; the only later reread is
+in the runtime's own Present detour, which the isolated bootstrap never installs. `InitPass` pins
+them to the runtime defaults (0, Reinhard, 0, 1), which give 0.3.1's behaviour, so an ini left in
+the game folder cannot change the image. `ToneChannels` now gates only the structure input and
+tone always reaches the network; AmdBridge already sends tone 0 whenever ToneChannels is off. The
+residual-apply shader grew (ACES, lift, and it keeps negative residuals that 0.3.1 clamped), so the
+default image may differ slightly from 0.3.1.
+
+**Weights.** Unchanged: the same `dlssnr_on_amd_weights.bin` (147,689,451 bytes, SHA
+`6bf8dc93…`). The loader (`init`, `0x26110`) is 0.3.1's `0x21720` with one engine offset moved, and
+the converter's 153-tensor table is identical, so a file made by any 0.3.x setup works.
+
+**Open.** An A/B in a game against 0.3.1 (picture and frame time). Whether to drive `Style` from
+`DlssNrStyle`, which needs that comparison first. The AMD-NR installer still installs 0.3.1.
 
 ---
 

@@ -300,7 +300,7 @@ class Config
     // others stay selectable per game.
     CustomOptional<int> AmdEncoding { 2 };
     // Share of the network's effect, 0-1: the runtime's Scale as a fraction of its 4/128 default.
-    // danielblnc 0.3.1 only.
+    // danielblnc 0.3.1 and 0.4.0 (the runtimes whose layout maps Scale).
     CustomOptional<float> AmdEffectStrength { 1.0f };
     // NVIDIA's colour grade for Model B (1, natural) or C (2, cinematic); 0 = none.
     CustomOptional<int> AmdColourGrade { 0 };

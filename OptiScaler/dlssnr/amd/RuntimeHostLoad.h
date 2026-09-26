@@ -37,6 +37,10 @@ inline constexpr Bootstrap bootstraps[] {
                                  0xd2, 0x45, 0x31, 0xc9, 0xff, 0x15, 0xcc, 0x3b, 0x08, 0 } },
     { &kAmd031, 0x8630, 0x6da3, { 0x4c, 0x8d, 0x05, 0x9a, 0x18, 0,    0,    0x31, 0xc9, 0x31,
                                   0xd2, 0x45, 0x31, 0xc9, 0xff, 0x15, 0xe5, 0x69, 0x08, 0 } },
+    // DllMain 0x5980 calls CreateThread (IAT 0x9a208) at 0x727d; the worker 0x8d20 installs the
+    // runtime's own ExecuteCommandLists and Present detours.
+    { &kAmd040, 0x8d20, 0x7283, { 0x4c, 0x8d, 0x05, 0xaa, 0x1a, 0,    0,    0x31, 0xc9, 0x31,
+                                  0xd2, 0x45, 0x31, 0xc9, 0xff, 0x15, 0x85, 0x2f, 0x09, 0 } },
 };
 inline constexpr std::array<unsigned char, 16> startBytes { 0x55, 0x41, 0x57, 0x41, 0x56, 0x41, 0x54, 0x56,
                                                             0x57, 0x53, 0x48, 0x81, 0xec, 0x50, 0x02, 0x00 };
@@ -226,7 +230,7 @@ __declspec(noinline) inline HANDLE WINAPI CreateThreadFiltered(LPSECURITY_ATTRIB
                                     flags || threadId || (context->suppressedBase && context->suppressedBase != module);
                 context->suppressedBase = module;
                 ++context->suppressedCount;
-                // These three pinned callers ignore the result. Creating a
+                // The pinned callers ignore the result. Creating a
                 // no-op thread instead would add needless DLL_THREAD_ATTACH.
                 SetLastError(ERROR_ACCESS_DISABLED_BY_POLICY);
                 return nullptr;

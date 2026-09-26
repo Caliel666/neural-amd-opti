@@ -2,7 +2,7 @@
 .SYNOPSIS
   Install this project's OptiScaler into a game folder.
   Double-click Setup.bat (no args) to pick the game folder, or pass -GameDir.
-  Copies danielblnc's 0.3.1 or 0.3.0 runtime (version.dll) to dlssnr_amd_pass1-3.dll,
+  Copies danielblnc's 0.4.0, 0.3.1 or 0.3.0 runtime (version.dll) to dlssnr_amd_pass1-3.dll,
   generates weights locally if needed, then installs OptiScaler as the chosen proxy.
 
 .DESCRIPTION
@@ -12,10 +12,15 @@
     OptiScaler.dll              this fork
     OptiScaler.ini              optional
     OptiScaler\                 FFX / XeSS / Agility deps
-    version.dll                 danielblnc AMD NR 0.3.1 or 0.3.0 (copied to pass1-3)
+    version.dll                 danielblnc AMD NR 0.4.0, 0.3.1 or 0.3.0 (copied to pass1-3)
     nvngx_dlssnr.dll            optional, to generate weights with danielblnc setup
-    dlssnr_on_amd_setup.exe     optional, danielblnc 0.3.1 / 0.3.0 setup
+    dlssnr_on_amd_setup.exe     optional, danielblnc 0.4.0 / 0.3.1 / 0.3.0 setup; its
+                                version.dll is taken out of it without running it
     dlssnr_on_amd_weights.bin   optional if you already have it
+
+  When several known runtimes are found (version.dll here, pass1 in the game, the one inside
+  dlssnr_on_amd_setup.exe), the newest is installed and its version is printed. Pass
+  -AuthorDll <version.dll> to install a specific one instead.
 
 .EXAMPLE
   .\Setup.bat
@@ -47,6 +52,12 @@ function Pause-Exit([int]$code) {
 }
 
 function Fail([string]$msg) {
+    # A runtime taken out of the setup or staged out of the game sits in %TEMP% until the end of
+    # a successful install; do not leave it behind on a failed one.
+    if ($script:stagedA -and $script:stagedA -match 'amd-presr-version-' -and
+        (Test-Path -LiteralPath $script:stagedA -PathType Leaf)) {
+        try { Remove-Item -LiteralPath $script:stagedA -Force } catch { }
+    }
     Write-Host "ERROR: $msg" -ForegroundColor Red
     Write-Host ''
     Write-Host 'Install FAILED.' -ForegroundColor Red
@@ -354,32 +365,102 @@ function Find-FirstFile([string[]]$paths) {
 
 # Hash: only known danielblnc runtimes are supported. The RVA layout is pinned to
 # each binary — a different build will not run correctly. Fail closed.
-# 0.3.0 = AmdLayout.h kAmd03; 0.3.1 = kAmd031 (mapped 2026-09-16).
+# 0.3.0 = AmdLayout.h kAmd03; 0.3.1 = kAmd031 (mapped 2026-09-16); 0.4.0 = kAmd040 (2026-09-26).
 $expectedA030 = '8321CAE728D28CB7632D0D58D3D913E91132BF7645C126505698FBE4CD5A0138'
 $expectedA031 = 'B108D6407EB7F094A4F9111EDD778EEE7B978B648D413A9FC7AEEDFDD914C154'
+$expectedA040 = 'D62BE3D8B9FBB3C6C81982C4DDB3DFA00EB9662E3206925CBE5B7E1BC6798B80'
 $knownA0217  = 'BC97F3B06718E19042ACAF227BFE15D1E43D4977F9DC2E39994FCC511445FF4E'
-$expectedAuthor = @($expectedA030, $expectedA031)
+$expectedAuthor = @($expectedA030, $expectedA031, $expectedA040)
+# Newest first. When more than one known runtime is at hand (an old version.dll next to
+# Setup.bat or in the game, a newer dlssnr_on_amd_setup.exe), the newest one is installed.
+$runtimeOrder = @(
+    @{ Hash = $expectedA040; Name = '0.4.0' },
+    @{ Hash = $expectedA031; Name = '0.3.1' },
+    @{ Hash = $expectedA030; Name = '0.3.0' }
+)
+
+# Version name of a known runtime hash, or $null.
+function Get-RuntimeName([string]$hash) {
+    foreach ($r in $runtimeOrder) { if ($hash -and $r.Hash -ieq $hash) { return $r.Name } }
+    return $null
+}
+
+# Higher is newer; -1 for an unknown hash.
+function Get-RuntimeRank([string]$hash) {
+    for ($k = 0; $k -lt $runtimeOrder.Count; $k++) {
+        if ($hash -and $runtimeOrder[$k].Hash -ieq $hash) { return $runtimeOrder.Count - $k }
+    }
+    return -1
+}
+
+# dlssnr_on_amd_setup.exe 0.3.0 and 0.3.1 append version.dll; since 0.3.3 it sits inside the
+# setup's own .rdata. Either way, take the embedded image out by its PE headers (end of the last
+# section's raw data) and keep it only if its SHA256 is one of $known. The setup is never run
+# for this.
+function Get-EmbeddedRuntime([string]$exe, [string[]]$known) {
+    if (-not $exe -or !(Test-Path -LiteralPath $exe -PathType Leaf)) { return $null }
+    $bytes = [IO.File]::ReadAllBytes($exe)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        # Offset 0 is the setup's own header.
+        $i = 1
+        while (($i = [Array]::IndexOf($bytes, [byte]0x4D, $i)) -ge 0) {
+            if ($i + 0x40 -le $bytes.Length -and $bytes[$i + 1] -eq 0x5A) {
+                $nt = $i + [BitConverter]::ToInt32($bytes, $i + 0x3C)
+                if ($nt -gt $i -and $nt + 24 -le $bytes.Length -and [BitConverter]::ToUInt32($bytes, $nt) -eq 0x4550) {
+                    $count = [BitConverter]::ToUInt16($bytes, $nt + 6)
+                    $table = $nt + 24 + [BitConverter]::ToUInt16($bytes, $nt + 20)
+                    $end = [long]0
+                    for ($s = 0; $s -lt $count -and $table + 40 * ($s + 1) -le $bytes.Length; $s++) {
+                        $o = $table + 40 * $s
+                        $raw = [long][BitConverter]::ToUInt32($bytes, $o + 20) + [BitConverter]::ToUInt32($bytes, $o + 16)
+                        if ($raw -gt $end) { $end = $raw }
+                    }
+                    if ($end -gt 0 -and $i + $end -le $bytes.Length) {
+                        $hash = ([BitConverter]::ToString($sha.ComputeHash($bytes, $i, [int]$end))).Replace('-', '')
+                        if ($known -contains $hash) {
+                            $out = Join-Path $env:TEMP ('amd-presr-version-' + [guid]::NewGuid().ToString('N') + '.dll')
+                            $fs = [IO.File]::Create($out)
+                            try { $fs.Write($bytes, $i, [int]$end) } finally { $fs.Dispose() }
+                            return $out
+                        }
+                    }
+                }
+            }
+            $i++
+        }
+    } finally { $sha.Dispose() }
+    return $null
+}
 
 # Walk every candidate and accept only a file whose SHA256 is a known runtime.
 # A game may have B installed as version.dll (README allows that); the first
 # same-named file must not block a valid pass1.dll sitting next to it.
+# A known -AuthorDll is used as given (the way to install an older runtime on purpose);
+# otherwise the newest known runtime among the candidates wins, so a 0.3.1 version.dll
+# saved next to Setup.bat by an earlier install does not shadow a newer one in the game.
 function Find-AuthorRuntime {
-    $candidates = @()
-    if ($AuthorDll) { $candidates += $AuthorDll }
-    $candidates += @(
-        (Join-Path $Root 'version.dll'),
-        (Join-Path $Root 'dlssnr_amd_pass1.dll'),
-        (Join-Path $game 'version.dll'),
-        (Join-Path $game 'dlssnr_amd_pass1.dll')
-    )
-    foreach ($c in $candidates) {
+    if ($AuthorDll -and (Test-Path -LiteralPath $AuthorDll -PathType Leaf)) {
+        try { if (Get-RuntimeName (Get-Sha256 $AuthorDll)) { return $AuthorDll } } catch { }
+    }
+    $best = $null
+    $bestRank = -1
+    foreach ($c in @(
+            (Join-Path $Root 'version.dll'),
+            (Join-Path $Root 'dlssnr_amd_pass1.dll'),
+            (Join-Path $game 'version.dll'),
+            (Join-Path $game 'dlssnr_amd_pass1.dll')
+        )) {
         if (-not $c -or !(Test-Path -LiteralPath $c -PathType Leaf)) { continue }
         try {
             $h = Get-Sha256 $c
         } catch { continue }
-        if ($expectedAuthor -contains $h) { return $c }
+        $rank = Get-RuntimeRank $h
+        if ($rank -lt 0) { continue }
+        Write-Host ("Found danielblnc runtime {0}: {1}" -f (Get-RuntimeName $h), $c)
+        if ($rank -gt $bestRank) { $best = $c; $bestRank = $rank }
     }
-    return $null
+    return $best
 }
 
 # --- detect lmxxf components ---
@@ -511,6 +592,41 @@ if ($installDaniel) {
         }
     }
 
+    # Always look inside a setup that is present: a user updating from 0.3.1 drops the new setup
+    # next to Setup.bat while the old runtime is still there (the version.dll an earlier install
+    # saved beside Setup.bat, or pass1 in the game), and must get the setup's newer runtime.
+    if (Test-Path -LiteralPath $setup -PathType Leaf) {
+        $fromSetup = Get-EmbeddedRuntime $setup $expectedAuthor
+        if ($fromSetup) {
+            $setupHash = Get-Sha256 $fromSetup
+            $setupName = Get-RuntimeName $setupHash
+            $foundHash = $null
+            if ($srcA) { $foundHash = Get-Sha256 $srcA }
+            $foundName = Get-RuntimeName $foundHash
+            $newer = (Get-RuntimeRank $setupHash) -gt (Get-RuntimeRank $foundHash)
+            # Only a known -AuthorDll that was actually picked holds against a newer setup.
+            $explicitA = [bool]($AuthorDll -and $srcA -and ($srcA -ieq $AuthorDll))
+            if (-not $srcA -or ($newer -and -not $explicitA)) {
+                if ($srcA) {
+                    Write-Host ("dlssnr_on_amd_setup.exe holds runtime {0}, newer than the {1} at {2}; installing {0}." -f $setupName, $foundName, $srcA) -ForegroundColor Yellow
+                }
+                $srcA = $fromSetup
+                # Removed with the other staged copy once the install is done.
+                $stagedA = $fromSetup
+                Write-Host "Took danielblnc runtime $setupName out of dlssnr_on_amd_setup.exe (not run): $srcA" -ForegroundColor Green
+            } else {
+                if ($newer) {
+                    Write-Host ("WARNING: dlssnr_on_amd_setup.exe holds runtime {0}, newer than the {1} given by -AuthorDll; installing {1} as asked." -f $setupName, $foundName) -ForegroundColor Yellow
+                } elseif ($setupHash -ine $foundHash) {
+                    Write-Host ("NOTE: dlssnr_on_amd_setup.exe holds runtime {0}, older than the {1} at {2}; installing {1}." -f $setupName, $foundName, $srcA) -ForegroundColor Yellow
+                }
+                try { Remove-Item -LiteralPath $fromSetup -Force } catch { }
+            }
+        } elseif ($srcA) {
+            Write-Host ("NOTE: dlssnr_on_amd_setup.exe holds no runtime this package supports (0.4.0, 0.3.1, 0.3.0); installing the {0} at {1}." -f (Get-RuntimeName (Get-Sha256 $srcA)), $srcA) -ForegroundColor Yellow
+        }
+    }
+
     if ((-not $srcA -or -not $weights) -and (Test-Path -LiteralPath $setup -PathType Leaf)) {
         Write-Host ''
         Write-Host 'version.dll and/or weights.bin not found yet.' -ForegroundColor Yellow
@@ -538,7 +654,7 @@ if ($installDaniel) {
     if (-not $srcA -or !(Test-Path -LiteralPath $srcA -PathType Leaf)) {
         Fail @"
 Still missing a known DLSS-NR-on-AMD runtime (version.dll) after danielblnc setup.
-Supported: 0.3.0 or 0.3.1.
+Supported: 0.4.0 (recommended), 0.3.1 or 0.3.0.
 1. Run dlssnr_on_amd_setup.exe yourself and finish its install
 2. Put the version.dll it produces next to Setup.bat (or leave it in the game folder)
 Download from https://github.com/danielblnc/DLSS-NR-on-AMD/releases
@@ -546,16 +662,24 @@ Download from https://github.com/danielblnc/DLSS-NR-on-AMD/releases
     }
 
     $hashA = Get-Sha256 $srcA
-    Write-Host ("danielblnc runtime SHA256: {0}" -f $hashA)
+    $nameA = Get-RuntimeName $hashA
+    if ($nameA) {
+        Write-Host ("danielblnc runtime {0} (SHA256 {1})" -f $nameA, $hashA) -ForegroundColor Green
+        if ((Get-RuntimeRank $hashA) -lt $runtimeOrder.Count) {
+            Write-Host ("NOTE: runtime {0} is supported, but 0.4.0 is recommended (faster on RDNA4 GPUs)." -f $nameA) -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host ("danielblnc runtime SHA256: {0}" -f $hashA)
+    }
     if ($expectedAuthor -notcontains $hashA) {
         $what = 'unknown build'
-        if ($hashA -eq $knownA0217) { $what = 'this is 0.2.17, not 0.3.0/0.3.1' }
+        if ($hashA -eq $knownA0217) { $what = 'this is 0.2.17, not 0.3.0/0.3.1/0.4.0' }
         Fail @"
 $srcA is not a supported DLSS-NR-on-AMD runtime ($what).
   file:     $srcA
   got:      $hashA
-  expected: $expectedA030 (0.3.0) or $expectedA031 (0.3.1)
-Download 0.3.0 or 0.3.1 from https://github.com/danielblnc/DLSS-NR-on-AMD/releases
+  expected: $expectedA040 (0.4.0), $expectedA031 (0.3.1) or $expectedA030 (0.3.0)
+Download 0.4.0 from https://github.com/danielblnc/DLSS-NR-on-AMD/releases
 "@
     }
 
@@ -567,10 +691,13 @@ Download 0.3.0 or 0.3.1 from https://github.com/danielblnc/DLSS-NR-on-AMD/releas
         $inGame = $srcAFull.StartsWith($gamePrefix, [StringComparison]::OrdinalIgnoreCase)
         $pkgIsGame = ($rootFull.TrimEnd('\') -ieq $gameFull.TrimEnd('\'))
         if ($inGame) {
-            if ($pkgIsGame) {
+            $pkgVersion = Join-Path $Root 'version.dll'
+            if ($pkgIsGame -or (Test-Path -LiteralPath $pkgVersion -PathType Leaf)) {
+                # Never overwrite a version.dll next to Setup.bat here: it may be another runtime.
+                # The package copy is refreshed, keeping the old one, after the install.
                 $stagedA = Join-Path $env:TEMP ('amd-presr-version-' + [guid]::NewGuid().ToString('N') + '.dll')
             } else {
-                $stagedA = Join-Path $Root 'version.dll'
+                $stagedA = $pkgVersion
             }
             if ($srcAFull -ieq [IO.Path]::GetFullPath($stagedA)) {
                 # Already the staged location.
@@ -1087,6 +1214,19 @@ try {
         if ($srcA -and (Test-Path -LiteralPath $srcA -PathType Leaf) -and -not (Test-Path -LiteralPath $pkgVersion -PathType Leaf)) {
             Copy-Item -LiteralPath $srcA -Destination $pkgVersion -Force
             Write-Host "Saved version.dll next to Setup.bat for the next install." -ForegroundColor Green
+        } elseif ($installDaniel -and $srcA -and (Test-Path -LiteralPath $srcA -PathType Leaf) -and
+            ([IO.Path]::GetFullPath($srcA) -ine [IO.Path]::GetFullPath($pkgVersion))) {
+            # An older known runtime saved here by an earlier install would come back on the next
+            # game; keep it under its version name and save the one just installed.
+            $pkgHash = Get-Sha256 $pkgVersion
+            $newHash = Get-Sha256 $srcA
+            $pkgRank = Get-RuntimeRank $pkgHash
+            if ($pkgRank -ge 0 -and $pkgRank -lt (Get-RuntimeRank $newHash)) {
+                $pkgOld = Join-Path $Root ('version-{0}.dll' -f (Get-RuntimeName $pkgHash))
+                Move-Item -LiteralPath $pkgVersion -Destination $pkgOld -Force
+                Copy-Item -LiteralPath $srcA -Destination $pkgVersion -Force
+                Write-Host ("Saved runtime {0} as version.dll next to Setup.bat; the {1} one is now {2}." -f (Get-RuntimeName $newHash), (Get-RuntimeName $pkgHash), (Split-Path -Leaf $pkgOld)) -ForegroundColor Green
+            }
         }
         if (Test-Path -LiteralPath $pkgVersion -PathType Leaf) { $keptA = $pkgVersion }
         $pkgWeights = Join-Path $Root 'dlssnr_on_amd_weights.bin'

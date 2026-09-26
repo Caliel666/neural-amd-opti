@@ -29,6 +29,33 @@ static void ForwardedThread()
     CloseHandle(thread);
 }
 
+// "--layout=0.4.0" picks the runtime whose bootstrap the fixture imitates; 0.3.1 by default.
+static const AmdPreSr::AmdLayout* LayoutArgument(int argc, wchar_t** argv)
+{
+    for (int i = 2; i < argc; ++i)
+        if (std::wcsncmp(argv[i], L"--layout=", 9) == 0)
+        {
+            for (const auto* layout : AmdPreSr::kAmdLayouts)
+            {
+                std::wstring name;
+                for (const char* c = layout->name; *c; ++c)
+                    name += static_cast<wchar_t>(*c);
+                if (name == argv[i] + 9)
+                    return layout;
+            }
+            throw std::runtime_error("unknown --layout");
+        }
+    return &AmdPreSr::kAmd031;
+}
+
+static bool HasFlag(int argc, wchar_t** argv, const wchar_t* flag)
+{
+    for (int i = 2; i < argc; ++i)
+        if (std::wcscmp(argv[i], flag) == 0)
+            return true;
+    return false;
+}
+
 int wmain(int argc, wchar_t** argv)
 {
     try
@@ -68,7 +95,7 @@ int wmain(int argc, wchar_t** argv)
         Detail::Install();
         Detail::Install(); // a second pass does not stack another detour
         ForwardedThread();
-        Detail::Loading active { &Detail::bootstraps[2], L"C:\\not-an-author-runtime.dll", 27 };
+        Detail::Loading active { &Detail::Select(&AmdPreSr::kAmd031),L"C:\\not-an-author-runtime.dll", 27 };
         Detail::loading = &active;
         ForwardedThread();
         Detail::loading = nullptr;
@@ -76,11 +103,12 @@ int wmain(int argc, wchar_t** argv)
                "unrelated creation inside an armed loading scope must remain untouched");
         if (argc > 1)
         {
-            std::fprintf(stderr, "Checking synthetic DLL loader interception...\n");
-            if (argc > 2 && std::wcscmp(argv[2], L"--expect-isolation-failure") == 0)
+            const auto* layout = LayoutArgument(argc, argv);
+            std::fprintf(stderr, "Checking synthetic DLL loader interception (%s contract)...\n", layout->name);
+            if (HasFlag(argc, argv, L"--expect-isolation-failure"))
             {
                 bool diagnosed = false;
-                try { Load(argv[1], &AmdPreSr::kAmd031); }
+                try { Load(argv[1], layout); }
                 catch (const std::runtime_error& error)
                 {
                     const std::string message = error.what();
@@ -96,15 +124,18 @@ int wmain(int argc, wchar_t** argv)
             }
             // Explicitly a generated test image, not an author runtime. The
             // production caller verifies SHA before calling this helper.
-            Expect(Load(argv[1], &AmdPreSr::kAmd031) != nullptr,
+            Expect(Load(argv[1], layout) != nullptr,
                    "synthetic DllMain bootstrap must be suppressed before execution");
             bool duplicateRejected = false;
-            try { Load(argv[1], &AmdPreSr::kAmd031); }
+            try { Load(argv[1], layout); }
             catch (const std::runtime_error&) { duplicateRejected = true; }
             Expect(duplicateRejected, "an already-loaded image cannot bypass bootstrap verification");
-            std::puts("PASS: synthetic DLL loader interception; mapped image identity; duplicate-load rejection");
+            std::printf("PASS: synthetic DLL loader interception (%s contract); mapped image identity; "
+                        "duplicate-load rejection\n",
+                        layout->name);
         }
-        std::puts("PASS: three pinned bootstrap filters; unknown rejection; unchanged host CreateThread forwarding");
+        std::printf("PASS: %zu pinned bootstrap filters; unknown rejection; unchanged host CreateThread forwarding\n",
+                    std::size(Detail::bootstraps));
         return 0;
     }
     catch (const std::exception& error)

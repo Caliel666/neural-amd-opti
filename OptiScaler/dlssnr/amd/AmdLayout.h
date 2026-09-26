@@ -100,12 +100,12 @@ struct AmdLayout
     std::uint32_t gate4c;
     std::uint32_t gate68;
     std::uint32_t counter78;
-    // 0.3.1 only: inline-wait spin. 0 = Dispatch spin (this project's original wait);
+    // 0.3.1 and later: inline-wait spin. 0 = Dispatch spin (this project's original wait);
     // non-zero = predicated 1-pixel Draw (this project's new wait). SpinDraw=0 is
     // still 0.3.1-sliced, so it is not identical to the 0.3.0 wait.
     // 0 on the layout field means "runtime does not expose this flag".
     std::uint32_t spinDraw;
-    // Read-only 0.3.1 new-wait diagnostics; zero for earlier runtimes.
+    // Read-only new-wait diagnostics (0.3.1 and later); zero for earlier runtimes.
     // Bound to the SHA above, never used to invoke a private factory.
     std::uint32_t graphicsPso = 0;
     std::uint32_t predicateReady = 0;
@@ -119,6 +119,15 @@ struct AmdLayout
     // frame: 4/128 is the full effect, 0 leaves the frame untouched. It is not NVIDIA's style,
     // though it sits where that would be. 0 = not mapped for this runtime.
     std::uint32_t scale = 0;
+    // Options 0.3.3 added to [DlssNrOnAmd]. DllMain reads them from dlssnr_on_amd.ini before the
+    // host gets the module, so the host pins them: an ini left in the game folder must not change
+    // the image. style is an int 0-2 fed to the network as style/128 (NVIDIA's style input, the slot
+    // 0.3.1 did not have), toneCurve an int (0 Reinhard, 1 ACES), toneLift a float 0-0.25 and
+    // useGameExposure a byte (0 = ignore the game's exposure). 0 = not mapped for this runtime.
+    std::uint32_t style = 0;
+    std::uint32_t toneCurve = 0;
+    std::uint32_t toneLift = 0;
+    std::uint32_t useGameExposure = 0;
 };
 
 // 0.2.17 pass DLL, SHA256 bc97f3b0...
@@ -182,7 +191,81 @@ inline constexpr AmdLayout kAmd031 {
     0x17f6a, 0x18057, 0x9ad14
 };
 
-inline constexpr const AmdLayout* kAmdLayouts[] = { &kAmd0217, &kAmd03, &kAmd031 };
+// 0.4.0 version.dll (SHA d62be3d8), carved from dlssnr_on_amd_setup.exe v0.4.0 at file offset
+// 0x2609c7, size 0x990000 (the setup's own lea r8 at 0x4de3f and mov r9d at 0x4de46). Mapped from
+// 0.3.1; every field has at least two independent derivations that agree (scripts and outputs in
+// daniel-runtime/analysis-opti): unique instruction windows plus a whole-program data map for all
+// fields (map_layout.py, datamap.py, verify_kAmd040.txt), difflib-aligned function pairs with a
+// byte-window recheck (map-engine-state/, verify-code/), and the [DlssNrOnAmd] reader's key ->
+// store pairs for the options (map-options/, implement/ini_reader_v040.txt). Code entries are .pdata
+// starts whose normalised bodies match 0.3.1 (Record 2824 instructions, Notify 237, init 545).
+// Record 0x14cd0 still gates on enabled 0xa8604, nativeFailure 0xa7d12 and initDone 0xa7d10;
+// Notify+0x22 still calls [trampoline]; the wait helper 0x19130-0x19856 keeps its four Dispatch
+// return sites at the 0.3.1 offsets. The data block moved +0xd7d8..+0xd920 in pieces, and 0.4.0
+// inserted PollSpacing (0xa8420) after SpinDraw, so graphicsPso is SpinDraw+0x14, not +0xc. The
+// engine object grew (historyView/historyValid/initDone at engine+0x148/+0x150/+0x438); the host
+// uses absolute RVAs, so that does not matter here. tests/amd_layout_binary_check.py checks every
+// field against the binary: code entries and gates by what the code does, options by their INI
+// store, and every other data field by pinned instruction sites (its ANCHORS table).
+inline constexpr AmdLayout kAmd040 {
+    .name = "0.4.0",
+    .size = 10027008,
+    .sha256 = Sha256FromHex("d62be3d8b9fbb3c6c81982c4ddb3dfa00eb9662e3206925cbe5b7e1bc6798b80"),
+    .d3dCompileIat = 0,
+    .init = 0x26110,
+    .record = 0x14cd0,
+    .notify = 0x9e10,
+    .shutdown = 0x188e0,
+    .trampoline = 0xa87a0,
+    .device = 0xa78c0,
+    .queue = 0xa78c8,
+    .engine = 0xa78d8,
+    .historyView = 0xa7a20,
+    .historyValid = 0xa7a28,
+    .initDone = 0xa7d10,
+    .nativeFailure = 0xa7d12,
+    .configuredInline = 0xa8218,
+    .jobDone = 0xa824c,
+    .timeoutCount = 0xa8250,
+    .watchdog = 0xa827c,
+    .interop = 0xa8468,
+    .pendingList = 0xa8548,
+    .jobId = 0xa8554,
+    .depthInverted = 0xa85f8,
+    .explicitDepth = 0xa85fc,
+    .enabled = 0xa8604,
+    .temporal = 0xa8605,
+    .fsrInputs = 0xa8606,
+    .depthPresent = 0xa8607,
+    .tonemap = 0xa8608,
+    .tone = 0xa8618,
+    .structure = 0xa861c,
+    .skin = 0xa8620,
+    .charMask = 0xa8628,
+    .toneChannels = 0xa862c,
+    .hipOrdinal = 0xa8728,
+    .recreate = 0xa8700,
+    .recordLock = 0xa8688,
+    .gate4c = 0xa8534,
+    .gate68 = 0xa8550,
+    .counter78 = 0xa8560,
+    .spinDraw = 0xa841c,
+    .graphicsPso = 0xa8430,
+    .predicateReady = 0xa8390,
+    .graphicsWaitBegin = 0x19130,
+    .graphicsWaitEnd = 0x19856,
+    .waitDispatchInit = 0x19320,
+    .waitDispatchFallback = 0x196c0,
+    .waitDispatchSlices = 0x1971a,
+    .waitDispatchFinish = 0x19807,
+    .scale = 0xa8624,
+    .style = 0xa8630,
+    .toneCurve = 0xa8634,
+    .toneLift = 0xa8638,
+    .useGameExposure = 0xa863c,
+};
+
+inline constexpr const AmdLayout* kAmdLayouts[] = { &kAmd0217, &kAmd03, &kAmd031, &kAmd040 };
 
 // Compile-time sanity: the hex helper must land on the first/last digest byte
 // of each known runtime. A wrong-length literal already fails Sha256FromHex;
@@ -190,4 +273,5 @@ inline constexpr const AmdLayout* kAmdLayouts[] = { &kAmd0217, &kAmd03, &kAmd031
 static_assert(kAmd0217.sha256.bytes[0] == 0xbc && kAmd0217.sha256.bytes[31] == 0x4e);
 static_assert(kAmd03.sha256.bytes[0] == 0x83 && kAmd03.sha256.bytes[31] == 0x38);
 static_assert(kAmd031.sha256.bytes[0] == 0xb1 && kAmd031.sha256.bytes[31] == 0x54);
+static_assert(kAmd040.sha256.bytes[0] == 0xd6 && kAmd040.sha256.bytes[31] == 0x80);
 } // namespace AmdPreSr
