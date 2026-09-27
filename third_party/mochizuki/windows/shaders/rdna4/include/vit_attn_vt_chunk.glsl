@@ -74,6 +74,21 @@
                 // keys apart - the other half wave holds them - and the four-pair
                 // and even/odd sums are `part`'s own halves, in the original
                 // order: `s.x` is ((p0+p2)+p4)+p6 and `s.y` the odd one beside it.
+#if NR_VLATE_SHUFFLE
+                // Swin's NR_PROB_LATE_SHUFFLE here - the lane's own values
+                // are summed first and the other half wave's total is added once
+                // per chunk. Every term stays, f16 throughout; only the order of
+                // the half adds changes.
+                for (int c = 0; c < lg.length(); c += 2) {
+                    const f16vec2 pv2 = pv[c >> 1];
+                    part[b][c >> 1] = (kb == 0u) ? pv2 : part[b][c >> 1] + pv2;
+                }
+                if (kb + 16u == uint(NR_KC)) {
+                    f16vec2 s = ((part[b][0] + part[b][1]) + part[b][2]) + part[b][3];
+                    s = s + unpackFloat2x16(subgroupShuffleXor(packFloat2x16(s), 16u));
+                    den[b] = float(NR_F16(NR_F16(den[b]) + NR_F16(s.x + s.y)));
+                }
+#else
                 for (int c = 0; c < lg.length(); c += 2) {
                     const f16vec2 pv2 = pv[c >> 1];
                     const f16vec2 pair = pv2 +
@@ -84,6 +99,7 @@
                     const f16vec2 s = ((part[b][0] + part[b][1]) + part[b][2]) + part[b][3];
                     den[b] = float(NR_F16(NR_F16(den[b]) + NR_F16(s.x + s.y)));
                 }
+#endif
                 // **P^T is the B operand with no memory in between.** An
                 // Accumulator's components and a B operand's are the same map
                 // (coopmm.glsl's probe table), so this copy moves no data - it

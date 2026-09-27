@@ -527,6 +527,8 @@ bool Config::Reload(std::filesystem::path iniPath)
             AmdNeuralLightingStrength.set_from_config(readFloat("DlssNr", "AmdNeuralLightingStrength"));
             AmdEncoding.set_from_config(readInt("DlssNr", "AmdEncoding"));
             AmdEffectStrength.set_from_config(readFloat("DlssNr", "AmdEffectStrength"));
+            AmdStabilizerStrength.set_from_config(readFloat("DlssNr", "AmdStabilizerStrength"));
+            AmdStabilizerThreshold.set_from_config(readFloat("DlssNr", "AmdStabilizerThreshold"));
             AmdQuality.set_from_config(readInt("DlssNr", "AmdQuality"));
             AmdToneCurve.set_from_config(readInt("DlssNr", "AmdToneCurve"));
             AmdColourGrade.set_from_config(readInt("DlssNr", "AmdColourGrade"));
@@ -555,8 +557,11 @@ bool Config::Reload(std::filesystem::path iniPath)
             LmxxfTemporal.set_from_config(readBool("DlssNr", "LmxxfTemporal"));
             LmxxfSmoothStrength.set_from_config(readFloat("DlssNr", "LmxxfSmoothStrength"));
             LmxxfSmoothThreshold.set_from_config(readFloat("DlssNr", "LmxxfSmoothThreshold"));
+            LmxxfSmoothResidual.set_from_config(readBool("DlssNr", "LmxxfSmoothResidual"));
             MochizukiTemporal.set_from_config(readBool("DlssNr", "MochizukiTemporal"));
             MochizukiHistoryStrength.set_from_config(readFloat("DlssNr", "MochizukiHistoryStrength"));
+            MochizukiStabilizerStrength.set_from_config(readFloat("DlssNr", "MochizukiStabilizerStrength"));
+            MochizukiStabilizerThreshold.set_from_config(readFloat("DlssNr", "MochizukiStabilizerThreshold"));
             MochizukiDetailStrength.set_from_config(readFloat("DlssNr", "MochizukiDetailStrength"));
             MochizukiColourStrength.set_from_config(readFloat("DlssNr", "MochizukiColourStrength"));
             MochizukiPasses.set_from_config(readUInt("DlssNr", "MochizukiPasses"));
@@ -1670,6 +1675,10 @@ bool Config::SaveIni()
         ini.SetValue("DlssNr", "AmdEncoding", GetIntValue(Instance()->AmdEncoding.value_for_config()).c_str());
         ini.SetValue("DlssNr", "AmdEffectStrength",
                      GetFloatValue(Instance()->AmdEffectStrength.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "AmdStabilizerStrength",
+                     GetFloatValue(Instance()->AmdStabilizerStrength.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "AmdStabilizerThreshold",
+                     GetFloatValue(Instance()->AmdStabilizerThreshold.value_for_config()).c_str());
         ini.SetValue("DlssNr", "AmdQuality", GetIntValue(Instance()->AmdQuality.value_for_config()).c_str());
         ini.SetValue("DlssNr", "AmdToneCurve", GetIntValue(Instance()->AmdToneCurve.value_for_config()).c_str());
         ini.SetValue("DlssNr", "AmdColourGrade", GetIntValue(Instance()->AmdColourGrade.value_for_config()).c_str());
@@ -1690,10 +1699,16 @@ bool Config::SaveIni()
                      GetFloatValue(Instance()->LmxxfSmoothStrength.value_for_config()).c_str());
         ini.SetValue("DlssNr", "LmxxfSmoothThreshold",
                      GetFloatValue(Instance()->LmxxfSmoothThreshold.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "LmxxfSmoothResidual",
+                     GetBoolValue(Instance()->LmxxfSmoothResidual.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiTemporal",
                      GetBoolValue(Instance()->MochizukiTemporal.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiHistoryStrength",
                      GetFloatValue(Instance()->MochizukiHistoryStrength.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiStabilizerStrength",
+                     GetFloatValue(Instance()->MochizukiStabilizerStrength.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiStabilizerThreshold",
+                     GetFloatValue(Instance()->MochizukiStabilizerThreshold.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiDetailStrength",
                      GetFloatValue(Instance()->MochizukiDetailStrength.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiColourStrength",

@@ -33,6 +33,14 @@ after it. The flow is upstream's `native_game_frame.h` for one pass. `OutputSmoo
 `DLSS5_OUTPUT_SMOOTH`, `LmxxfSmoothStrength`/`LmxxfSmoothThreshold`) then pulls the last pass's
 output toward its warped history where they differ little, before it is shown or kept.
 
+`LmxxfSmoothResidual` (frame flag `LMXXF_NR_FRAME_FLAG_SMOOTH_RESIDUAL`) moves that blend onto the
+network's change alone. `OutputSmooth::RecordResidual` (`residual_main` in `native_output_smooth.hlsl`,
+vendored Patch G) takes the last output minus the network's input (`PostBase`), pulls it toward the
+previous frame's change, warped by `residualSampler` along the same coordinates as the histories, and
+adds it back to the input; the colour blend does not run. The change it keeps goes to
+`TemporalChain::residual` for the next frame. It runs in the same place, so the network's history is
+still the image shown, and the game's jittered samples reach the upscaler as they arrived.
+
 ## mochizuki
 
 `MochizukiNrRuntime.dll` implements the lmxxf ABI (`LmxxfNrApi.h`), so `LmxxfBackend` drives it

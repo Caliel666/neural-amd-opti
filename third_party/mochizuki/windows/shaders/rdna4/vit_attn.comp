@@ -48,6 +48,12 @@ layout(set = 0, binding = 2, std430) NR_COH readonly buffer ActE4M3x4 { fe4m3vec
 // Windows (LLPC): the same bytes as dwords; an e4m3 vector is loaded a byte per element.
 layout(set = 0, binding = 2, std430) NR_COH readonly buffer ActE4M3u { uint act_u2[]; };
 #define nr_act4(i) uintBitsToFloate4m3EXT(unpack8(act_u2[i]))
+// NR_VOUT_VEC: the output's eight contiguous bytes per lane and half go
+// out as two dword stores through act_v4 instead of eight byte stores.
+// Non-interleaved output only: mode bit 1 is ignored.
+#ifndef NR_VOUT_VEC
+#define NR_VOUT_VEC 0
+#endif
 
 #include "nr_chain.glsl"
 layout(push_constant) uniform Push {
@@ -234,6 +240,10 @@ uint nr_out_ch(uint head, uint d) {
 // `fswin_t.comp`'s `nr_swin_probability_sum` is the same reduction.
 #ifndef NR_VSPLIT_TAIL
 #define NR_VSPLIT_TAIL 0
+#endif
+// The denominator's cross-lane exchange once per chunk (vit_attn_vt_chunk.glsl).
+#ifndef NR_VLATE_SHUFFLE
+#define NR_VLATE_SHUFFLE 0
 #endif
 // NR_VQCLAMP: a query block past the last token loads the last live tile
 // instead of a zero fragment. Its logits, denominator and context are never
@@ -486,6 +496,20 @@ void main() {
         const uint q = q0 + qb0 + b * 16u + col;
         if (q >= pc.tokens) continue;
         const NR_F16 inv = NR_F16(1.0 / max(den[b], floor_l));
+#if NR_VOUT_VEC && NR_VDUMP == 0
+        // The host must not set mode bit 1 (interleave) with this build.
+        {
+            for (uint n = 0u; n < 2u; ++n) {
+                NR_E4M3 qv[8];
+                for (int c = 0; c < 8; ++c)
+                    qv[c] = nr_quant_e4m3(NR_F16(NR_F16(ctx[b][n][c]) * inv));
+                const uint o4 = nr_at(pc.o_off, q, qbase + n * 16u + row0, uint(NR_C)) >> 2;
+                act_v4[o4] = pack32(floate4m3BitsToUintEXT(fe4m3vec4(qv[0], qv[1], qv[2], qv[3])));
+                act_v4[o4 + 1u] = pack32(floate4m3BitsToUintEXT(fe4m3vec4(qv[4], qv[5], qv[6], qv[7])));
+            }
+            continue;
+        }
+#endif
         for (uint n = 0u; n < 2u; ++n)
             for (int c = 0; c < ctx[b][n].length(); ++c) {
                 const uint d0 = n * 16u + row0 + uint(c);

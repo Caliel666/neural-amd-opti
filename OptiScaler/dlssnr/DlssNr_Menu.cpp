@@ -272,11 +272,17 @@ void RenderMenu(Config* config, float menuResScale)
                 config->LmxxfSmoothStrength = smooth;
             HelpMarker("Where the result differs little from the previous frame's, blends it toward that frame."
                        "\nTakes out the small flicker the model leaves from frame to frame; real changes pass"
-                       "\nthrough. 0 turns it off. Higher values can leave a short trail.");
+                       "\nthrough. 0 turns it off. Higher values can leave a short trail."
+                       "\nWith \"Smooth the effect only\" it acts on the model's change alone.");
             float threshold = config->LmxxfSmoothThreshold.value_or_default();
             if (ImGui::SliderFloat("Smoothing threshold", &threshold, 1.0f, 32.0f, "%.0f / 255"))
                 config->LmxxfSmoothThreshold = threshold;
             HelpMarker("Largest difference, in 1/255 of full brightness, that still counts as flicker.");
+            bool smoothResidual = config->LmxxfSmoothResidual.value_or_default();
+            if (ImGui::Checkbox("Smooth the effect only", &smoothResidual))
+                config->LmxxfSmoothResidual = smoothResidual;
+            HelpMarker("Blends only the model's change toward the previous frame. The game's own picture reaches"
+                       "\nthe upscaler as it arrived, so its detail stays.");
             ImGui::EndDisabled();
             ImGui::SeparatorText("Effect");
             int passes = std::clamp(int(config->DlssNrPasses.value_or_default()), 1, 3);
@@ -371,6 +377,15 @@ void RenderMenu(Config* config, float menuResScale)
                        "\none. Lower follows changes faster and steadies less. Even at 0 the network still"
                        "\nreads the history; turn Temporal history off to drop it.");
             ImGui::EndDisabled();
+            liveSlider("Stabilizer", config->MochizukiStabilizerStrength, 0.0f, 1.0f);
+            HelpMarker("Smooths small frame-to-frame changes of the neural effect along the game's motion"
+                       "\nvectors, after the runtime and before the upscaler. Changes larger than the threshold"
+                       "\npass through, and the game's own image is untouched. 0 turns it off; higher values can"
+                       "\nsoften fine detail in motion.");
+            float stabilizerThreshold = config->MochizukiStabilizerThreshold.value_or_default();
+            if (ImGui::SliderFloat("Stabilizer threshold", &stabilizerThreshold, 0.5f, 8.0f, "%.1f / 255"))
+                config->MochizukiStabilizerThreshold = stabilizerThreshold;
+            HelpMarker("Largest frame-to-frame change of the effect, in 1/255, that the stabilizer smooths.");
 
             ImGui::SeparatorText("Effect");
             static int mzPasses = 1;
@@ -549,6 +564,17 @@ void RenderMenu(Config* config, float menuResScale)
                        "\nmore flicker and shimmer. With the INI-only single slot (AmdSlots=1) the"
                        "\nrender thread also waits for the model every frame."
                        "\n\nChanging it restarts the model's history.");
+            float stabilizer = config->AmdStabilizerStrength.value_or_default();
+            if (ImGui::SliderFloat("Stabilizer", &stabilizer, 0.0f, 1.0f, "%.2f"))
+                config->AmdStabilizerStrength = stabilizer;
+            HelpMarker("Smooths small frame-to-frame changes of the neural effect along the game's motion"
+                       "\nvectors, after the runtime and before the upscaler. Changes larger than the threshold"
+                       "\npass through, and the game's own image is untouched. 0 turns it off; higher values can"
+                       "\nsoften fine detail in motion.");
+            float stabilizerThreshold = config->AmdStabilizerThreshold.value_or_default();
+            if (ImGui::SliderFloat("Stabilizer threshold", &stabilizerThreshold, 0.5f, 8.0f, "%.1f / 255"))
+                config->AmdStabilizerThreshold = stabilizerThreshold;
+            HelpMarker("Largest frame-to-frame change of the effect, in 1/255, that the stabilizer smooths.");
 
             // A narrow digit combo rather than a full-width bar. The menu offers 2-5; the ini also
             // accepts 1 (the old single-slot path).

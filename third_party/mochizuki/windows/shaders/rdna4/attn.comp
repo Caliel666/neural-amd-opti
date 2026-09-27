@@ -325,6 +325,14 @@
 #if NR_ATTN_TRANSPOSE && (!NR_ATTN_VTRANS || NR_ACC_F16 != 0)
 #error "transposed attention requires transposed V and FP32 accumulation"
 #endif
+// NR_ATTN_VFRAG: V's scatter as one ColumnMajor fragment store (see the
+// fused QK-norm epilogue). Needs the OOB-branch epilogue and NR_ATTN_VTRANS.
+#ifndef NR_ATTN_VFRAG
+#define NR_ATTN_VFRAG 0
+#endif
+#if NR_ATTN_VFRAG && !(NR_ATTN_VTRANS && NR_IMAGE && NR_ATTN_OOB_BRANCH && NR_ATTN_PAIR_QUANT)
+#error "NR_ATTN_VFRAG needs NR_ATTN_VTRANS and the image OOB-branch paired epilogue"
+#endif
 #if NR_ATTN_VTRANS
 // V is consumed as the context product's B operand. Storing [dim][token]
 // lets ColumnMajor loads fetch consecutive FP8 bytes instead of gathering
@@ -645,6 +653,9 @@ shared float   lds_pad[NR_LDS_PAD];
 #define NR_LOGIT_LO float((NR_EXP_LO - NR_EXP_B) / NR_EXP_A)
 #define NR_LOGIT_HI float((NR_EXP_HI - NR_EXP_B) / NR_EXP_A)
 #define NR_SUM_FLOOR 6.103515625e-05
+#ifndef NR_ATTN_BIAS_SEED
+#define NR_ATTN_BIAS_SEED 0
+#endif
 
 float nr_fast_exp(float x) {
     return nr_swin_exp(x);
@@ -694,11 +705,39 @@ float nr_fast_exp(float x) {
 // coopMatLoad(RowMajor A / ColumnMajor B, stride 16) produces. The lane term
 // and the chunk base are added once; each k step is a literal, which goes
 // into the load's immediate offset instead of two VALU adds per fragment.
-#define NR_QLA_I(i) { const uint nrq = (qal4[i] + k04) + kkl * 4u; \
+#define NR_QLA_I(i) NR_QG(i) { const uint nrq = (qal4[i] + k04) + kkl * 4u; \
     const fe4m3vec4 r0 = act_e4m3x4[nrq], r1 = act_e4m3x4[nrq + 1u]; \
-    for (int v = 0; v < 4; ++v) { qfa[cur][i][v] = r0[v]; qfa[cur][i][v + 4] = r1[v]; } }
+    for (int v = 0; v < 4; ++v) { qfa[cur][i][v] = r0[v]; qfa[cur][i][v + 4] = r1[v]; } \
+    NR_QSW_A(i) }
 #else
 #define NR_QLA_I(i) NR_LOAD_A(qfa[cur][i], act_e4m3, qabase[i] + kgl * 16u, 16u);
+#endif
+// NR_ATTN_QKSWAP (see NR_QM_J and the fused-norm epilogue).
+#ifndef NR_ATTN_QKSWAP
+#define NR_ATTN_QKSWAP 0
+#endif
+#ifndef NR_ATTN_EDGE
+#define NR_ATTN_EDGE 0
+#endif
+#ifndef NR_QKV_DONE
+#define NR_QKV_DONE 0
+#endif
+#if NR_ATTN_EDGE
+#define NR_QDEAD(i) ((((NR_QLIVE) >> (i)) & 1) == 0)
+#else
+#define NR_QDEAD(i) false
+#endif
+#if NR_ATTN_EDGE
+#define NR_QG(i) if ((((NR_QLIVE) >> (i)) & 1) != 0)
+#else
+#define NR_QG(i)
+#endif
+#if NR_ATTN_QKSWAP
+#define NR_QSW_A(i) for (int v = 0; v < 4; ++v) { qfaB[cur][i][v] = r0[v]; qfaB[cur][i][v + 4] = r1[v]; }
+#define NR_QSW_B(j) if ((j) < 4) for (int v = 0; v < 4; ++v) { qfbA[cur][(j) % 4][v] = r0[v]; qfbA[cur][(j) % 4][v + 4] = r1[v]; }
+#else
+#define NR_QSW_A(i)
+#define NR_QSW_B(j)
 #endif
 // NR_ATTN_OOB_BRANCH: the tile test is wave-uniform; ACO flattened it
 // into a v_cndmask per converted element (96 a head-wave). As a scalar branch
@@ -726,13 +765,22 @@ float nr_fast_exp(float x) {
 #if NR_ATTN_KOFF
 #define NR_QLB_J(j) { const uint nrq = (qbl4[j] + k04) + kkl * 4u; \
     const fe4m3vec4 r0 = wgt_e4m3x4[nrq], r1 = wgt_e4m3x4[nrq + 1u]; \
-    for (int v = 0; v < 4; ++v) { qfb[cur][j][v] = r0[v]; qfb[cur][j][v + 4] = r1[v]; } }
+    for (int v = 0; v < 4; ++v) { qfb[cur][j][v] = r0[v]; qfb[cur][j][v + 4] = r1[v]; } \
+    NR_QSW_B(j) }
 #else
 #define NR_QLB_J(j) NR_LOAD_B(qfb[cur][j], wgt_e4m3, qbbase[j] + kgl * 16u, 16u);
 #endif
 #define NR_QLOADS   NR_FOR_I(NR_AM, NR_QLA_I) NR_FOR_J(NR_AN, NR_QLB_J)
+#if NR_ATTN_QKSWAP
+// Q and K (j < 4) as W . X^T - a lane gets one token's eight consecutive
+// dims - V (j >= 4) unchanged. The swapped operands are the same loaded bytes
+// under the other Use (A RowMajor and B ColumnMajor have one lane layout).
+#define NR_QM_J(j)  if ((j) < 4) NR_MMA(qacc[ii][j], qfbA[pp][(j) % 4], qfaB[pp][ii]); \
+                    else NR_MMA(qacc[ii][j], qfa[pp][ii], qfb[pp][j]);
+#else
 #define NR_QM_J(j)  NR_MMA(qacc[ii][j], qfa[pp][ii], qfb[pp][j]);
-#define NR_QM_I(i)  { const int ii = i; NR_FOR_J(NR_AN, NR_QM_J) }
+#endif
+#define NR_QM_I(i)  NR_QG(i) { const int ii = i; NR_FOR_J(NR_AN, NR_QM_J) }
 // Round the accumulator to f16 in place. Component access on a coopmat is
 // allowed and the rounding is bit level, because a float(float16_t(x)) round
 // trip is deleted outright by NIR - two builds differing only in three such
@@ -782,6 +830,15 @@ float nr_fast_exp(float x) {
 fe4m3vec2 nr_attn_quant(f16vec2 v) {
 #if NR_QUANT_MODE == 4
     return nr_quant_pair(v);
+#elif NR_ATTN_SATQ == 2
+    // Lower clamp kept (max_num maps NaN to -448, as the clamp does), the
+    // upper one left to the MODE-saturating conversion; the isinf select is the
+    // shape nir matches for f2e4m3fn_satfn (see coopmm.glsl mode 4). Differs from
+    // the clamp only for +Inf (NaN instead of 448).
+    const vec2 x = vec2(max(v, f16vec2(-448.0hf)));
+    fe4m3vec2 r;
+    saturatedConvertEXT(r, mix(x, vec2(uintBitsToFloat(0x7FC00000u)), isinf(x)));
+    return r;
 #elif NR_ATTN_SATQ
     fe4m3vec2 r;
     saturatedConvertEXT(r, vec2(v));
@@ -873,6 +930,59 @@ void main() {
             NR_FOR_I(NR_AM, NR_QZ_I)
             NR_FRAG_A qfa[NR_APIPE][NR_AM];
             NR_FRAG_B qfb[NR_APIPE][NR_AN];
+#if NR_ATTN_QKSWAP
+#if !(NR_ATTN_KOFF && NR_AN == 6 && NR_APARTS == 1 && NR_IMAGE && NR_ATTN_OOB_BRANCH && NR_USE_FUSED_QK_NORM \
+      && NR_ATTN_PAIR_QUANT && NR_ATTN_VFRAG && NR_ACC_F16 == 0)
+#error "NR_ATTN_QKSWAP: shipping shape only (KOFF, AN=6, image OOB branch, fused norm, paired quant, VFRAG)"
+#endif
+            NR_FRAG_B qfaB[NR_APIPE][NR_AM];
+            NR_FRAG_A qfbA[NR_APIPE][4];
+#endif
+#define NR_QKV_LOOP \
+            for (uint k0 = 0u; k0 < pc.C; k0 += uint(NR_AKCHUNK)) { \
+                NR_QK04 \
+                NR_FOR_K(NR_AKF, NR_QPRIME) \
+                NR_FOR_K(NR_AKF, NR_QSTEP) \
+            }
+#if NR_ATTN_KOFF
+#define NR_QK04 const uint k04 = k0 * 4u;
+#else
+#define NR_QK04
+#endif
+#if NR_ATTN_EDGE && NR_IMAGE && NR_AM == 2
+            // A token tile outside the image is zero-filled and the
+            // epilogue below stores constant zeros for it without reading its
+            // accumulators, so its loads and MMAs are dead. The wave's two
+            // tiles give four patterns; each is its own copy of the loop with
+            // the mask a compile-time constant (no per-tile phis).
+            const uint nr_ql2 = (nr_tile_oob(mtok0 / 16u) ? 0u : 1u)
+                              | (nr_tile_oob(mtok0 / 16u + 1u) ? 0u : 2u);
+#if !(NR_USE_FUSED_QK_NORM && NR_ATTN_QKSWAP)
+#error "NR_ATTN_EDGE: the shipping fused-norm QKSWAP epilogue only"
+#endif
+            [[dont_flatten]] if (nr_ql2 == 3u) {
+#define NR_QLIVE 3
+                NR_QKV_LOOP
+#include "attn_qkv_epi.glsl"
+#undef NR_QLIVE
+            } else [[dont_flatten]] if (nr_ql2 == 1u) {
+#define NR_QLIVE 1
+                NR_QKV_LOOP
+#include "attn_qkv_epi.glsl"
+#undef NR_QLIVE
+            } else [[dont_flatten]] if (nr_ql2 == 2u) {
+#define NR_QLIVE 2
+                NR_QKV_LOOP
+#include "attn_qkv_epi.glsl"
+#undef NR_QLIVE
+            } else {
+#define NR_QLIVE 0
+#include "attn_qkv_epi.glsl"
+#undef NR_QLIVE
+            }
+#undef NR_QKV_DONE
+#define NR_QKV_DONE 1
+#else
 #if NR_OOB_SKIP && NR_IMAGE
             // A wave whose every token tile is outside the image would
             // multiply clamped rows that NR_QOOB then zeroes - skip it; the
@@ -881,15 +991,16 @@ void main() {
             for (int i = 0; i < NR_AM; ++i) nr_live = nr_live || !nr_tile_oob(mtok0 / 16u + uint(i));
             [[dont_flatten]] if (nr_live)
 #endif
-            for (uint k0 = 0u; k0 < pc.C; k0 += uint(NR_AKCHUNK)) {
-#if NR_ATTN_KOFF
-                const uint k04 = k0 * 4u;
+#define NR_QLIVE 15
+            NR_QKV_LOOP
+#undef NR_QLIVE
 #endif
-                NR_FOR_K(NR_AKF, NR_QPRIME)
-                NR_FOR_K(NR_AKF, NR_QSTEP)
-            }
             NR_QOOB
-#if NR_USE_FUSED_QK_NORM
+#if NR_USE_FUSED_QK_NORM && NR_ATTN_QKSWAP
+#if !NR_QKV_DONE
+#include "attn_qkv_epi.glsl"
+#endif
+#elif NR_USE_FUSED_QK_NORM
             // A lane owns dimensions d and d+16 of eight token rows, for Q
             // and K together. Match the old half tree: first combine the two
             // squares at stride 16, then reduce dimensions at 8, 4, 2, 1.
@@ -901,6 +1012,9 @@ void main() {
             // the per-register selects the flattened zeroing cost. The tile
             // test is wave-uniform, so this is a scalar branch.
             for (int i = 0; i < NR_AM; ++i) {
+#if NR_ATTN_VFRAG
+            NR_FRAG_E4M3 vfr0, vfr1;
+#endif
             [[dont_flatten]] if (nr_tile_oob(mtok0 / 16u + uint(i))) {
                 const f16vec2 zscale = f16vec2(NR_F16(wgt_f32[pc.s_off + h]), NR_F16(1.0));
                 precise f16vec2 zs = f16vec2(0.0hf) * zscale;
@@ -912,8 +1026,12 @@ void main() {
                     lds_q[qb+t*uint(NR_QS)+d+16u]=zq.x;
                     lds_k[qb+t*uint(NR_QS)+d]=zq.y;
                     lds_k[qb+t*uint(NR_QS)+d+16u]=zq.y;
+#if NR_ATTN_VFRAG
+                    vfr0[cc]=zv.x; vfr1[cc]=zv.y;
+#else
                     lds_v[vb+NR_VINDEX(t,d)]=zv.x;
                     lds_v[vb+NR_VINDEX(t,d+16u)]=zv.y;
+#endif
                 }
             } else
             for (int cc = 0; cc < 8; ++cc) {
@@ -954,10 +1072,21 @@ void main() {
                 lds_q[qb+t*uint(NR_QS)+d+16u]=q1.x;
                 lds_k[qb+t*uint(NR_QS)+d]=q0.y;
                 lds_k[qb+t*uint(NR_QS)+d+16u]=q1.y;
+#if NR_ATTN_VFRAG
+                vfr0[cc]=v.x; vfr1[cc]=v.y;
+#else
                 lds_v[vb+NR_VINDEX(t,d)]=v.x;
                 lds_v[vb+NR_VINDEX(t,d+16u)]=v.y;
+#endif
 #if NR_IMAGE && NR_ATTN_OOB_BRANCH
             }
+#if NR_ATTN_VFRAG
+            // V is [dim][token] (NR_ATTN_VTRANS), i.e. this fragment's
+            // (token row, dim column) ColumnMajor at stride NR_VS: a lane's
+            // eight tokens are eight contiguous bytes - one store, not eight.
+            NR_STORE_ACC_COL(vfr0, lds_v, vb + NR_VINDEX(mtok0 + uint(i) * 16u, 0u), uint(NR_VS));
+            NR_STORE_ACC_COL(vfr1, lds_v, vb + NR_VINDEX(mtok0 + uint(i) * 16u, 16u), uint(NR_VS));
+#endif
 #endif
 #else
                 lds_q[qb + t * uint(NR_QS) + d] = nr_quant_e4m3(scaled0.x);
@@ -1062,7 +1191,17 @@ void main() {
             if (nr_tile_oob(i0 / 16u)) continue;
 #endif
             NR_FRAG_ACC lg[4];
+#if NR_ATTN_BIAS_SEED
+            // The bias is the accumulator's starting value, so the sum
+            // arrives biased and the exponential reads it directly (one VALU
+            // add less per logit; FP32 either way, only the order changes).
+            for (int n = 0; n < 4; ++n)
+                for (int c = 0; c < 8; ++c)
+                    lg[n][c] = wgt_f32[pc.b_off + (h * 64u + i0 + lane % 16u) * 64u
+                                       + uint(n) * 16u + 8u * (lane / 16u) + uint(c)];
+#else
             for (int n = 0; n < 4; ++n) lg[n] = NR_ACC_ZERO;
+#endif
             for (uint d = 0u; d < uint(NR_HD); d += 16u) {
                 NR_FRAG_B qf;
                 NR_LOAD_B(qf, lds_q, qb + i0 * uint(NR_QS) + d, uint(NR_QS));
@@ -1077,10 +1216,14 @@ void main() {
             for (int c = 0; c < 8; ++c) den[c] = 0.0;
             for (int n = 0; n < 4; ++n)
                 for (int c = 0; c < 8; ++c) {
+#if NR_ATTN_BIAS_SEED
+                    const float ex = nr_fast_exp(lg[n][c]);
+#else
                     const uint query = i0 + lane % 16u;
                     const uint key = uint(n) * 16u + 8u * (lane / 16u) + uint(c);
                     const float ex = nr_fast_exp(lg[n][c]
                         + wgt_f32[pc.b_off + (h * 64u + query) * 64u + key]);
+#endif
                     lg[n][c] = ex;
                     den[c] += ex;
                 }

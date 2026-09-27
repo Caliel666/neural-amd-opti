@@ -302,6 +302,10 @@ class Config
     // Share of the network's effect, 0-1: the runtime's Scale as a fraction of its 4/128 default.
     // danielblnc 0.3.1 and later (the runtimes whose layout maps Scale).
     CustomOptional<float> AmdEffectStrength { 1.0f };
+    // Stabilizer after the runtime, before SR: along the game's motion vectors it smooths frame-to-frame changes of
+    // the effect smaller than the threshold (1/255 of the tone-mapped sRGB value, 0.5-8) by the strength (0-1, 0 off).
+    CustomOptional<float> AmdStabilizerStrength { 0.0f };
+    CustomOptional<float> AmdStabilizerThreshold { 2.0f };
     // The runtime's arithmetic: 0 fast (its default, about 13% faster on RX 9000), 1 quality
     // (NVIDIA's reference arithmetic). danielblnc 0.4.2 and later.
     CustomOptional<int> AmdQuality { 0 };
@@ -354,6 +358,9 @@ class Config
     // it is pulled toward it, by the strength at no difference. Strength 0 turns it off.
     CustomOptional<float> LmxxfSmoothStrength { 0.8f };
     CustomOptional<float> LmxxfSmoothThreshold { 10.0f };
+    // The same smoothing on the model's change to the frame only (output minus input, against that change in the
+    // previous frame), so the game's own samples reach the upscaler as they arrived.
+    CustomOptional<bool> LmxxfSmoothResidual { false };
     // mochizuki's settings, the INI key being the member's name. Its tuning comes from these keys only, never from
     // the danielblnc, lmxxf or NVIDIA ones, so each runtime keeps its own, and every default is the network's own:
     // what it ran with before these keys existed. Passes, ModelScale and LinearInput rebuild the network (a second
@@ -365,6 +372,9 @@ class Config
     CustomOptional<bool, SoftDefault> MochizukiTemporal { true };
     // How much of the previous frame's result the network's last block blends into this one, 0..1.
     CustomOptional<float> MochizukiHistoryStrength { 1.0f };
+    // The host stabilizer after the runtime, as AmdStabilizerStrength and AmdStabilizerThreshold are for danielblnc.
+    CustomOptional<float> MochizukiStabilizerStrength { 0.0f };
+    CustomOptional<float> MochizukiStabilizerThreshold { 2.0f };
     // How much of the network's detail (0..2) and colour change (0..4) reaches the frame. Above 1 exaggerates it.
     // Colour defaults to 0, the game's own colour at the network's luminance.
     CustomOptional<float> MochizukiDetailStrength { 1.0f };

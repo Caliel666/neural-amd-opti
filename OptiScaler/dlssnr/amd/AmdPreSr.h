@@ -16,6 +16,8 @@ struct Frame
     UINT motionWidth = 0, motionHeight = 0;
     float preExposure = 1, exposureScale = 1;
     bool reset = false, depthInverted = false;
+    // NGX Jitter_Offset in render pixels, zero when the motion vectors already carry the jitter.
+    float jitterX = 0, jitterY = 0;
     // Post-upscale placement: colour is the frame the upscaler (or Ray Reconstruction) finished,
     // so the game's guides belong to the smaller render grid rather than to it. The guide
     // conversion ratio-samples them up to the model's working size instead of requiring that they
@@ -76,6 +78,44 @@ struct Settings
     LookSettings look;
     RtgiSettings rtgi;
 };
+inline DXGI_FORMAT DepthReadFormat(DXGI_FORMAT f)
+{
+    switch (f)
+    {
+    case DXGI_FORMAT_R32_TYPELESS:
+    case DXGI_FORMAT_R32_FLOAT:
+        return DXGI_FORMAT_R32_FLOAT;
+    case DXGI_FORMAT_R16_TYPELESS:
+    case DXGI_FORMAT_R16_UNORM:
+        return DXGI_FORMAT_R16_UNORM;
+    case DXGI_FORMAT_R16_FLOAT:
+        return DXGI_FORMAT_R16_FLOAT;
+    case DXGI_FORMAT_R24G8_TYPELESS:
+    case DXGI_FORMAT_R24_UNORM_X8_TYPELESS:
+        return DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+    case DXGI_FORMAT_R32G8X24_TYPELESS:
+    case DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS:
+        return DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
+    default:
+        return DXGI_FORMAT_UNKNOWN;
+    }
+}
+inline DXGI_FORMAT ReadFormat(DXGI_FORMAT f)
+{
+    switch (f)
+    {
+    case DXGI_FORMAT_R16G16B16A16_TYPELESS:
+        return DXGI_FORMAT_R16G16B16A16_FLOAT;
+    case DXGI_FORMAT_R32G32B32A32_TYPELESS:
+        return DXGI_FORMAT_R32G32B32A32_FLOAT;
+    case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+        return DXGI_FORMAT_R8G8B8A8_UNORM;
+    case DXGI_FORMAT_R10G10B10A2_TYPELESS:
+        return DXGI_FORMAT_R10G10B10A2_UNORM;
+    default:
+        return f;
+    }
+}
 // Process lifetime owner: intentionally not destroyed/unloaded while HIP threads exist.
 class Backend
 {

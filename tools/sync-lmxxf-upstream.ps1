@@ -835,6 +835,43 @@ if (-not $content.Contains('result=max(ClampAp1(result),0)')) {
 }
 Write-Host "  Applied patch: detail and colour strength up to 2 (codec and decode)" -ForegroundColor Yellow
 
+# Patch G: OutputSmooth on the network's change only (LmxxfSmoothResidual). residual_main is appended to
+# native_output_smooth.hlsl behind SMOOTH_RESIDUAL; upstream's main stays as it is.
+$smoothHlsl = Join-Path $vendorRoot 'shaders\native_output_smooth.hlsl'
+$content = Get-Content -LiteralPath $smoothHlsl -Raw
+if (-not $content.Contains('residual_main')) {
+    if (-not $content.Contains('void main(uint3 id : SV_DispatchThreadID)')) {
+        throw "Patch G failed: main entry not found in native_output_smooth.hlsl"
+    }
+    $block = @'
+// OptiScaler, SMOOTH_RESIDUAL: the same blend on the network's change to its input (output - base) instead of the whole
+// output, so the game's own samples pass through as they came. warped then holds the previous frame's change, residual
+// keeps this frame's for the next; pad = 1 when warped is valid. A zero output (the fallback) or a non-finite change is
+// left as it is and stores no change.
+#if SMOOTH_RESIDUAL
+StructuredBuffer<float4> base : register(t1);
+RWStructuredBuffer<float4> residual : register(u1);
+[numthreads(64,1,1)]
+void residual_main(uint3 id : SV_DispatchThreadID) {
+    uint p = id.x; if (p >= pixels) return;
+    float3 o = float3(rgb[p*3], rgb[p*3+1], rgb[p*3+2]);
+    float3 b = base[p].xyz; float3 r = o - b;
+    if (all(o == 0) || any(!isfinite(r))) { residual[p] = float4(0,0,0,1); return; }
+    if (pad) {
+        float3 h = warped[p].xyz;
+        float d = max(max(abs(r.x-h.x), abs(r.y-h.y)), abs(r.z-h.z));
+        float w = strength * saturate(1.0 - d / threshold);
+        if (w > 0) { r = lerp(r, h, w); o = b + r; rgb[p*3] = o.x; rgb[p*3+1] = o.y; rgb[p*3+2] = o.z; }
+    }
+    residual[p] = float4(r, 1);
+}
+#endif
+'@
+    $content = $content.TrimEnd("`r", "`n") + "`n" + ($block -replace "`r`n", "`n") + "`n"
+    [IO.File]::WriteAllText($smoothHlsl, $content, [Text.UTF8Encoding]::new($false))
+}
+Write-Host "  Applied patch: residual smoothing entry in native_output_smooth.hlsl" -ForegroundColor Yellow
+
 # 6. Update UPSTREAM.md with new commit and timestamp
 $upstreamMd = Join-Path $vendorRoot 'UPSTREAM.md'
 if (Test-Path $upstreamMd) {

@@ -720,3 +720,51 @@ log em jogo normal; barreiras dos upscalers com a camada de debug do D3D12 (S6).
 - Limite de 16 bits da fila persistente (S9, à parte) e fusões candidatas do P18.
 - Nada testado em jogo: TDR real, troca de fila do jogo, D3DKMT sob o spoofing do OptiScaler, primeira construção
   no jogo com o manifesto.
+
+## 12. Desempenho: rodada noturna de 27/09/2026 (ainda sem versão)
+
+Nove mudanças vindas do upstream v0.0.2 (`4f62a8a`) e v0.0.2.1 (`4f663b5`), que só mexeu na árvore `linux/`
+(ajustada no RADV). Cada uma entrou só com saída idêntica bit a bit e ganho no LLPC; o registro completo, com os
+números de cada uma e o que ficou de fora, está em `third_party/mochizuki/UPSTREAM.md`, entradas 6 a 14.
+
+| Mudança | Onde |
+|---|---|
+| Chaves `ffwd_gmajor`, `ffwd_fm2_min`, `persist_one` em `shader-constants.txt` | `nr_graph.cpp`, `nr_shader_manifest.hpp` |
+| `gemm1x1.comp` e `ffwd3_t.comp` do upstream; `NR_QKV_NO_BCAST` e `NR_POOL_FRAG` (com `precise`) | shaders |
+| `ffwd3` group-major e o novo `ffwd3w` a partir de 2560 tokens (1440p para cima) | shaders, `nr_graph.cpp` |
+| Atenção do upstream; `NR_ATTN_VFRAG`, `NR_ATTN_QKSWAP`, `NR_ATTN_EDGE`, `NR_VOUT_VEC` | shaders |
+| Execuções persistentes C=128 dobram DS e UPS (`fswinpds128`, `fswinpup128`; máscaras 6) | `pipelines.json`, `nr_graph.cpp` |
+| Um workgroup por item na execução C=256 que começa no UPS (1080p e 720p) | `fswin_t.comp`, `nr_graph.cpp` |
+| Histórico temporal em ping-pong com um passe (sem a cópia por quadro) | `nr_runtime.cpp` |
+| Caminho linear: o quadro vai direto para a imagem `keep` no formato dele (sem cópia RGBA32F) | `nr_runtime.cpp`, host |
+| Passe de alfa só com máscara, composição nativa ou quadro de 8 bits | `nr_runtime.cpp` |
+
+Medido no RX 9070 XT, driver 26.8.1, contra o runtime de `5fead302`, pares intercalados na mesma sessão:
+- `mz_timing` (mediana de 7 pares): 9,641 → 9,158 ms em 1080p (−0,577 ms, −6,0%) e 16,003 → 14,903 ms em
+  1440p (−1,099 ms, −6,9%). A conferência independente, com rebuild a partir do patch, mediu −0,493 e −0,484 ms
+  em 1080p e −1,096 e −1,031 ms em 1440p em mais duas sessões de 7 pares; os 28 pares foram todos mais rápidos.
+- `nr_graph --per-layer` (3 execuções): 10,396 → 9,872 ms e 15,127 → 14,780 ms (as três mudanças fora da rede
+  não aparecem aqui; sozinhas elas somam −0,27 e −0,61 ms).
+- Saída idêntica: EQUIV contra os goldens, `nr_graph --out-image` em 1080p, 1440p e 4K, e dumps do runtime com 2
+  e 3 passes, escala 0,5, sem movimento, força, alfa variável, RGBA32F, R10G10B10A2, tamanhos ímpares e resolução
+  dinâmica (auto e always).
+- `mz_stress`: `all` 21/21, e 22/22 em `MZ_STRESS_DRS_MODE=1` e `=2`. Com a CPU ocupada o `oombuild` passa do
+  limite de 7 s nas duas DLLs (a nova e a anterior), como já acontecia.
+- Construção a frio em 1080p: 22,7 e 27,7 s contra 22,5 e 27,2 s sem manifesto; 8,0, 7,4 e 6,6 s contra 7,6,
+  7,0 e 6,6 s com ele.
+- VRAM: +16 MB em 1080p, +28 MB em 1440p, +64 MB em 4K.
+
+Para publicar: 42 pipelines de rede, 4 temporais e 7 do runtime (eram 39, 4 e 6). O `payload.json` do
+instalador precisa dos quatro SPVs novos (`g_ffwd3w`, `g_fswinpds128`, `g_fswinpup128`,
+`runtime/runtime_encode_in`) e dos hashes novos; sem o `ffwd3w`, a rede de 1440p para cima não constrói. O
+manifesto de prewarm precisa ser refeito (31 pipelines numa execução a frio em 1080p) e o `nr_graph.exe` do
+harness precisa ser recompilado. Falta o teste em jogo. Registro da integração, com cada comando e número:
+`exports/mochizuki-work/night-perf/INTEGRATION.txt`.
+
+Arredondamento da entrada do pré-bloco (`UPSTREAM.md`, entrada 15), junto com as nove mudanças acima: o
+pré-bloco converte a amostra de cor para meia precisão, e o LLPC dobrava essa conversão num retorno de
+textura de 16 bits que trunca o texel f32. Agora os bits são arredondados ao par mais próximo antes da
+conversão, como o `cvt.rn.f16.f32` da rede original. Esta é a única mudança da saída, de propósito: média
+|d| de 1,1e-3 a 4,8e-3 contra os goldens do M0, custo +0,001 ms. O build integrado (as nove mudanças mais esta)
+dá EQUIV idêntico byte a byte ao build que tem só esta mudança, e os goldens dessa saída estão em
+`exports/mochizuki-work/golden-2026-09-27`.

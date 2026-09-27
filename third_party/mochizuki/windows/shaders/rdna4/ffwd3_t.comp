@@ -142,11 +142,127 @@ fe4m3vec2 nr_ffwd_quant(f16vec2 v) {
 }
 #endif
 #include "nr_prof.glsl"
+// NR_FFWD_GMAJOR: group-major workgroups. The NR_FFWD_WGW subgroups of a
+// workgroup share ONE weight group and take consecutive token tiles, so a
+// group's 64 KB of weights is fetched once into the CU's L0 for all of them
+// instead of once per subgroup from L2 (the group-per-subgroup form made every
+// subgroup of a workgroup read a different group). Same products, same k order
+// per output; subgroups past the last tile return (no barriers here).
+#ifndef NR_FFWD_GMAJOR
+#define NR_FFWD_GMAJOR 0
+#endif
+#if NR_FFWD_GMAJOR
+#define NR_FFWD_MAP(TT) \
+    uint group = gl_WorkGroupID.x % 8u, \
+         tok = ((gl_WorkGroupID.x / 8u) * NR_FFWD_WGW + NR_WAVE_OF(gl_LocalInvocationID.x)) * (TT); \
+    if (tok >= pc.M) return;
+#else
+#define NR_FFWD_MAP(TT) \
+    uint group = (gl_WorkGroupID.x % (8u / NR_FFWD_WGW)) * NR_FFWD_WGW + NR_WAVE_OF(gl_LocalInvocationID.x), \
+         tok = (gl_WorkGroupID.x / (8u / NR_FFWD_WGW)) * (TT);
+#endif
+// NR_FFWD_FM=2: one subgroup owns one group and TWO 16-token tiles, so every
+// weight fragment feeds two MMAs instead of one (the layer loads 64 KB of
+// weights a group and tile, and those loads' VGPR write-back costs SIMD
+// cycles). Per output the same products in the same k order; the host
+// launches half the tiles. An odd tile count leaves the last subgroup's second
+// tile outside the tensor: it is computed from whatever lies there and not
+// stored.
+#ifndef NR_FFWD_FM
+#define NR_FFWD_FM 1
+#endif
+#if NR_FFWD_FM == 2
+#if !(NR_FFWD_KOFF && NR_FFWD_PACK && NR_FFWD_PAIR) || NR_FFWD_F32
+#error "NR_FFWD_FM=2: the packed, paired, k-offset path only"
+#endif
+#define S1_K2(i)                                                                                   \
+    {                                                                                              \
+        NR_FRAG_B x[2];                                                                            \
+        for (int m = 0; m < 2; ++m) {                                                              \
+          const uint nrq = (xl4 + uint(m) * xm4 + k04) + uint(i) * 64u;                            \
+          const fe4m3vec4 r0 = act_e4m3x4[nrq], r1 = act_e4m3x4[nrq + 1u];                         \
+          for (int v = 0; v < 4; ++v) { x[m][v] = r0[v]; x[m][v + 4] = r1[v]; } }                  \
+        for (int n = 0; n < 2; ++n) {                                                              \
+            const uint ix = (aw4[n] + kw4) + uint(i) * 128u;                                       \
+            const fe4m3vec4 v0=wpair4[ix],v1=wpair4[ix+1u],v2=wpair4[ix+2u],v3=wpair4[ix+3u];      \
+            NR_FRAG_A w0, w1;                                                                      \
+            for(int c=0;c<4;++c) {w0[c]=v0[c];w0[c+4]=v1[c];w1[c]=v2[c];w1[c+4]=v3[c];}            \
+            for (int m = 0; m < 2; ++m) { NR_MMA(acc1[2*n][m],w0,x[m]); NR_MMA(acc1[2*n+1][m],w1,x[m]); } \
+        }                                                                                          \
+    }
 void main() {
     NR_PROF_BEGIN()
     nr_chain_wait()
-    uint group = (gl_WorkGroupID.x % (8u / NR_FFWD_WGW)) * NR_FFWD_WGW + NR_WAVE_OF(gl_LocalInvocationID.x),
-         tok = (gl_WorkGroupID.x / (8u / NR_FFWD_WGW)) * 16u;
+    NR_FFWD_MAP(32u)
+    const bool second = tok + 16u < pc.M;   // wave-uniform
+    uint xbase = pc.x_off + (tok / 16u) * (pc.C / 16u) * 256u;
+    uint agrp = pc.a_off + group * 64u * 512u, q0grp = pc.q0_off + group * 256u * 64u,
+         q2grp = pc.q2_off + group * 64u * 256u;
+    NR_FRAG_ACC acc1[4][2], acc3[4][2];
+    for (int n = 0; n < 4; ++n) for (int m = 0; m < 2; ++m) {
+        acc1[n][m] = NR_ACC_ZERO;
+        acc3[n][m] = NR_ACC_ZERO;
+    }
+    const uint xl4 = (xbase + (gl_LocalInvocationID.x % 16u) * 16u
+                      + ((gl_LocalInvocationID.x % 32u) / 16u) * 8u) / 4u;
+    const uint xm4 = (pc.C / 16u) * 64u;     // one 16-token tile, in fe4m3vec4
+    uint aw4[2];
+    for (int n = 0; n < 2; ++n)
+        aw4[n] = agrp / 4u + uint(n) * (pc.C / 16u) * 128u + (gl_LocalInvocationID.x % 32u) * 4u;
+    for (uint k0 = 0u; k0 < pc.C; k0 += 128u) {
+        const uint k04 = k0 * 4u, kw4 = (k0 / 16u) * 128u;
+        NR_FOR_K(8, S1_K2)
+    }
+    NR_FRAG_B r[4][2];
+    for (int n = 0; n < 4; ++n) for (int m = 0; m < 2; ++m)
+        for(int c=0;c<8;c+=2) {
+            fe4m3vec2 q=nr_ffwd_quant(f16vec2(acc1[n][m][c],acc1[n][m][c+1]));
+            r[n][m][c]=q.x;r[n][m][c+1]=q.y;
+        }
+    for (uint chunk = 0u; chunk < 4u; ++chunk) {
+        uint jbase = chunk * 64u;
+        NR_FRAG_ACC acc2[4][2];
+        for (int n = 0; n < 4; ++n) for (int m = 0; m < 2; ++m) acc2[n][m] = NR_ACC_ZERO;
+        for (uint k = 0u; k < 4u; ++k)
+            for(uint n=0u;n<4u;n+=2u) {
+                NR_FRAG_A w0,w1;
+                NR_FFWD_LOAD2(w0,w1,q0grp,jbase+n*16u,k*16u,64u)
+                for (int m = 0; m < 2; ++m) { NR_MMA(acc2[n][m],w0,r[k][m]);NR_MMA(acc2[n+1u][m],w1,r[k][m]); }
+            }
+        NR_FRAG_B h[4][2];
+        for (int n = 0; n < 4; ++n) for (int m = 0; m < 2; ++m)
+            for(int c=0;c<8;c+=2) {
+                fe4m3vec2 q=nr_ffwd_quant(nr_swin_act2(f16vec2(acc2[n][m][c],acc2[n][m][c+1])));
+                h[n][m][c]=q.x;h[n][m][c+1]=q.y;
+            }
+        for (uint k = 0u; k < 4u; ++k)
+            for(uint n=0u;n<4u;n+=2u) {
+                NR_FRAG_A w0,w1;
+                NR_FFWD_LOAD2(w0,w1,q2grp,n*16u,jbase+k*16u,256u)
+                for (int m = 0; m < 2; ++m) { NR_MMA(acc3[n][m],w0,h[k][m]);NR_MMA(acc3[n+1u][m],w1,h[k][m]); }
+            }
+    }
+    for (int m = 0; m < 2; ++m) {
+        if (m == 1 && !second) break;
+        for (uint n = 0u; n < 4u; ++n) {
+            NR_FRAG_E4M3 outv;
+            for(int c=0;c<8;c+=2) {
+                fe4m3vec2 q=nr_ffwd_quant(f16vec2(acc3[n][m][c],acc3[n][m][c+1]));
+                outv[c]=q.x;outv[c+1]=q.y;
+            }
+            NR_STORE_ACC_COL(outv, act_e4m3,
+                             pc.o_off + (tok / 16u + uint(m)) * (pc.C / 16u) * 256u + (group * 4u + n) * 256u,
+                             16u);
+        }
+    }
+    nr_chain_signal()
+    NR_PROF_END(pc.o_off)
+}
+#else
+void main() {
+    NR_PROF_BEGIN()
+    nr_chain_wait()
+    NR_FFWD_MAP(16u)
     uint xbase = pc.x_off + (tok / 16u) * (pc.C / 16u) * 256u;
     uint agrp = pc.a_off + group * 64u * 512u, q0grp = pc.q0_off + group * 256u * 64u,
          q2grp = pc.q2_off + group * 64u * 256u;
@@ -263,3 +379,4 @@ void main() {
     nr_chain_signal()
     NR_PROF_END(pc.o_off)
 }
+#endif

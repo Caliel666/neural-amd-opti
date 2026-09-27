@@ -61,7 +61,8 @@ Eight GitHub releases, all built by `tools/PACKAGE_RELEASE.ps1`:
   0.4.2 and 0.4.3").
 
 The build reports itself as `0.4.3-amd-nr`, and the packager writes
-`dist/OptiScaler-0.4.3-amd-nr.zip`.
+`dist/OptiScaler-0.4.3-amd-nr.zip`. Not in a release yet: a faster mochizuki runtime, `Setup.bat` no
+longer forcing Linear with the history off, and two stabilizers off by default (section 5, "Next release").
 
 The [AMD-NR ReShade Installer](https://github.com/zmodelerlover/AMD-NR-ReShade-Installer) installs
 this build as its OptiScaler route. v0.4.0 knows only `v0.1.1-amd-nr`; v0.5.0 and later offer every
@@ -819,6 +820,190 @@ ms per frame. The other two keys are left at the runtime's defaults.
 0.4.3; the synthetic bootstrap fixtures pass for both contracts; `tools/test-amd-runtime-init.cmd` on
 an RX 9070 XT passes for both, 24 of 24 frames per wait mode with no timeout. Dispatch wait per
 frame, same harness: 0.4.1 14.7 ms, 0.4.2 12.3 ms, 0.4.3 10.9 ms.
+
+### Next release
+
+Not versioned yet. The mochizuki runtime is faster and rounds its input the way NVIDIA's network does;
+`Setup.bat` stops forcing Linear with the history off on danielblnc; and two temporal stabilizers are in,
+both off by default. Every existing default in `Config.h` and the packaged INI is as in `v0.4.3-amd-nr`.
+
+**mochizuki runtime speed.** Nine changes to the mochizuki runtime, each taken from
+upstream's `linux/` tree at v0.0.2 (`4f62a8a`) or v0.0.2.1 (`4f663b5`) and kept only where the
+output stayed byte-identical and LLPC ran it faster. `third_party/mochizuki/UPSTREAM.md`, entries 6
+to 14, has each one with its own measurements, and what was tried and left out.
+
+**What changed.** In the network:
+- `gemm1x1.comp` and `ffwd3_t.comp` are upstream's v0.0.2.1 files, with `NR_QKV_NO_BCAST` on
+  `gemmvqkvnorm` and `NR_POOL_FRAG` on `gemmpool`. The pool's sums are `precise`, which LLPC needs to
+  keep the output.
+- `ffwd3` takes its tiles group-major, and a new `ffwd3w` takes two tiles a subgroup for layers of
+  2560 tokens and more (1440p and up).
+- The attention sources are upstream's too, with `NR_ATTN_VFRAG`, `NR_ATTN_QKSWAP` and `NR_ATTN_EDGE`
+  on `attn` and `NR_VOUT_VEC` on `vitattn`.
+- The C=128 persistent runs take in their downsample and upsample layers (two new pipelines), and the
+  C=256 upsample run launches one workgroup per item at 1080p and 720p.
+- `shader-constants.txt` records three new keys, `ffwd_gmajor`, `ffwd_fm2_min` and `persist_one`.
+
+Around the network:
+- With one pass the temporal history alternates between two images, so the copy of the history
+  each frame is gone.
+- On the linear path at model scale 1 and one pass (FP16, 11/11/10 and RGBA32F frames) the host
+  uploads the frame straight into the core's image in the frame's own format; there is no RGBA32F
+  copy of it any more.
+- The alpha pass runs only for the control mask, native compose and 8-bit frames, where it changes
+  the result.
+
+All of it is in `MochizukiNrRuntime.dll` and its shaders.
+
+**Measured.** RX 9070 XT, driver 26.8.1, against the runtime built from `5fead302`, interleaved in
+one session:
+- The network's span on the game's queue (`mz_timing`, median of 7 pairs): from 9.641 to 9.158 ms
+  at 1920x1080 (-0.577 ms, -6.0%) and from 16.003 to 14.903 ms at 2560x1440 (-1.099 ms, -6.9%).
+  An independent check, rebuilt from the patch, measured -0.493 and -0.484 ms at 1920x1080 and -1.096
+  and -1.031 ms at 2560x1440 in two more sessions (7 pairs each, all 28 pairs faster), so about -5 to
+  -6% at 1080p and -6.5 to -6.9% at 1440p.
+- The network alone (`nr_graph --per-layer`, 3 runs): 10.396 -> 9.872 ms and 15.127 -> 14.780 ms.
+  Per pipeline: `gemmvqkvnorm` -0.145 / -0.087 ms, `attn` -0.065 / -0.052, `vitattn` -0.069 /
+  -0.023, the C=128 runs -0.057 / -0.051 (two pipelines where there were three), `fswinpup256` -0.053
+  at 1080p, `ffwd3` -0.019 at 1080p. At 1440p `ffwd3w`'s own time is level with `ffwd3`'s, and
+  `gemmproj`, which reads its output, is 0.262 ms faster. Pipelines no change touches moved by -0.021
+  to +0.018 ms, this session's noise.
+- `nr_graph` does not run the three changes around the network. Measured one at a time, their gains
+  add up to -0.27 ms at 1080p and -0.61 ms at 1440p.
+- Output: M0's equivalence set against the goldens, `nr_graph --out-image` at 1080p, 1440p and
+  3840x2160, and runtime dumps against the previous build (2 and 3 passes, model scale 0.5, no
+  motion, strength, a varying input alpha, RGBA32F and R10G10B10A2 frames, odd sizes, dynamic
+  resolution auto and always, 3840x2160): all byte-identical. The input rounding below then changes
+  the output on purpose.
+- `mz_stress`: `all` 21/21, and 22/22 under dynamic resolution auto and always. `oombuild` still
+  misses its 7 s limit when other work loads the CPU, for this build and the previous one alike.
+- Cold build at 1080p: 22.7 and 27.7 s against 22.5 and 27.2 s without the prewarm manifest, 8.0,
+  7.4 and 6.6 s against 7.6, 7.0 and 6.6 s with it.
+- VRAM while the network is built: +16 MB at 1080p (698 -> 714 MB), +28 MB at 1440p, +64 MB at
+  3840x2160.
+
+**To ship it.** The shader folder has 42 network, 4 temporal and 7 runtime pipelines (39, 4 and 6
+before). New: `g_ffwd3w.spv`, `g_fswinpds128.spv`, `g_fswinpup128.spv` and
+`runtime/runtime_encode_in.spv`. Changed: `g_attn`, `g_vitattn`, `g_ffwd3`, `g_gemmpool`,
+`g_gemmvqkvnorm`, `g_fswinpup256` and both `shader-constants.txt`. The installer's `payload.json`
+lists every SPV by name, so it needs the new files and hashes, or a network of 2560 tokens or more
+(1440p and up) fails to build without `ffwd3w`. The prewarm manifest must be regenerated for the new
+shaders (31 pipelines from a cold 1080p run; a 1440p session adds `ffwd3w` to it). The standalone
+`nr_graph.exe` of the harness must be rebuilt, since the old one refuses the new keys. Not yet
+checked in a game.
+
+**mochizuki pre-block input rounding.** The fused pre block converts its colour sample to half precision.
+Taken straight from the texture, LLPC folds that conversion into a 16-bit texture return, which truncates
+an f32 texel, so about half the colour samples came in one half-precision step low. NVIDIA's network rounds
+to nearest even (`cvt.rn.f16.f32`). `image_input.glsl` now rounds the sample's bits to 10 mantissa bits
+with integer ops before the conversion (exact for every f32 from 2^-14 to 65504, checked on the CPU against
+numpy). Upstream's own form, an RTE execution mode, does not stop the fold on LLPC and costs 4 VGPRs. Only
+`g_fswinimagepreds32.spv` and `temporal/temporal_pre_fp32.spv` change. The output moves by a mean of 1.1e-3
+to 4.8e-3 against M0's goldens, spread over the frame; `mz_pan` over 200 frames with correct vectors: the
+frame-to-frame change of the effect 0.00140 -> 0.00132, the other cases level. Cost: +0.001 ms
+(`third_party/mochizuki/UPSTREAM.md`, entry 15).
+
+**Setup.bat leaves encoding and temporal history to the defaults (danielblnc).**
+`tools/install-amd-presr.ps1`, which the package ships as `Setup.ps1` behind `Setup.bat`, upserted
+`AmdEncoding = 0` and `AmdEveryFrame = true` into the game's `[DlssNr]` on every install and upgrade.
+Both came in with the TheAutomatic port (`a3d517e5`), and every release from `v0.2.0-amd-nr` to
+`v0.4.3-amd-nr` carries them. So every game set up or upgraded through `Setup.bat` ran danielblnc
+with Linear encoding and the model's temporal history off, while `Config.h`, the menu and the
+packaged INI default to sRGB (`AmdEncoding` 2) with history on (`AmdEveryFrame` false). The upsert
+now writes `auto` for both keys. `Config.cpp` reads `auto` like a missing key (`readString` returns
+nothing for it and `readInt` and `readBool` pass that on), so the values come from `Config.h`, and a
+later change of either default reaches upgraded games without touching the script. The other
+upserted keys are unchanged. lmxxf and mochizuki read neither key. The AMD-NR ReShade Installer does
+not run `Setup.bat` (outside two of its handoff notes, nothing in that repository names it,
+`install-amd-presr` or either key), so its installs are not affected.
+
+A game set up by an older `Setup.bat` keeps `0` and `true` until Setup runs again. To switch
+sooner: Ins menu, danielblnc section, set Encoding to sRGB and untick "Disable temporal
+stabilization". Either change restarts the model's history.
+
+Measured with the stability harness of `exports\mochizuki-work` (full table and commands in
+`night-stab\METRICS.txt` and `INTEGRATION.txt`): the eight synthetic sequences of `stab\seq` played
+through OptiScaler's own `AmdPreSr.cpp` (`daniel_stab_run.exe` built from this tree) and scored by
+`stab_metrics.py`, from what the old script set (Linear, history off) to what the new one leaves
+(sRGB, history on). Lower boil and flicker are steadier; strength is the size of the effect.
+
+| danielblnc | sequence | boil | flicker_res | flicker_out | strength | detail | settle after a reset |
+|---|---|---|---|---|---|---|---|
+| 0.4.1 | still_jitter_720 | 0.00314 to 0.00189 (-40%) | 0.00424 to 0.00302 (-29%) | 0.00860 to 0.00820 | 0.02046 to 0.01939 | 0.899 to 1.094 | 8 to 14 |
+| 0.4.1 | still_jitter | 0.00267 to 0.00167 (-38%) | 0.00345 to 0.00252 (-27%) | 0.00619 to 0.00582 | 0.02089 to 0.01949 | 0.909 to 1.126 | 10 to 14 |
+| 0.4.1 | pan_slow_720 | | 0.00460 to 0.00383 (-17%) | 0.00947 to 0.00889 | 0.02275 to 0.02496 | 0.980 to 1.000 | |
+| 0.4.1 | pan_slow | | 0.00373 to 0.00308 (-18%) | 0.00640 to 0.00584 | 0.02218 to 0.02309 | 0.979 to 0.980 | |
+| 0.4.1 | pan_fast | 0.00752 to 0.00573 (-24%) | 0.00610 to 0.00477 (-22%) | 0.01004 to 0.00868 | 0.02634 to 0.02486 | 0.894 to 0.864 | 29 to 32 |
+| 0.4.1 | hf_pan | 0.00569 to 0.00481 (-15%) | 0.00700 to 0.00668 (-5%) | 0.02437 to 0.02200 | 0.02536 to 0.03312 | 0.765 to 0.687 | 0 to 33 |
+| 0.4.1 | object | 0.00449 to 0.00335 (-25%) | 0.00469 to 0.00378 (-19%) | 0.01130 to 0.01070 | 0.02517 to 0.02474 | 0.893 to 0.960 | 59 to 32 |
+| 0.4.1 | cut | 0.00291 to 0.00247 (-15%) | 0.00377 to 0.00312 (-17%) | 0.00863 to 0.00823 | 0.02171 to 0.02174 | 0.944 to 1.031 | 8, 10 to 11, 14 |
+| 0.4.3 | still_jitter_720 | 0.00316 to 0.00190 (-40%) | 0.00432 to 0.00303 (-30%) | 0.00866 to 0.00820 | 0.02041 to 0.01949 | 0.901 to 1.093 | 8 to 14 |
+| 0.4.3 | still_jitter | 0.00268 to 0.00169 (-37%) | 0.00344 to 0.00252 (-27%) | 0.00619 to 0.00582 | 0.02090 to 0.01952 | 0.910 to 1.128 | 9 to 14 |
+| 0.4.3 | pan_slow_720 | | 0.00458 to 0.00386 (-16%) | 0.00945 to 0.00890 | 0.02278 to 0.02519 | 0.980 to 1.003 | |
+| 0.4.3 | pan_slow | | 0.00371 to 0.00311 (-16%) | 0.00638 to 0.00586 | 0.02220 to 0.02325 | 0.981 to 0.981 | |
+| 0.4.3 | pan_fast | 0.00747 to 0.00553 (-26%) | 0.00604 to 0.00474 (-22%) | 0.00999 to 0.00868 | 0.02638 to 0.02526 | 0.894 to 0.864 | 30 to 32 |
+| 0.4.3 | hf_pan | 0.00573 to 0.00481 (-16%) | 0.00694 to 0.00670 (-3%) | 0.02428 to 0.02199 | 0.02538 to 0.03345 | 0.763 to 0.685 | 14 to 22 |
+| 0.4.3 | object | 0.00451 to 0.00332 (-26%) | 0.00478 to 0.00379 (-21%) | 0.01135 to 0.01070 | 0.02519 to 0.02491 | 0.893 to 0.961 | 59 to 32 |
+| 0.4.3 | cut | 0.00292 to 0.00245 (-16%) | 0.00380 to 0.00312 (-18%) | 0.00865 to 0.00824 | 0.02170 to 0.02180 | 0.944 to 1.034 | 8, 12 to 11, 14 |
+
+What the history costs on the same runs. After a reset the image takes longer to settle, except on
+`object`, and the reset itself jumps more: `pop_reset` 0.547 to 0.984 on still_jitter_720 and
+0.043 to 0.377 on hf_pan (0.4.1). The whole frame pumps in step with the camera jitter: the
+jitter-locked step of the mean residual goes from 0.00050 to 0.00336 on pan_fast and from 0.00023 to
+0.00103 on pan_slow (0.4.1; 0.4.3 moves the same way). Per-frame detail drops on the two fast or
+fine pans: hf_pan 0.765 to 0.687, pan_fast 0.894 to 0.864. flicker_out, the flicker of the image
+the upscaler gets, falls by only 4.6 to 13.5%. On `object` the ghost against the history-off run is
+0.00094 (0.4.1) and 0.00078 (0.4.3); ghosting with history on behind FSR in a real game is
+unmeasured. The harness's GPU times are not a cost figure: the runs shared the GPU with another
+workflow.
+
+Two host behaviours that come with history on and now reach Setup installs too. The model's
+history restarts on a game reset, a size, guide, pass or setting change, a timeout, an explicit
+invalidate or a gap over 250 ms (`AmdPreSr.cpp:1622-1624`); a frame the host skips inside that
+window is not in the list, which the harness (it waits on every frame) cannot show. And the
+post-Execute wait of `WaitAfterSubmitIfEveryFrame` runs only with history off, so it no longer runs
+during a native rebuild either.
+
+A limit of sRGB that Setup installs now meet: `ColorEncoding.h` decodes the game's colour to linear
+light into an RGBA16F texture before the model, and the decode overflows half precision above about
+107 (107 gives 65344, 108 gives infinity). The install-history-defaults item's hard-content check
+(`exports\mochizuki-work\stab-install-history-defaults\verify-hard-content`) found outputs capped at
+107.06 on a sequence with highlights up to 4096, which Linear kept. Whether Cyberpunk 2077's
+pre-upscaler colour goes that high is unmeasured.
+
+**Residual stabilizer (danielblnc, mochizuki), off by default.** `[DlssNr] AmdStabilizerStrength` /
+`AmdStabilizerThreshold` and `MochizukiStabilizerStrength` / `MochizukiStabilizerThreshold` (strength 0 to
+1, default 0; threshold 0.5 to 8 in 1/255, default 2; menu "Stabilizer" and "Stabilizer threshold" under
+danielblnc's "Disable temporal stabilization" and in mochizuki's Temporal section). A host pass after the
+runtime and before SR (`AmdPreSr::ResidualStabilizer`, `dlssnr/amd/ResidualStabilizer.h`, called from
+`AmdBridge::Run`) filters the runtime's edit over time: the previous edit is moved along the nearest
+surface's motion vector plus the jitter step, kept only on the same depth surface, and clamped to the
+current edit plus or minus the threshold, so no pixel moves by more than strength times threshold whatever
+the vectors. Pixels without history pass the runtime's result through bit for bit; without readable depth
+the pass skips the frame. The runtimes, their histories and SR's inputs are untouched. At strength 0
+nothing is recorded, allocated or compiled. Cost when on: 0.18 to 0.33 ms a frame at 1080p on the RX 9070
+XT, 49.8 MB of textures.
+Measured by replaying the runtimes' recorded outputs of the stability sequences
+(`exports\mochizuki-work\residual-stabilizer\RESULTS.txt`): danielblnc 0.4.1 at 0.5 / 2 cuts the
+effect's flicker to 0.54x to 0.73x on all eight sequences, with the effect's size 0.99x to 1.00x and
+detail 0.98x to 1.03x, but newly uncovered background behind a moving object lags a little more (ghost
+0.00094 to 0.00126), which is why it stays off; 0.4.3 moves the same way. With the Linear, history-off
+setup older `Setup.bat` installs have, 0.5 / 2 passes every check (flicker 0.54x to 0.62x). mochizuki
+loses a few percent of detail at every setting that helps, so no value is recommended for it. Not tested
+in a game.
+
+**lmxxf: smoothing the effect only, off by default.** `[DlssNr] LmxxfSmoothResidual` (default false;
+menu "Smooth the effect only" in lmxxf's Temporal section) moves lmxxf's output smoothing onto the
+network's change alone: the host sets `LMXXF_NR_FRAME_FLAG_SMOOTH_RESIDUAL`, and `RecordOutputs` pulls the
+output minus the input toward the previous frame's difference, warped like the histories, then adds it
+back (`residual_main` in `third_party/lmxxf/shaders/native_output_smooth.hlsl`, Patch G).
+`LmxxfSmoothStrength` and `LmxxfSmoothThreshold` keep their meaning and apply to that difference. With the
+key off the output is byte-identical to `v0.4.3-amd-nr`. On the stability sequences it cuts the effect's
+flicker to 0.53x to 0.76x with the effect's size and detail within 2%, but the effect lags on newly
+uncovered background (ghost 0.00165 against -0.00013) and settles one frame later after a reset, which
+is why it stays off (`exports\mochizuki-work\stab-lmxxf-residual-smooth\RESULTS.txt`). Cost when on:
+about +0.26 to +0.37 ms a frame at 1080p on a busy GPU. Not tested in a game.
+
 ---
 
 ## 6. Diagnostics playbook

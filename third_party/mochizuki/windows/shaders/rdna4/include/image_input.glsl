@@ -92,7 +92,14 @@ void nr_prepare_features() {
     const int sy=y<sh?int(y):2*int(sh)-int(y)-2;
     const vec2 uv=vec2((float(sx)+0.5)/float(sw),(float(sy)+0.5)/float(sh));
     const vec4 rgba=textureLod(nr_tex,uv,0.0);
-    const f16vec3 centered=f16vec3(f16vec3(rgba.rgb)-f16vec3(0.5));
+    // Rounded to 10 mantissa bits, to nearest even as the original's
+    // cvt.rn.f16.f32, so the f16 conversion below is exact for normal halves.
+    // Converted straight from the sample, the driver folds it into a d16
+    // texture return, which truncates an f32 texel; an RTE execution mode does
+    // not stop that fold on LLPC.
+    uvec3 rb=floatBitsToUint(rgba.rgb);
+    rb=(rb+0x0FFFu+((rb>>13)&1u))&~0x1FFFu;
+    const f16vec3 centered=f16vec3(f16vec3(uintBitsToFloat(rb))-f16vec3(0.5));
     const vec3 cn=vec3(f16vec3(centered*NR_F16(0.125)));
 #if NR_DIAG_NONOISE
     nr_g0=nr_g1=nr_g2=0.0;  // diagnostic only: prices the noise stream

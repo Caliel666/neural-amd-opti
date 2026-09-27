@@ -96,6 +96,9 @@ Upstream includes `native_split.h` (the D3D12 network body) without using it. Th
 ### Patch E: detail and colour strength up to 2
 `NativeCodecParameters::ValidStrength` in `src/native_game_codec.h` accepts 0 to 2 instead of 0 to 1, and `shaders/native_codec_decode.hlsl` clamps the final result to its own `ClampAp1` gamut and to zero when either strength is above 1, where the blends extrapolate and could go negative. Up to 1 the output is unchanged. The sync script re-applies both after every copy.
 
+### Patch G: residual smoothing in `shaders/native_output_smooth.hlsl`
+`LmxxfSmoothResidual` runs upstream's output smoothing on the network's change alone. The block appended behind `#if SMOOTH_RESIDUAL` adds `residual_main`, which takes the RGB output minus the network's input (`base`, t1), blends it toward the previous frame's change (`warped`, t0; `pad` = 1 when it is valid) with the same threshold and strength rule, writes the input plus the result back to `rgb` and keeps the change in `residual` (u1) for the next frame. Upstream's `main` is untouched and compiles as before. The sync script re-appends the block after every copy when `residual_main` is missing, and fails when upstream's `main` entry is gone.
+
 ## Shipping modules (`.hsaco`)
 
 Upstream **does not** publish `.hsaco` on git (`/release/` is gitignored; no GitHub release assets for modules).

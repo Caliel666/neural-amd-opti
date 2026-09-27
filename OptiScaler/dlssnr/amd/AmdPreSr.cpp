@@ -156,28 +156,6 @@ cbuffer Extent : register(b0) { uint w; uint h; float preExposure; float exposur
  float e=src.Load(int3(0,0,0)).r*exposureScale/preExposure;
  dst[uint2(0,0)]=isfinite(e) && e>0 ? e : 1.0;
 })";
-DXGI_FORMAT DepthReadFormat(DXGI_FORMAT f)
-{
-    switch (f)
-    {
-    case DXGI_FORMAT_R32_TYPELESS:
-    case DXGI_FORMAT_R32_FLOAT:
-        return DXGI_FORMAT_R32_FLOAT;
-    case DXGI_FORMAT_R16_TYPELESS:
-    case DXGI_FORMAT_R16_UNORM:
-        return DXGI_FORMAT_R16_UNORM;
-    case DXGI_FORMAT_R16_FLOAT:
-        return DXGI_FORMAT_R16_FLOAT;
-    case DXGI_FORMAT_R24G8_TYPELESS:
-    case DXGI_FORMAT_R24_UNORM_X8_TYPELESS:
-        return DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
-    case DXGI_FORMAT_R32G8X24_TYPELESS:
-    case DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS:
-        return DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
-    default:
-        return DXGI_FORMAT_UNKNOWN;
-    }
-}
 std::string Layout(ID3D12Resource* resource)
 {
     auto d = resource->GetDesc();
@@ -201,22 +179,6 @@ const AmdLayout* IdentifyRuntime(const std::filesystem::path& file)
         if (data.size() == layout->size && std::memcmp(digest, layout->sha256.bytes, 32) == 0)
             return layout;
     return nullptr;
-}
-DXGI_FORMAT ReadFormat(DXGI_FORMAT f)
-{
-    switch (f)
-    {
-    case DXGI_FORMAT_R16G16B16A16_TYPELESS:
-        return DXGI_FORMAT_R16G16B16A16_FLOAT;
-    case DXGI_FORMAT_R32G32B32A32_TYPELESS:
-        return DXGI_FORMAT_R32G32B32A32_FLOAT;
-    case DXGI_FORMAT_R8G8B8A8_TYPELESS:
-        return DXGI_FORMAT_R8G8B8A8_UNORM;
-    case DXGI_FORMAT_R10G10B10A2_TYPELESS:
-        return DXGI_FORMAT_R10G10B10A2_UNORM;
-    default:
-        return f;
-    }
 }
 } // namespace
 const char* IdentifyRuntimeName(const std::filesystem::path& passDll)

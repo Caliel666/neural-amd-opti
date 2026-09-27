@@ -506,7 +506,8 @@ struct Context {
     // that. A caller that is *recording a command buffer* must not block the
     // thread it is on, and can do the same transition in that buffer for free:
     // it passes false and owns the layout from then on.
-    Image image(uint32_t w, uint32_t h, VkFormat format, bool sampled, bool settle = true) {
+    Image image(uint32_t w, uint32_t h, VkFormat format, bool sampled, bool settle = true,
+                bool storage = true) {
         Image im; im.w = w; im.h = h; im.format = format;
         VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
         ii.imageType = VK_IMAGE_TYPE_2D;
@@ -522,6 +523,9 @@ struct Context {
         ii.usage = (sampled ? VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT
                             : VK_IMAGE_USAGE_STORAGE_BIT)
                  | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        // A sampled-only image (the linear path's frame in its own format,
+        // which need not be storage-capable: 11/11/10).
+        if (!storage) ii.usage &= ~VkImageUsageFlags(VK_IMAGE_USAGE_STORAGE_BIT);
         ii.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         NRVK_CHECK(vkCreateImage(device, &ii, nullptr, &im.handle));

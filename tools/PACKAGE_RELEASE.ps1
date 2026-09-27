@@ -202,6 +202,9 @@ LmxxfTemporal=true
 ; threshold (in 1/255), blend it toward that frame, by the strength at no difference. 0 turns it off.
 LmxxfSmoothStrength=0.8
 LmxxfSmoothThreshold=10
+; lmxxf smoothing: blend only the model's change toward the previous frame and pass the game's own
+; picture through as it arrived, so the upscaler keeps its sample detail.
+LmxxfSmoothResidual=false
 ; mochizuki's tuning comes only from its own keys below, never the danielblnc, lmxxf or NVIDIA ones;
 ; every default is the network's own, except MochizukiColourStrength=0: the game's own colour at the
 ; network's brightness (1 applies the network's colour change in full). MochizukiPasses (1-3),
@@ -210,6 +213,8 @@ LmxxfSmoothThreshold=10
 ; MochizukiTemporal=auto follows LmxxfTemporal.
 MochizukiTemporal=true
 MochizukiHistoryStrength=1
+MochizukiStabilizerStrength=0
+MochizukiStabilizerThreshold=2
 MochizukiDetailStrength=1
 MochizukiColourStrength=0
 MochizukiPasses=1
@@ -257,6 +262,8 @@ AmdGraphicsWait=1
 AmdGraphicsUnsafe=0
 AmdNeuralLighting=true
 AmdNeuralLightingStrength=0.5
+AmdStabilizerStrength=0
+AmdStabilizerThreshold=2
 Passes=1
 LocalTone=0
 LocalStructure=1

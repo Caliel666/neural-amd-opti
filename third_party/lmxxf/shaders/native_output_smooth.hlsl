@@ -15,3 +15,25 @@ void main(uint3 id : SV_DispatchThreadID) {
     o = lerp(o, h.xyz, w);
     rgb[p*3] = o.x; rgb[p*3+1] = o.y; rgb[p*3+2] = o.z;
 }
+// OptiScaler, SMOOTH_RESIDUAL: the same blend on the network's change to its input (output - base) instead of the whole
+// output, so the game's own samples pass through as they came. warped then holds the previous frame's change, residual
+// keeps this frame's for the next; pad = 1 when warped is valid. A zero output (the fallback) or a non-finite change is
+// left as it is and stores no change.
+#if SMOOTH_RESIDUAL
+StructuredBuffer<float4> base : register(t1);
+RWStructuredBuffer<float4> residual : register(u1);
+[numthreads(64,1,1)]
+void residual_main(uint3 id : SV_DispatchThreadID) {
+    uint p = id.x; if (p >= pixels) return;
+    float3 o = float3(rgb[p*3], rgb[p*3+1], rgb[p*3+2]);
+    float3 b = base[p].xyz; float3 r = o - b;
+    if (all(o == 0) || any(!isfinite(r))) { residual[p] = float4(0,0,0,1); return; }
+    if (pad) {
+        float3 h = warped[p].xyz;
+        float d = max(max(abs(r.x-h.x), abs(r.y-h.y)), abs(r.z-h.z));
+        float w = strength * saturate(1.0 - d / threshold);
+        if (w > 0) { r = lerp(r, h, w); o = b + r; rgb[p*3] = o.x; rgb[p*3+1] = o.y; rgb[p*3+2] = o.z; }
+    }
+    residual[p] = float4(r, 1);
+}
+#endif

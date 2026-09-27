@@ -313,6 +313,13 @@ public:
     // The extent the network actually runs at (RuntimeConfig::model_scale applied).
     uint32_t model_width() const;
     uint32_t model_height() const;
+    // The image a frame must be recorded in, or null for the caller's own. On
+    // the linear path with one pass at the frame's extent and no mask, the
+    // runtime keeps the frame in its own format and samples it there, so the
+    // caller writes the frame into this image, hands it over as
+    // ColourFrame::image and reads the answer back out of it. It has
+    // TRANSFER_SRC and TRANSFER_DST usage and belongs to the runtime.
+    VkImage frame_image() const;
     // Change the post block's history strength (TemporalConfig::history_strength)
     // between frames. Takes effect on the next recording; no-op without a
     // temporal path.

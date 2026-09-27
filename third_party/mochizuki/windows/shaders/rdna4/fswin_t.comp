@@ -2343,6 +2343,12 @@ void main() {
 #if NR_FAIR
     uint nr_fair_done = 0u;
 #endif
+#ifndef NR_PERSIST_ONE
+#define NR_PERSIST_ONE 0
+#endif
+#if NR_PERSIST_ONE && (!NR_PERSIST_DF || NR_PBATCH > 1)
+#error "NR_PERSIST_ONE: dependency-driven single-item claims"
+#endif
     while (true) {
         // Claim, then broadcast through the slot. `atomicExchange` of the
         // counter's return, and `atomicAdd(slot, 0)` to read it back, because
@@ -5191,6 +5197,15 @@ void main() {
         if (tid == 0u) atomicExchange(nr_sync[nr_flag + nr_w], nr_epoch);
 #endif
         NR_PROF_ITEM_END(pcp.sync_off | 0x80000000u, nr_item)
+#if NR_PERSIST_ONE
+        // One workgroup per item when the host launches one per item (small
+        // C=256 grids): launch order is then claim order, so oldest-first wave
+        // arbitration runs the earliest-claimed items, the most upstream ones,
+        // first. A persistent workgroup keeps its age for the whole run, and one
+        // that launched last on its CU runs whatever it claims several times
+        // slower, on the run's critical chain.
+        if (gl_NumWorkGroups.x >= pcp.total_windows) break;
+#endif
         barrier();                  // the next window reuses every LDS array
 #ifndef NR_FAIR
 #define NR_FAIR 0

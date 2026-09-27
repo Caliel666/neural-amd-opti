@@ -70,6 +70,8 @@ extern "C"
 #define LMXXF_NR_FRAME_FLAG_CODEC_PASSTHROUGH (1u << 2)
 /* Each pass reads its own output from the previous frame, warped by the motion fields below. */
 #define LMXXF_NR_FRAME_FLAG_TEMPORAL (1u << 3)
+/* With TEMPORAL: the smoothing below acts on the network's change to the frame, not on its whole output. */
+#define LMXXF_NR_FRAME_FLAG_SMOOTH_RESIDUAL (1u << 4)
 
     typedef struct LmxxfNrFrameInfo
     {
@@ -96,7 +98,9 @@ extern "C"
         float motion_scale_y;
         uint32_t reset; /* nonzero drops every pass's history this frame */
         /* TEMPORAL: where the last pass's output differs from its warped history by less than the threshold
-           (colour units, 0..1), it is pulled toward the history, by the strength at no difference. 0 = off. */
+           (colour units, 0..1), it is pulled toward the history, by the strength at no difference. 0 = off.
+           SMOOTH_RESIDUAL applies the same rule to the output minus the frame's input, against that difference
+           from the previous frame, and adds the result back to the input. */
         float smooth_threshold;
         float smooth_strength;
     } LmxxfNrFrameInfo;

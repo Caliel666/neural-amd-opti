@@ -3,6 +3,7 @@
 #include "AwaitingListTracker.h"
 #include "../submission/SubmissionTls.h"
 #include "AmdPreSr.h"
+#include "ResidualStabilizer.h"
 #include "DynamicScale.h"
 #include "PresentExperimental.h"
 #include "../backend/DanielBackend.h"
@@ -66,6 +67,7 @@ struct FrameIdentity
 std::mutex frameMutex;
 FrameIdentity lastFrame {};
 UINT stableFrames = 0;
+uint64_t runSerial = 0;
 
 // Dynamic NR resolution. The controller is stepped under frameMutex; the menu reads the atomics,
 // which stay zero while it is off.
@@ -77,6 +79,13 @@ std::atomic<int> dynamicChangesNow { 0 };
 // and the applied result, every pass together. Used under frameMutex; the menu reads neuralMsNow.
 std::unique_ptr<GpuTime_Dx12> neuralTimer;
 std::atomic<float> neuralMsNow { 0 };
+
+// The residual stabilizer between the runtime and SR (pre-SR, danielblnc and mochizuki), made with the backend; the
+// last Run it filtered and when. Used under frameMutex, except Invalidate.
+std::unique_ptr<AmdPreSr::ResidualStabilizer> stabilizer;
+uint64_t lastStabilizedSerial = 0;
+ULONGLONG lastStabilizedTick = 0;
+bool stabilizerFailed = false;
 
 thread_local uint64_t submitOrdinal = 0; // Monotonic per-thread submission counter.
 
@@ -390,6 +399,7 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
     // A single backend consumes one SR stream even if the engine rotates worker threads.
     // Serialize shared settling/identity state; thread-local replacement ownership stays unchanged.
     std::lock_guard frameGuard(frameMutex);
+    ++runSerial;
     DlssNr::Backend::LmxxfProbe::CurrentEvidence() = {};
     if (!HasFiles())
         return false;
@@ -496,6 +506,8 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
             b = new DlssNr::Backend::DanielBackend(device, q, Directory());
         device->QueryInterface(IID_IUnknown, reinterpret_cast<void**>(&backendDevice));
         backendAdapter = adapter;
+        // Before the backend is published: InvalidateHistory reaches the stabilizer through it.
+        stabilizer = std::make_unique<AmdPreSr::ResidualStabilizer>(device);
         backend.store(b);
         neuralTimer = std::make_unique<GpuTime_Dx12>(device);
     }
@@ -683,6 +695,14 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
     params->Get(NVSDK_NGX_Parameter_MV_Scale_X, &f.motionScaleX);
     params->Get(NVSDK_NGX_Parameter_MV_Scale_Y, &f.motionScaleY);
     const auto& cfg = *Config::Instance();
+    const bool jitteredMotion = cfg.JitterCancellation.has_value()
+                                    ? cfg.JitterCancellation.value()
+                                    : haveFlags && (flags & NVSDK_NGX_DLSS_Feature_Flags_MVJittered) != 0;
+    if (!jitteredMotion)
+    {
+        params->Get(NVSDK_NGX_Parameter_Jitter_Offset_X, &f.jitterX);
+        params->Get(NVSDK_NGX_Parameter_Jitter_Offset_Y, &f.jitterY);
+    }
     if (afterUpscale)
         f.colourState = cfg.OutputResourceBarrier.has_value()
                             ? static_cast<D3D12_RESOURCE_STATES>(cfg.OutputResourceBarrier.value())
@@ -765,6 +785,51 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
     if (neuralTimer)
         neuralTimer->Start(cmd);
     auto replacement = b->Record(cmd, f, s);
+    // lmxxf smooths inside its runtime and has no stabilizer key.
+    float stabilizerStrength = 0, stabilizerThreshold = 2;
+    if (mochizuki)
+    {
+        stabilizerStrength = cfg.MochizukiStabilizerStrength.value_or_default();
+        stabilizerThreshold = cfg.MochizukiStabilizerThreshold.value_or_default();
+    }
+    else if (active != DlssNr::Backend::Kind::Lmxxf)
+    {
+        stabilizerStrength = cfg.AmdStabilizerStrength.value_or_default();
+        stabilizerThreshold = cfg.AmdStabilizerThreshold.value_or_default();
+    }
+    if (replacement && !afterUpscale && stabilizerStrength > 0 && !stabilizerFailed)
+    {
+        // The history bridges the runtime's own restarts. A Run that returned early, a reset or a 250 ms gap drops it.
+        const bool continuous = lastStabilizedSerial == runSerial - 1 && now - lastStabilizedTick < 250 && !f.reset;
+        try
+        {
+            const auto stabilized =
+                stabilizer->Record(cmd, f, replacement, continuous, std::min(stabilizerStrength, 1.f),
+                                   std::clamp(stabilizerThreshold, .5f, 8.f));
+            if (stabilized != replacement)
+            {
+                replacement = stabilized;
+                lastStabilizedSerial = runSerial;
+                lastStabilizedTick = now;
+            }
+            else
+            {
+                static bool loggedDepth = false;
+                if (!loggedDepth)
+                {
+                    loggedDepth = true;
+                    LOG_INFO("AMD pre-SR: residual stabilizer skipped: the game's depth is not shader readable");
+                }
+            }
+        }
+        catch (const std::exception& e)
+        {
+            stabilizerFailed = true;
+            LOG_ERROR("AMD pre-SR: residual stabilizer off for this session: {}", e.what());
+        }
+    }
+    else
+        stabilizer->Idle();
     if (neuralTimer)
     {
         neuralTimer->End(cmd);
@@ -814,7 +879,10 @@ void Restore(NVSDK_NGX_Parameter* params)
 void InvalidateHistory()
 {
     if (auto b = backend.load())
+    {
         b->InvalidateHistory();
+        stabilizer->Invalidate();
+    }
 }
 void TraceContextRelease(unsigned int handle, bool after)
 {

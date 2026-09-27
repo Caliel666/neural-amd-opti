@@ -803,8 +803,8 @@ struct SharedBuffer
         hp.Type = D3D12_HEAP_TYPE_DEFAULT;
         D3D12_RESOURCE_DESC rd {};
         rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-        // Never below 16 MB. In Cyberpunk 2077 the driver refused the handle (E_INVALIDARG) of buffers of 1.9 to 4.2 MB,
-        // for seconds to minutes, and never of those of 7.4 MB and more.
+        // Never below 16 MB. In Cyberpunk 2077 the driver refused the handle (E_INVALIDARG) of buffers of 1.9 to 4.2
+        // MB, for seconds to minutes, and never of those of 7.4 MB and more.
         rd.Width = std::max((bytes + 65535) & ~UINT64(65535), UINT64(16) << 20);
         rd.Height = rd.DepthOrArraySize = rd.MipLevels = 1;
         rd.SampleDesc.Count = 1;
@@ -1278,9 +1278,10 @@ constexpr ULONGLONG kVramRetryMs = 10'000; // the VRAM check, after it refused
 // passes it is built for, plus images at the frame's extent when the model is scaled down), what the frame's buffers
 // cost per frame pixel, and a margin; allowed while it all fits in this share of the budget. The network's terms are
 // this process's VRAM growth while a network was built on an RX 9070 XT, driver 26.8.1, at 720p to 2160p, 1 to 3
-// passes and model scale 0.5 to 1 (WORK/S2/fix1/calib): every estimate is 0.5-4.3% above what was measured.
+// passes and model scale 0.5 to 1 (WORK/S2/fix1/calib): every estimate is 0.5-4.3% above what was measured. The per
+// model pixel term adds 16 bytes to that calibration for the second RGBA32F history image a one-pass network keeps.
 constexpr UINT64 kNetworkFixedBytes = 160ull << 20;
-constexpr UINT64 kModelPixelBytes = 272;
+constexpr UINT64 kModelPixelBytes = 288;
 constexpr double kPassFactor[] = { 1.0, 1.2, 1.3 }; // by the passes built for (max_passes), 1 to kMaxPasses
 static_assert(std::size(kPassFactor) == kMaxPasses);
 constexpr UINT64 kScaledFramePixelBytes = 36;
@@ -3179,11 +3180,14 @@ struct Session
                          VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                          VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT);
         };
-        upload(input, colourImage, colourFootprint, w, h, padded);
+        // The frame goes up into the runtime's own image when it keeps the frame in its format (frame_image, the
+        // linear path), and the answer comes back out of the same image.
+        const Image colour = runtime->frame_image() ? Image { runtime->frame_image() } : colourImage;
+        upload(input, colour, colourFootprint, w, h, padded);
         if (padded)
         {
-            Pad(c, colourImage.image, w, h, W, H);
-            ready(colourImage.image);
+            Pad(c, colour.image, w, h, W, H);
+            ready(colour.image);
         }
         const bool motion = job.motion && motionImage.image;
         // The image the network reads the vectors from, and its extent: the uploaded one, or the bucket-sized one with
@@ -3236,7 +3240,7 @@ struct Session
             throw std::runtime_error("MZ_TEST_ENQUEUE_THROW_AT: recording the network failed (test hook)");
 
         nr::EngineFrame frame {};
-        frame.colour.image = colourImage.image;
+        frame.colour.image = colour.image;
         frame.colour.format = colourVk;
         frame.colour.width = W;
         frame.colour.height = H;
@@ -3273,12 +3277,12 @@ struct Session
             gpuMsCount = std::min(gpuMsCount + 1, kGpuSamples);
         }
 
-        ImageBarrier(c, colourImage.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        ImageBarrier(c, colour.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                      VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                      VK_ACCESS_TRANSFER_READ_BIT);
         VkBufferImageCopy out = colourFootprint.vk;
         out.imageExtent = { w, h, 1 };
-        vkCmdCopyImageToBuffer(c, colourImage.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, output.buffer, 1, &out);
+        vkCmdCopyImageToBuffer(c, colour.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, output.buffer, 1, &out);
         VkCheck(vkEndCommandBuffer(c), "vkEndCommandBuffer");
 
         // The producer half is already on the game queue: after Follow, its signal releases our submit, ours releases

@@ -134,6 +134,16 @@ struct Temporal {
     nrvk::Context::Image flow0_sampled{};   // the same image, sampled alias
     VkSampler motion_sampler{};             // owned here; the alias does not own its image
     nrvk::Context::Image history{};
+    // One pass: two history images in turn. The post variant writes the model's
+    // image straight into the one the next frame reads (pre/post read
+    // hist(cur), post writes hist(cur ^ 1)), instead of into surf1 and a copy:
+    // a whole RGBA32F frame read and written once a frame.
+    nrvk::Context::Image history_b{};
+    nrvk::Kernel pre_pp[2], post_pp[2];
+    nrvk::Context::Image hist_store[2]{};
+    bool pingpong{};
+    uint32_t hcur{};
+    nrvk::Context::Image& hist(uint32_t i) { return i ? history_b : history; }
     // Where the engine's depth is put, so the consumer has one descriptor
     // whether a game supplies depth or not. Allocated always and left cleared
     // when it is not; the shader is told which by the parameter buffer rather
@@ -164,6 +174,11 @@ struct Temporal {
         ctx.destroy(depth);
         if (pre.device) pre.destroy();
         if (post.device) post.destroy();
+        for (unsigned c = 0; c < 2; ++c) {
+            if (pre_pp[c].device) pre_pp[c].destroy();
+            if (post_pp[c].device) post_pp[c].destroy();
+        }
+        if (history_b.handle) ctx.destroy(history_b);
         // flow0_sampled aliases flow[0]; only its sampler is ours to free.
         if (motion_sampler) vkDestroySampler(ctx.device, motion_sampler, nullptr);
         ctx.destroy(history);
@@ -178,6 +193,9 @@ struct Runtime::Impl {
     // original kept here for the decode. Only when RuntimeConfig::linear_input.
     nrvk::Kernel encode, transfer_pass;
     nrvk::Context::Image keep{};
+    // keep is the frame itself, in its own format, and the host fills it
+    // (frame_image): one pass at the frame's extent, no mask, not 8-bit.
+    bool keep_frame{};
     bool linear{};
     float white_point{1.0f};
     // Model Resolution: the network runs at mw x mh, the frame is width x
@@ -242,7 +260,7 @@ struct Runtime::Impl {
     // network and the extent, not of the handle.
     //
     // So a feature here is exactly this: one history image, the first-frame
-    // latch and the estimator's parity. `temporal.history` stays the image the
+    // latch and the estimator's parity. `temporal.hist(hcur)` is the image the
     // pre/post descriptor sets are baked against - it is the *bound* history -
     // and a feature's own image is copied into it on the way in and back out on
     // the way out, but only when the bound feature actually changes. With one
@@ -586,20 +604,37 @@ Runtime::Runtime(const HostDevice& host, const RuntimeConfig& config, const Cont
     if (config.linear_input) {
         impl_->linear = true;
         impl_->white_point = config.white_point;
-        // Sampled, because the transfer reads it; the encode writes it through
-        // a storage alias (same image and view, no sampler, GENERAL).
-        impl_->keep = s.ctx.image(mw, mh, VK_FORMAT_R32G32B32A32_SFLOAT, true);
-        s.ctx.transition(impl_->keep, VK_IMAGE_LAYOUT_GENERAL);
-        nrvk::Context::Image keep_storage = impl_->keep;
-        keep_storage.sampler = VK_NULL_HANDLE;
         // tex_in as a storage image, in GENERAL for the one pass that writes it.
         // Same VkImage and view as the sampled descriptor every kernel reads;
         // the alias owns nothing and is never destroyed.
         nrvk::Context::Image tex_in_storage = s.tex_in;
         tex_in_storage.sampler = VK_NULL_HANDLE;
         tex_in_storage.layout = VK_IMAGE_LAYOUT_GENERAL;
-        impl_->encode.create(s.ctx, (adapters / "runtime_encode.spv").string(), {}, 16,
-                             {&tex_in_storage, &keep_storage});
+        // One pass at the frame's extent: keep is the frame in its own format,
+        // written by the host (frame_image) and read in SHADER_READ_ONLY, so
+        // there is no blit into tex_in and no RGBA32F copy of the frame. The
+        // encode samples it exactly as the blit converted it. Any other
+        // configuration blits the frame into tex_in and the encode copies it
+        // into an RGBA32F keep.
+        VkFormatProperties fp{};
+        vkGetPhysicalDeviceFormatProperties(host.physical, config.colour_format, &fp);
+        impl_->keep_frame = !impl_->scaled && config.max_passes == 1 && !mask_config.width &&
+                            transfer != Transfer::Encoded &&
+                            (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT);
+        if (impl_->keep_frame) {
+            impl_->keep = s.ctx.image(mw, mh, config.colour_format, true, true, false);
+            impl_->encode.create(s.ctx, (adapters / "runtime_encode_in.spv").string(), {}, 16,
+                                 {&tex_in_storage, &impl_->keep});
+        } else {
+            // Sampled, because the transfer reads it; the encode writes it through
+            // a storage alias (same image and view, no sampler, GENERAL).
+            impl_->keep = s.ctx.image(mw, mh, VK_FORMAT_R32G32B32A32_SFLOAT, true);
+            s.ctx.transition(impl_->keep, VK_IMAGE_LAYOUT_GENERAL);
+            nrvk::Context::Image keep_storage = impl_->keep;
+            keep_storage.sampler = VK_NULL_HANDLE;
+            impl_->encode.create(s.ctx, (adapters / "runtime_encode.spv").string(), {}, 16,
+                                 {&tex_in_storage, &keep_storage});
+        }
     }
     // The transfer runs on every frame at the FRAME extent: `result` and
     // `shown` are model-sized (sampled bilinearly when scaled), `keep` is the
@@ -723,18 +758,36 @@ Runtime::Runtime(const HostDevice& host, const RuntimeConfig& config, const Cont
                                             first ? &t.flow[k] : &t.flow[k + 1], &t.flow[k]});
             }
         }
-        t.pre.create(s.ctx, (shaders / "temporal_pre_fp32.spv").string(),
-                     {s.act.handle, s.act.handle, s.wgt.handle, s.wgt.handle, s.wgt.handle,
-                      s.act.handle, t.params.handle},
-                     sizeof(PushFSwin) + sizeof(PushPreImage),
-                     {&s.tex_in, &t.flow0_sampled, &t.history, &t.depth});
-        // The post variant reads the same parameter buffer, the motion field and
-        // the history the pre variant does: its blend is gated by the same term.
-        t.post.create(s.ctx, (shaders / "temporal_post_fp32.spv").string(),
-                      {s.act.handle, s.act.handle, s.wgt.handle, s.wgt.handle, s.wgt.handle,
-                       t.params.handle},
-                      sizeof(PushFSwin) + sizeof(PushUps) + sizeof(PushImageTail),
-                      {&s.surf0, &s.surf1, &s.tex_in, &t.flow0_sampled, &t.history});
+        t.pingpong = config.max_passes == 1;
+        if (t.pingpong) {
+            t.history_b = s.ctx.image(mw, mh, VK_FORMAT_R32G32B32A32_SFLOAT, true);
+            vkDestroySampler(s.ctx.device, t.history_b.sampler, nullptr);
+            t.history_b.sampler = linear_sampler();
+            s.ctx.transition(t.history_b, VK_IMAGE_LAYOUT_GENERAL);
+        }
+        // The storage view of a history image the post variant writes: the same
+        // image and view, no sampler (an alias; it owns nothing).
+        auto storage_of = [](const nrvk::Context::Image& im) {
+            nrvk::Context::Image a = im; a.sampler = VK_NULL_HANDLE; return a;
+        };
+        t.hist_store[0] = storage_of(t.hist(0)); t.hist_store[1] = storage_of(t.hist(1));
+        for (unsigned c = 0; c < (t.pingpong ? 2u : 1u); ++c) {
+            nrvk::Kernel& pre = t.pingpong ? t.pre_pp[c] : t.pre;
+            nrvk::Kernel& post = t.pingpong ? t.post_pp[c] : t.post;
+            pre.create(s.ctx, (shaders / "temporal_pre_fp32.spv").string(),
+                       {s.act.handle, s.act.handle, s.wgt.handle, s.wgt.handle, s.wgt.handle,
+                        s.act.handle, t.params.handle},
+                       sizeof(PushFSwin) + sizeof(PushPreImage),
+                       {&s.tex_in, &t.flow0_sampled, &t.hist(c), &t.depth});
+            // The post variant reads the same parameter buffer, the motion field and
+            // the history the pre variant does: its blend is gated by the same term.
+            post.create(s.ctx, (shaders / "temporal_post_fp32.spv").string(),
+                        {s.act.handle, s.act.handle, s.wgt.handle, s.wgt.handle, s.wgt.handle,
+                         t.params.handle},
+                        sizeof(PushFSwin) + sizeof(PushUps) + sizeof(PushImageTail),
+                        {&s.surf0, t.pingpong ? &t.hist_store[c ^ 1u] : &s.surf1, &s.tex_in,
+                         &t.flow0_sampled, &t.hist(c)});
+        }
         t.history_strength = temporal_config.history_strength;
         t.enabled = true;
         // One history per pass. Pass k reads and writes store[k] through the
@@ -788,6 +841,7 @@ Runtime::~Runtime() = default;
 
 uint32_t Runtime::model_width() const { return impl_->mw; }
 uint32_t Runtime::model_height() const { return impl_->mh; }
+VkImage Runtime::frame_image() const { return impl_->keep_frame ? impl_->keep.handle : VK_NULL_HANDLE; }
 
 void Runtime::set_white_point(float v) {
     if (impl_->linear) impl_->white_point = v > 1e-4f ? v : 1e-4f;
@@ -817,9 +871,10 @@ Runtime::TemporalHistoryView Runtime::temporal_history() const {
     TemporalHistoryView v{};
     const auto& t = impl_->temporal;
     if (!t.enabled) return v;
-    v.image = t.history.handle; v.view = t.history.view;
-    v.width = t.history.w; v.height = t.history.h;
-    v.format = t.history.format; v.layout = t.history.layout;
+    const auto& h = const_cast<Temporal&>(t).hist(t.hcur);
+    v.image = h.handle; v.view = h.view;
+    v.width = h.w; v.height = h.h;
+    v.format = h.format; v.layout = h.layout;
     return v;
 }
 
@@ -875,7 +930,7 @@ ControlMaskResult Runtime::record_all(VkCommandBuffer cmd, const ColourFrame& fr
         frame.width != impl_->width || frame.height != impl_->height ||
         !frame.before_stage || !frame.after_stage || frame.before == VK_IMAGE_LAYOUT_UNDEFINED ||
         frame.before == VK_IMAGE_LAYOUT_PREINITIALIZED || frame.after == VK_IMAGE_LAYOUT_UNDEFINED ||
-        frame.after == VK_IMAGE_LAYOUT_PREINITIALIZED)
+        frame.after == VK_IMAGE_LAYOUT_PREINITIALIZED || (impl_->keep_frame && frame.image != impl_->keep.handle))
         throw std::invalid_argument("invalid NR colour frame");
     uint32_t mw=0,mh=0;
     if (mask) {
@@ -943,11 +998,23 @@ ControlMaskResult Runtime::record_all(VkCommandBuffer cmd, const ColourFrame& fr
     // The network extent (Model Resolution); the frame is frame.width x frame.height.
     const uint32_t nw = impl_->mw, nh = impl_->mh;
     const uint32_t passes = std::min<uint32_t>(std::max(effective.passes, 1), impl_->max_passes);
-    barrier(cmd, frame.image, frame.before, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            frame.before_stage, frame.before_access, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);
-    barrier(cmd, s.tex_in.handle, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
-            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+    // Where the frame is read from until the write-back: blitted into tex_in,
+    // or, when it is keep, sampled by the encode and the transfer pass.
+    const VkImageLayout frame_in = impl_->keep_frame ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                                                     : VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    const VkPipelineStageFlags frame_stage = impl_->keep_frame ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+                                                               : VK_PIPELINE_STAGE_TRANSFER_BIT;
+    const VkAccessFlags frame_access = impl_->keep_frame ? VK_ACCESS_SHADER_READ_BIT : VK_ACCESS_TRANSFER_READ_BIT;
+    barrier(cmd, frame.image, frame.before, frame_in,
+            frame.before_stage, frame.before_access, frame_stage, frame_access);
+    if (impl_->keep_frame)
+        barrier(cmd, s.tex_in.handle, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT);
+    else
+        barrier(cmd, s.tex_in.handle, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
+                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
     VkImageCopy region{};
     region.srcSubresource = region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     region.extent = {frame.width, frame.height, 1};
@@ -965,7 +1032,9 @@ ControlMaskResult Runtime::record_all(VkCommandBuffer cmd, const ColourFrame& fr
                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
                 VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
     }
-    if(encoded.handle) {
+    if (impl_->keep_frame) {
+        // keep is the frame: the encode reads it where it is.
+    } else if(encoded.handle) {
         barrier(cmd,encoded.handle,VK_IMAGE_LAYOUT_GENERAL,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_READ_BIT,
                 VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
@@ -1005,9 +1074,10 @@ ControlMaskResult Runtime::record_all(VkCommandBuffer cmd, const ColourFrame& fr
     if (impl_->linear) {
         // Linear light: make the proxy in place and keep the original. The
         // network reads tex_in in SHADER_READ_ONLY like every other frame.
-        barrier(cmd, s.tex_in.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
-                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
-                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+        if (!impl_->keep_frame)
+            barrier(cmd, s.tex_in.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
         struct { uint32_t w, h; float white, knee; } push{nw, nh, impl_->white_point, 0.75f};
         dispatch(cmd, impl_->encode, (nw + 7) / 8, (nh + 7) / 8, 1, &push, sizeof push);
         barrier(cmd, s.tex_in.handle, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -1191,7 +1261,7 @@ ControlMaskResult Runtime::record_all(VkCommandBuffer cmd, const ColourFrame& fr
     if (fs && impl_->bound_feature != temporal->feature) {
         if (impl_->bound_feature) {
             auto prev = impl_->features.find(impl_->bound_feature);
-            if (prev != impl_->features.end()) copy_general(t.history, prev->second.history);
+            if (prev != impl_->features.end()) copy_general(t.hist(t.hcur), prev->second.history);
         }
         if (!fs->cleared) {
             // A fresh feature's image is whatever the allocator left there. The
@@ -1211,14 +1281,14 @@ ControlMaskResult Runtime::record_all(VkCommandBuffer cmd, const ColourFrame& fr
             fs->history.layout = VK_IMAGE_LAYOUT_GENERAL;
             fs->cleared = true;
         }
-        copy_general(fs->history, t.history);
+        copy_general(fs->history, t.hist(t.hcur));
         impl_->bound_feature = temporal->feature;
     }
     // The passes. Pass k > 0 takes pass k-1's answer (surf0, the blended
     // output) as its colour, the same motion and depth, and its own history:
     // store[k] is copied into the bound history image before the pass and
-    // the model's write (surf1) copied back after it. With one pass the
-    // history round trip is the single copy it always was.
+    // the model's write (surf1) copied back after it. With one pass there is
+    // no copy: the post variant writes the history the next frame reads.
     for (uint32_t pass = 0; pass < passes; ++pass) {
         if (pass > 0 && impl_->cascade_detail) {
             // Detail only: the first pass's input with the previous pass's
@@ -1266,8 +1336,8 @@ ControlMaskResult Runtime::record_all(VkCommandBuffer cmd, const ColourFrame& fr
             const auto& step = s.steps[i];
             const nrvk::Kernel* use = step.k;
             if (mask && step.k==impl_->original_pre) use = &impl_->mask_pre;
-            else if (temporal && step.k==t.original_pre) use = &t.pre;
-            else if (temporal && step.k==t.original_post) use = &t.post;
+            else if (temporal && step.k==t.original_pre) use = t.pingpong ? &t.pre_pp[t.hcur] : &t.pre;
+            else if (temporal && step.k==t.original_post) use = t.pingpong ? &t.post_pp[t.hcur] : &t.post;
             // Each pass has its own controls; see `pass_push`. An empty entry
             // means that dispatch carries none, so pass 1's push stands.
             const void* push = step.push;
@@ -1284,7 +1354,7 @@ ControlMaskResult Runtime::record_all(VkCommandBuffer cmd, const ColourFrame& fr
             compute_barrier(cmd, s.runner.exec_barrier && !last,
                             s.runner.inv_barrier && !last);
         }
-        if (temporal) {
+        if (temporal && !t.pingpong) {
             // History is a copy of what the MODEL wrote - the temporal post variant
             // puts that on the second surface, before the application strength -
             // and it is taken independently of whatever composition follows.
@@ -1317,6 +1387,8 @@ ControlMaskResult Runtime::record_all(VkCommandBuffer cmd, const ColourFrame& fr
         // it: reset suppresses consumption, it does not un-write the buffer.
         if (fs) { fs->latch = true; fs->parity ^= 1u; }
         else { t.latch = true; t.parity ^= 1u; }
+        // The post variant wrote this frame's history into the other image.
+        if (t.pingpong) t.hcur ^= 1u;
         if (history_consumed) *history_consumed = gate;
     }
     // Retired features, destroyed once enough recordings have gone by that the
@@ -1334,6 +1406,10 @@ ControlMaskResult Runtime::record_all(VkCommandBuffer cmd, const ColourFrame& fr
             dispatch(cmd,impl_->mask_resolve,(frame.width+7)/8,(frame.height+7)/8,1,&push,sizeof push);
             compute_barrier(cmd);
         }
+        // The transfer pass stores the frame's alpha from its `keep`, which holds
+        // the same alpha as the alpha pass's source in every configuration, so the
+        // alpha pass runs only for the mask, native compose and 8-bit rounding.
+        const bool alpha_pass = mask || impl_->native_compose || encoded.handle != VK_NULL_HANDLE;
         if (!mask && !impl_->native_compose) {
             // The model's answer onto the frame, as OptiScaler DLSS-NR's
             // resolve; see the shader. At the frame extent; the model-sized
@@ -1342,16 +1418,17 @@ ControlMaskResult Runtime::record_all(VkCommandBuffer cmd, const ColourFrame& fr
                 push{frame.width, frame.height, nw, nh, impl_->linear ? 0u : 1u,
                      c.detail_strength, c.colour_strength, c.max_ratio, impl_->white_point};
             dispatch(cmd, impl_->transfer_pass, (frame.width + 7) / 8, (frame.height + 7) / 8, 1, &push, sizeof push);
-            compute_barrier(cmd);
+            if (alpha_pass) compute_barrier(cmd);
         }
         const VkImage out = impl_->scaled ? impl_->full_out.handle : s.surf0.handle;
         const uint32_t extent[] = {frame.width, frame.height, uint32_t(encoded.handle != VK_NULL_HANDLE)};
-        dispatch(cmd, impl_->alpha, (frame.width + 7) / 8, (frame.height + 7) / 8, 1, extent, sizeof extent);
+        if (alpha_pass)
+            dispatch(cmd, impl_->alpha, (frame.width + 7) / 8, (frame.height + 7) / 8, 1, extent, sizeof extent);
         barrier(cmd, out, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT,
                 VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);
-        barrier(cmd, frame.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+        barrier(cmd, frame.image, frame_in, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                frame_stage, frame_access,
                 VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
         if(encoded.handle) {
             barrier(cmd,encoded.handle,VK_IMAGE_LAYOUT_GENERAL,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -1379,9 +1456,9 @@ ControlMaskResult Runtime::record_all(VkCommandBuffer cmd, const ColourFrame& fr
                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
         info.applied = true;
     }
-    barrier(cmd, frame.image, c.apply_model ? VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL : VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            frame.after, VK_PIPELINE_STAGE_TRANSFER_BIT,
-            c.apply_model ? VK_ACCESS_TRANSFER_WRITE_BIT : VK_ACCESS_TRANSFER_READ_BIT,
+    barrier(cmd, frame.image, c.apply_model ? VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL : frame_in,
+            frame.after, c.apply_model ? VK_PIPELINE_STAGE_TRANSFER_BIT : frame_stage,
+            c.apply_model ? VK_ACCESS_TRANSFER_WRITE_BIT : frame_access,
             frame.after_stage, frame.after_access);
     if (impl_->timing_ok) {
         vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, impl_->timing,

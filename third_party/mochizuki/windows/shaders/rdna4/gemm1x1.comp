@@ -789,11 +789,89 @@ void nr_finish_tile(uint tok0, uint ch0, uint wave, uint lane) {   // NOLINT
 // each of those eight is still two contiguous 32-byte runs across the wave, and
 // sixteen fragments of LDS round trip is the larger number. Measured, not
 // assumed; see the round doc.
-#if NR_EPI_FRAGMENT && NR_ACC_F16 == 0 && !NR_POOL \
+// NR_SWAP_AB: multiply W x X^T instead of X x W^T (see nr_finish_fragment).
+#ifndef NR_SWAP_AB
+#define NR_SWAP_AB 0
+#endif
+// NR_OUT_PERM: 0 off, 1 raster->tile store, 2 tiled store + raster copy
+// (see nr_finish_fragment). E4M3 tiled fragment epilogue only.
+#ifndef NR_OUT_PERM
+#define NR_OUT_PERM 0
+#endif
+// NR_POOL_FRAG: gemmpool on the fragment epilogue. The 2x2 block whose
+// top-left token row is r reads rows r, r+1, r+4, r+5 - components c0, c0+1,
+// c0+4, c0+5 (c0 = 0, 2) of the lane holding rows row0..row0+7 - so the pool
+// needs no LDS round trip. Same arithmetic as the lds_e pool below.
+#ifndef NR_POOL_FRAG
+#define NR_POOL_FRAG 0
+#endif
+#if NR_POOL_FRAG && (!NR_POOL || NR_POOL_Q || !defined(NR_R_E4M3) || NR_SWAP_AB || NR_OUT_PERM)
+#error "NR_POOL_FRAG: gemmpool's shape only (NR_POOL, no NR_POOL_Q, e4m3 residual)"
+#endif
+#if NR_EPI_FRAGMENT && NR_ACC_F16 == 0 && (!NR_POOL || NR_POOL_FRAG) \
     && (defined(NR_OUT_TILED) || !defined(NR_OUT_E4M3)) \
     && (defined(NR_NO_RESIDUAL) || defined(NR_R_E4M3)) \
     && !defined(NR_DS_SHEAR) && !defined(NR_DEBUG_F32) && !defined(NR_EPI_WMMA)
 #define NR_USE_FRAGMENT_EPI 1
+#if NR_SWAP_AB
+// NR_SWAP_AB: the MMA is W x X^T, so the accumulator's rows are output
+// channels and its columns tokens. A lane holds token tok0 + lane%16 and the
+// eight channels ch0 + 8*(lane/16) + 0..7 - eight contiguous bytes of the
+// tile-blocked arena - so the residual is one 8-byte load, the output one
+// 8-byte store and the fp8 conversions pair up. Per element the arithmetic is
+// the unswapped epilogue's, on the same (token, channel) element.
+void nr_finish_fragment(NR_FRAG_ACC a, uint tok0, uint ch0, uint lane) {
+    if (tok0 >= pc.M) return;
+    const uint tk = lane % 16u, c8 = 8u * (lane / 16u);
+    const uint tile = ((tok0 / 16u) * (pc.N / 16u) + ch0 / 16u) * 256u;
+#ifndef NR_NO_RESIDUAL
+    const uint gq = (pc.g_off + ch0 + c8) / 4u;
+    const f16vec4 g0 = wgt_f16x4[gq], g1 = wgt_f16x4[gq + 1u];
+    const uint rq = (pc.r_off + tile + tk * 16u + c8) / 4u;
+    const fe4m3vec4 r0 = act_e4m3x4[rq], r1 = act_e4m3x4[rq + 1u];
+#endif
+    NR_E4M3 qv[8];
+    for (int c = 0; c < 8; ++c) {
+        float raw = a[c];
+#ifdef NR_NO_RESIDUAL
+        NR_F16 v = NR_F16(NR_ACT_APPLY(raw));
+#else
+        const NR_F16 g = c < 4 ? g0[c] : g1[c - 4];
+        const NR_F16 r = NR_F16(c < 4 ? r0[c] : r1[c - 4]);
+#ifdef NR_EPILOGUE_NVIDIA
+        float gr = nr_round_f16(float(g) * float(r));
+        NR_F16 v = NR_F16(nr_round_f16(raw) + gr);
+#else
+        NR_F16 v = NR_F16(NR_ACT_APPLY(raw + float(g) * float(r)));
+#endif
+#endif
+        qv[c] = nr_quant_e4m3(v);
+    }
+    const fe4m3vec4 q0 = fe4m3vec4(qv[0], qv[1], qv[2], qv[3]), q1 = fe4m3vec4(qv[4], qv[5], qv[6], qv[7]);
+    const uint t = tok0 + tk;
+#if NR_OUT_PERM == 1
+    // Raster token -> tile position (see the unswapped NR_OUT_PERM note).
+    const uint y = t / pc.W, x = t % pc.W;
+    const uint d = ((y / 4u) * (pc.W / 4u) + x / 4u) * 16u + (y % 4u) * 4u + x % 4u;
+    if (y < pc.rows) {
+        const uint oq = (pc.o_off + ((d / 16u) * (pc.N / 16u) + ch0 / 16u) * 256u + (d % 16u) * 16u + c8) / 4u;
+        act_e4m3x4[oq] = q0; act_e4m3x4[oq + 1u] = q1;
+    }
+#else
+    const uint oq = (pc.o_off + tile + tk * 16u + c8) / 4u;
+    act_e4m3x4[oq] = q0; act_e4m3x4[oq + 1u] = q1;
+#if NR_OUT_PERM == 2
+    const uint tt = t / 16u;
+    const uint y = (tt / (pc.W / 4u)) * 4u + (t % 16u) / 4u, x = (tt % (pc.W / 4u)) * 4u + t % 4u;
+    const uint d = y * pc.W + x;
+    if (y < pc.rows) {
+        const uint pq = (pc.p_off + ((d / 16u) * (pc.N / 16u) + ch0 / 16u) * 256u + (d % 16u) * 16u + c8) / 4u;
+        act_e4m3x4[pq] = q0; act_e4m3x4[pq + 1u] = q1;
+    }
+#endif
+#endif
+}
+#else
 void nr_finish_fragment(NR_FRAG_ACC a, uint tok0, uint ch0, uint lane) {
     if (tok0 >= pc.M) return;
     uint col = lane % 16u, row0 = 8u * (lane / 16u);
@@ -803,6 +881,12 @@ void nr_finish_fragment(NR_FRAG_ACC a, uint tok0, uint ch0, uint lane) {
 #endif
 #ifdef NR_OUT_E4M3
     NR_FRAG_E4M3 result;
+#if NR_OUT_PERM
+    NR_E4M3 qv[8];
+#endif
+#if NR_POOL_FRAG
+    NR_F16 pvv[8];
+#endif
 #else
     NR_FRAG_ACC16 result;
 #endif
@@ -823,7 +907,18 @@ void nr_finish_fragment(NR_FRAG_ACC a, uint tok0, uint ch0, uint lane) {
 #endif
 #endif
 #ifdef NR_OUT_E4M3
+#if NR_OUT_PERM
+        const NR_E4M3 qc = nr_quant_e4m3(v);
+        qv[c] = qc;
+#if NR_OUT_PERM == 2
+        result[c] = qc;
+#endif
+#else
         result[c] = nr_quant_e4m3(v);
+#endif
+#if NR_POOL_FRAG
+        pvv[c] = v;
+#endif
 #else
         result[c] = v;
 #endif
@@ -831,7 +926,54 @@ void nr_finish_fragment(NR_FRAG_ACC a, uint tok0, uint ch0, uint lane) {
     // Each store is the address the per-element epilogue writes, restated as a
     // RowMajor Accumulator store: tiled is element (r, c) at
     // `o_off + tile + r*16 + c`, untiled is `o_off + (tok0+r)*N + ch0 + c`.
-#ifdef NR_OUT_E4M3
+#if NR_OUT_PERM
+    // The ViT's token-order repack (repack_tokens.comp) folded into the
+    // store. A lane owns rows row0..row0+7 of one column: two runs of four
+    // tokens, each a 4-aligned run that is one row of a 4x4 tile in tile order
+    // and four consecutive raster tokens (W % 4 == 0), i.e. four bytes 16 apart
+    // at either end. Mode 1 writes raster tokens at their tile position instead
+    // of the tiled store (the inverse repack after the last ViT layer); mode 2
+    // keeps the tiled store and adds the raster copy at p_off (the forward
+    // repack after FinalHead). pc.W/pc.rows are the ViT raster; rows == 0 turns
+    // the copy off. Same bytes as the repack, which moves y < rows only.
+    for (uint g = 0u; g < 2u; ++g) {
+        const uint t = tok0 + row0 + 4u * g;
+#if NR_OUT_PERM == 1
+        const uint y = t / pc.W, x = t % pc.W;
+        const uint d = ((y / 4u) * (pc.W / 4u) + x / 4u) * 16u + (y % 4u) * 4u;
+        const uint base = pc.o_off + ((d / 16u) * (pc.N / 16u) + ch0 / 16u) * 256u + (d % 16u) * 16u + col;
+#else
+        const uint tt = t / 16u;
+        const uint y = (tt / (pc.W / 4u)) * 4u + (t % 16u) / 4u, x = (tt % (pc.W / 4u)) * 4u;
+        const uint d = y * pc.W + x;
+        const uint base = pc.p_off + ((d / 16u) * (pc.N / 16u) + ch0 / 16u) * 256u + (d % 16u) * 16u + col;
+#endif
+        if (y < pc.rows)
+            for (uint c = 0u; c < 4u; ++c) act_e4m3[base + 16u * c] = qv[4u * g + c];
+    }
+#endif
+#if NR_POOL_FRAG
+    for (uint b = 0u; b < 2u; ++b) {
+        const uint row = row0 + 2u * b, c0 = 2u * b;
+        const uint tiles_x = pc.W / 4u;
+        const uint tx = (tok0 / 16u) % tiles_x, ty = (tok0 / 16u) / tiles_x;
+        const uint ox = 2u * tx + (row % 4u) / 2u;
+        const uint oy = 2u * ty + (row / 4u) / 2u;
+        const uint ow = ((pc.W + 1u) / 2u + 3u) & ~3u;
+        const uint oh = ((pc.rows + 1u) / 2u + 3u) & ~3u;
+        if (pc.rows != 0u && oy >= oh) continue;
+        const uint otok = ((oy / 4u) * (ow / 4u) + ox / 4u) * 16u + 4u * (oy % 4u) + (ox % 4u);
+        // precise: without it LLPC adds rows r, r+1, r+4 and r+5 as one chain
+        // of f16 adds instead of the lds_e pool's two pairs, and the bytes differ.
+        precise const NR_F16 pa = NR_F16(float(pvv[c0]) + float(pvv[c0 + 1u]));
+        precise const NR_F16 pc2 = NR_F16(float(pvv[c0 + 4u]) + float(pvv[c0 + 5u]));
+        precise const NR_F16 pv = NR_F16(NR_F16(pa + pc2) * NR_F16(0.25));
+        act_e4m3[pc.p_off + ((otok / 16u) * (pc.N / 16u) + ch0 / 16u) * 256u + (otok % 16u) * 16u + col] =
+            nr_quant_e4m3(pv);
+    }
+#endif
+#if defined(NR_OUT_E4M3) && NR_OUT_PERM == 1
+#elif defined(NR_OUT_E4M3)
     NR_STORE_ACC(result, act_e4m3, pc.o_off + tile, 16u);
 #elif defined(NR_OUT_TILED)
     NR_STORE_ACC(result, act_f16, pc.o_off + tile, 16u);
@@ -839,8 +981,17 @@ void nr_finish_fragment(NR_FRAG_ACC a, uint tok0, uint ch0, uint lane) {
     NR_STORE_ACC(result, act_f16, pc.o_off + tok0 * pc.N + ch0, pc.N);
 #endif
 }
+#endif
 #else
 #define NR_USE_FRAGMENT_EPI 0
+#endif
+#if NR_SWAP_AB && (!NR_USE_FRAGMENT_EPI || !defined(NR_OUT_E4M3) || !defined(NR_OUT_TILED) || NR_QKV_FUSED_NORM \
+    || !defined(NR_PACKED_WEIGHT_N2) || !(NR_KOFF_SPLIT && defined(NR_TILED_A) && defined(NR_A_DIRECT)) \
+    || defined(NR_OPERAND_F16) || NR_XPIPE || NR_KPAIR_ABL || NR_STAGED)
+#error "NR_SWAP_AB: element-filled A (tiled, direct) and packed B, tiled e4m3 fragment epilogue only"
+#endif
+#if NR_OUT_PERM && (!NR_USE_FRAGMENT_EPI || !defined(NR_OUT_E4M3) || !defined(NR_OUT_TILED))
+#error "NR_OUT_PERM needs the tiled e4m3 fragment epilogue"
 #endif
 
 // Fuse the separate ViT QKV normalization into the GEMM epilogue.
@@ -851,6 +1002,12 @@ void nr_finish_fragment(NR_FRAG_ACC a, uint tok0, uint ch0, uint lane) {
 #define NR_QKV_FUSED_NORM 0
 #endif
 #if NR_QKV_FUSED_NORM
+// After the xor butterfly every lane of a 16-lane half already holds the
+// same bits (each stage's pair computes a+b and b+a, and IEEE addition
+// commutes exactly), so the broadcast from lane 0/16 moves nothing.
+#ifndef NR_QKV_NO_BCAST
+#define NR_QKV_NO_BCAST 0
+#endif
 #ifndef NR_QKV_SOURCE_ORDER
 #define NR_QKV_SOURCE_ORDER 0
 #endif
@@ -877,7 +1034,9 @@ void nr_finish_qkv_pair(NR_FRAG_ACC a, NR_FRAG_ACC b, uint tok0, uint ch0, uint 
             NR_QKV_FOLD_PAIR(4u)
             NR_QKV_FOLD_PAIR(2u)
             NR_QKV_FOLD_PAIR(1u)
+#if !NR_QKV_NO_BCAST
             sum=unpackFloat2x16(subgroupShuffle(packFloat2x16(sum),lane & 16u));
+#endif
             f16vec2 inv=f16vec2(inversesqrt(vec2(max(sum,f16vec2(NR_F16(0.000062))))));
 #if NR_QKV_SOURCE_ORDER
             x=x*inv; y=y*inv;
@@ -1015,8 +1174,23 @@ void nr_finish_qkv_pair(NR_FRAG_ACC a, NR_FRAG_ACC b, uint tok0, uint ch0, uint 
 #endif
 #define NR_LOADS     NR_FOR_I(NR_MFRAG, NR_LDA_I) NR_FOR_J(NR_NFRAG, NR_LDB_J)
 
+#if NR_SWAP_AB == 2
+// Swapped and loop-transposed: NR_MMA_I(x) runs weight fragment x against every
+// token fragment, so the A operand stays fixed across the inner loop.
+#if NR_MFRAG != NR_NFRAG
+#error "NR_SWAP_AB=2 needs NR_MFRAG == NR_NFRAG"
+#endif
+#define NR_MMA_J(i)  NR_MMA(acc[i][jj], fb[pp][jj], fa[pp][i]);
+#elif NR_SWAP_AB
+#define NR_MMA_J(j)  NR_MMA(acc[ii][j], fb[pp][j], fa[pp][ii]);
+#else
 #define NR_MMA_J(j)  NR_MMA(acc[ii][j], fa[pp][ii], fb[pp][j]);
+#endif
+#if NR_SWAP_AB == 2
+#define NR_MMA_I(j)  { const int jj = j; NR_FOR_J(NR_MFRAG, NR_MMA_J) }
+#else
 #define NR_MMA_I(i)  { const int ii = i; NR_FOR_J(NR_NFRAG, NR_MMA_J) }
+#endif
 
 #ifndef NR_ACC_F16
 #define NR_ACC_F16 0
@@ -1280,8 +1454,14 @@ void main() {
 #endif
     NR_FRAG_ACC acc[NR_MFRAG][NR_NFRAG];
     NR_FOR_I(NR_MFRAG, NR_ZERO_I)
+#if NR_SWAP_AB
+    // Same element fill (lane%16 = row/column, (lane/16)*8+v = k) for both uses.
+    NR_FRAG_B fa[NR_PIPE][NR_MFRAG];
+    NR_FRAG_A fb[NR_PIPE][NR_NFRAG];
+#else
     NR_FRAG_A fa[NR_PIPE][NR_MFRAG];
     NR_FRAG_B fb[NR_PIPE][NR_NFRAG];
+#endif
 #ifndef NR_A_DIRECT
     NR_A_SCALAR areg[NR_SITER_A * NR_VECA];
 #endif

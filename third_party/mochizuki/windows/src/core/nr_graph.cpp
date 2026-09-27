@@ -58,6 +58,16 @@ namespace nr { thread_local const std::atomic<bool>* build_cancel = nullptr; }
 #ifndef NR_FFWD_WGW
 #define NR_FFWD_WGW 8
 #endif
+// The subgroups of an ffwd3 workgroup share one weight group and take
+// consecutive token tiles; must match the shaders' `ffwd_gmajor`.
+#ifndef NR_FFWD_GMAJOR
+#define NR_FFWD_GMAJOR 0
+#endif
+// Two 16-token tiles a subgroup (`ffwd3w`) for C=512 layers of at least this
+// many tokens, 0: never; must match the shaders' `ffwd_fm2_min`.
+#ifndef NR_FFWD_FM2_MIN_TOKENS
+#define NR_FFWD_FM2_MIN_TOKENS 0
+#endif
 
 // upsview/repack move a token's 16-channel run per invocation.
 #ifndef NR_UPSVIEW_VEC
@@ -98,6 +108,14 @@ static std::vector<uint8_t> g_chain_nobar;
 #ifndef NR_PERSIST_UPS_MASK
 #define NR_PERSIST_UPS_MASK 0
 #endif
+// One workgroup per item for the UPS-folded runs of 65..NR_PERSIST_ONE_MAX
+// windows a layer, per width (same bits); must match the shaders' `persist_one`.
+#ifndef NR_PERSIST_ONE_MASK
+#define NR_PERSIST_ONE_MASK 0
+#endif
+#ifndef NR_PERSIST_ONE_MAX
+#define NR_PERSIST_ONE_MAX 400
+#endif
 // The residual projection pipeline (`gemmproj`) gets its own tile, so its
 // workgroup can shrink to four waves without moving gemmnores/gemmpool/gemmds.
 #ifndef NR_GEMM_PROJ_MT
@@ -135,6 +153,14 @@ const char* arg(int c, char** v, const char* k, const char* d = nullptr) {
 }
 bool flag(int c, char** v, const char* k) {
     for (int i = 1; i < c; ++i) if (!std::strcmp(v[i], k)) return true;
+    return false;
+}
+// The per-layer and scoring tools read values by slot after the frame; they
+// keep the one-value-one-slot layout (no arena reuse).
+bool slot_reading_diagnostic(int c, char** v) {
+    for (const char* f : {"--only", "--seed-dir", "--oracle", "--hash-values", "--dump", "--dump-stage",
+                          "--seed", "--score", "--ds-only", "--barrier-report", "--dump-layer"})
+        if (flag(c, v, f) || arg(c, v, f)) return true;
     return false;
 }
 
@@ -1292,9 +1318,7 @@ int NrSession::build(int argc, char** argv, const std::vector<Step>* prepared_pl
     // Off for the per-layer and scoring tools, which read values by slot after
     // the frame.
     bool reuse = flag(argc, argv, "--reuse") && !flag(argc, argv, "--no-reuse") && !arena_probe;
-    for (const char* f : {"--only", "--seed-dir", "--oracle", "--hash-values", "--dump", "--dump-stage",
-                          "--seed", "--score", "--ds-only", "--barrier-report", "--dump-layer"})
-        if (flag(argc, argv, f) || arg(argc, argv, f)) reuse = false;
+    if (slot_reading_diagnostic(argc, argv)) reuse = false;
     size_t plain_total = 0;
     for (const auto& kv : vsize) if (kv.second) plain_total += align(kv.second, 256);
     if (reuse) {
@@ -1406,6 +1430,7 @@ int NrSession::build(int argc, char** argv, const std::vector<Step>* prepared_pl
         // has to know. Add one here the moment the host reads a shader's shape.
         const std::pair<const char*, uint32_t> want[] = {
             {"vattn_qt", vattn_qt},
+            {"persist_one", uint32_t(NR_PERSIST_ONE_MASK)},
             {"gemm_wide_mt", uint32_t(NR_GEMM_WIDE_MT)},
             {"gemm_wide_nt", uint32_t(NR_GEMM_WIDE_NT)},
             {"gemm_proj_mt", uint32_t(NR_GEMM_PROJ_MT)},
@@ -1413,6 +1438,8 @@ int NrSession::build(int argc, char** argv, const std::vector<Step>* prepared_pl
             {"gemm_projw_mt", uint32_t(NR_GEMM_PROJW_MT)},
             {"gemm_projw_nt", uint32_t(NR_GEMM_PROJW_NT)},
             {"ffwd_wgw", uint32_t(NR_FFWD_WGW)},
+            {"ffwd_gmajor", uint32_t(NR_FFWD_GMAJOR)},
+            {"ffwd_fm2_min", uint32_t(NR_FFWD_FM2_MIN_TOKENS)},
             {"upsview_vec", uint32_t(NR_UPSVIEW_VEC)},
             {"repack_vec", uint32_t(NR_REPACK_VEC)},
             {"wide_ups_mask", uint32_t(NR_WIDE_UPS_MASK)},
@@ -1463,6 +1490,10 @@ int NrSession::build(int argc, char** argv, const std::vector<Step>* prepared_pl
         if (weight_layout != 0 && accumulation != "fp32") {
             std::fprintf(stderr,"packed shader weights require fp32 accumulation\n"); return 1;
         }
+        // A shader directory that does not record one of these keys built it off.
+        if (!built.count("persist_one")) built["persist_one"] = 0;
+        if (!built.count("ffwd_fm2_min")) built["ffwd_fm2_min"] = 0;
+        if (!built.count("ffwd_gmajor")) built["ffwd_gmajor"] = 0;
         for (const auto& [name, mine] : want) {
             auto it = built.find(name);
             if (it == built.end()) {
@@ -2555,8 +2586,19 @@ int NrSession::build(int argc, char** argv, const std::vector<Step>* prepared_pl
                 ? uint32_t(s.tokens)
                 : tiles_of(s.H) * tiles_of(s.W) * 16u;
             p.M = vt; p.C = 512u;
-            d.kern = "ffwd3";
-            d.gx = vt / 16u * (8u / uint32_t(NR_FFWD_WGW)); d.gy = 1; d.gz = 1;
+            // ffwd3w takes two 16-token tiles a subgroup, so its units
+            // are tile pairs, the last one half empty for an odd count.
+            const bool fm2 = NR_FFWD_FM2_MIN_TOKENS != 0 && vt >= uint32_t(NR_FFWD_FM2_MIN_TOKENS);
+            const uint32_t units = fm2 ? (vt / 16u + 1u) / 2u : vt / 16u;
+            d.kern = fm2 ? "ffwd3w" : "ffwd3";
+#if NR_FFWD_GMAJOR
+            // Eight groups times the units split NR_FFWD_WGW a
+            // workgroup, the last workgroup partial.
+            d.gx = 8u * ((units + uint32_t(NR_FFWD_WGW) - 1u) / uint32_t(NR_FFWD_WGW));
+#else
+            d.gx = units * (8u / uint32_t(NR_FFWD_WGW));
+#endif
+            d.gy = 1; d.gz = 1;
             d.push.resize(sizeof p);
             std::memcpy(d.push.data(), &p, sizeof p);
         } else if (sh.fam == F_ATTN) {
@@ -2822,7 +2864,7 @@ int NrSession::build(int argc, char** argv, const std::vector<Step>* prepared_pl
         // Layout 2 extends layout 1 with the three grouped FFWD matrices.
         const bool pack_ffwd = weight_layout >= 2;
         for(const auto& pd:disp) {
-            if(pack_ffwd && pd.kern=="ffwd3") {
+            if(pack_ffwd && (pd.kern=="ffwd3" || pd.kern=="ffwd3w")) {
                 PushFfwd3 p{};
                 if(pd.push.size()!=sizeof p) throw std::runtime_error("packed FFWD push mismatch");
                 std::memcpy(&p,pd.push.data(),sizeof p);
@@ -2967,13 +3009,15 @@ int NrSession::build(int argc, char** argv, const std::vector<Step>* prepared_pl
                     fp(disp[j + 1]).tiles_x == fp(disp[i]).tiles_x &&
                     fp(disp[j + 1]).tiles_y == fp(disp[i]).tiles_y &&
                     fp(disp[j + 1]).x_off == fp(disp[j]).o_off &&
-                    // Only where the standalone DS grid ends in a partial round:
-                    // at 1080p C=256 that is 135 windows on 128 slots; at 4K the
+                    // C=64 and C=128 at every extent (on RADV the fold's own layer
+                    // beats the standalone dispatch's ramp and tail: 1080p -17 us,
+                    // 4K -25 us over the four; the masks pick the widths that fold);
+                    // C=256 only where the standalone DS grid ends in a partial
+                    // round: at 1080p that is 135 windows on 128 slots; at 4K the
                     // grid is several rounds deep and the fold only adds a chain
-                    // item (measured +0.015 ms at 4K, -0.02..-0.03 at 1080p).
-                    disp[j + 1].gx * disp[j + 1].gy <= 2u * std::min<uint32_t>(
-                        C == 64 ? 512u : C == 128 ? 256u : 128u,
-                        wg_override ? wg_override : 0xFFFFFFFFu);
+                    // item (+0.015 ms at 4K, -0.02..-0.03 at 1080p).
+                    (C < 256 || disp[j + 1].gx * disp[j + 1].gy <= 2u * std::min<uint32_t>(
+                        128u, wg_override ? wg_override : 0xFFFFFFFFu));
                 if (ds_fold) ++j;
                 // And the wide fused upsample just before it, as layer 0.
                 const bool up_fold = !ds_fold && NR_PERSIST_DF && (uint32_t(NR_PERSIST_UPS_MASK) & ds_bit) &&
@@ -2982,9 +3026,8 @@ int NrSession::build(int argc, char** argv, const std::vector<Step>* prepared_pl
                     fp(out.back()).tiles_x == fp(disp[i]).tiles_x &&
                     fp(out.back()).tiles_y == fp(disp[i]).tiles_y &&
                     fp(out.back()).o_off == fp(disp[i]).x_off &&
-                    out.back().gx * out.back().gy <= 2u * std::min<uint32_t>(
-                        C == 64 ? 512u : C == 128 ? 256u : 128u,
-                        wg_override ? wg_override : 0xFFFFFFFFu);
+                    (C < 256 || out.back().gx * out.back().gy <= 2u * std::min<uint32_t>(
+                        128u, wg_override ? wg_override : 0xFFFFFFFFu));
                 Disp up_disp{disp[i].s};
                 if (up_fold) { up_disp = std::move(out.back()); out.pop_back(); }
                 std::vector<const Disp*> lay;
@@ -3017,7 +3060,18 @@ int NrSession::build(int argc, char** argv, const std::vector<Step>* prepared_pl
                 uint32_t wgo = wg_override;
                 // Diagnostic: per-width override NR_PERSIST_WG_<C>.
                 if (const char* e = std::getenv(("NR_PERSIST_WG_" + std::to_string(C)).c_str())) wgo = uint32_t(std::atoi(e));
-                const uint32_t wg = std::min(most, wgo ? wgo : cap);
+                uint32_t wg = std::min(most, wgo ? wgo : cap);
+                // One workgroup per item: a persistent workgroup keeps its launch
+                // age for the whole run, and oldest-first wave arbitration runs the
+                // youngest on a CU several times slower, whatever it claims, often
+                // an item on the run's critical chain. Launched one per item, age
+                // follows claim order instead. Pays where a layer has more windows
+                // than CUs but not many more. UPS folds only: the DS body spills on
+                // LLPC (256 VGPRs, 16 bytes of scratch), and one per item made it 15%
+                // slower at 1080p.
+                const bool one = (uint32_t(NR_PERSIST_ONE_MASK) & ds_bit) && up_fold &&
+                                 most > 64u && most <= uint32_t(NR_PERSIST_ONE_MAX) && !wgo;
+                if (one) wg = windows;
                 PushPersist pp{};
                 pp.layers_off = uint32_t(put(recs, 16) / 4);
                 if (ds_fold) {
@@ -3093,10 +3147,10 @@ int NrSession::build(int argc, char** argv, const std::vector<Step>* prepared_pl
                 std::memcpy(m.push.data(), &pp, sizeof pp);
                 persist_err.push_back(uint32_t((pp.sync_off + 3u) * 4u));
                 std::printf("persist: C=%d layers b%03dl%d..b%03dl%d (%u%s) windows %u"
-                            " items %u wg %u\n", C, disp[i].s->block, disp[i].s->layer,
+                            " items %u wg %u%s\n", C, disp[i].s->block, disp[i].s->layer,
                             disp[j].s->block, disp[j].s->layer, n,
                             ds_fold ? ", last is DS" : up_fold ? ", first is UPS" : "",
-                            most, windows, wg);
+                            most, windows, wg, one ? " (one per item)" : "");
                 out.push_back(std::move(m));
                 i = j + 1;
             }
@@ -3475,7 +3529,7 @@ int NrSession::build(int argc, char** argv, const std::vector<Step>* prepared_pl
         else if (d.kern == "attn")
             kern[d.kern].create(ctx, p, {act.handle, act.handle, wgt.handle,
                                          wgt.handle, act.handle}, sizeof(PushAttn) + (g_chain_kern.count(d.kern) ? 16 : 0));
-        else if (d.kern == "ffwd3")
+        else if (d.kern == "ffwd3" || d.kern == "ffwd3w")
             kern[d.kern].create(ctx, p, {act.handle, act.handle, act.handle,
                                          wgt.handle, wgt.handle, act.handle},
                                 sizeof(PushFfwd3) + (g_chain_kern.count(d.kern) ? 16 : 0));

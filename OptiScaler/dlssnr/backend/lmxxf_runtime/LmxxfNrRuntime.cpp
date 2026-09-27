@@ -342,6 +342,7 @@ struct Job
     bool temporal = false;
     UINT histories = 0; // bit k: pass k+1 was given a history this frame
     float smoothThreshold = 0, smoothStrength = 0;
+    bool smoothResidual = false, residualHistory = false;
     ID3D12Resource* motion = nullptr;
     D3D12_RESOURCE_STATES motionState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     UINT motionWidth = 0, motionHeight = 0;
@@ -349,31 +350,39 @@ struct Job
 };
 
 // Upstream's NativeOutputSmooth (native_game_frame.h, DLSS5_OUTPUT_SMOOTH), with buffers and parameters given per
-// frame.
+// frame, and the same blend on the network's change to its input (residual_main).
 class OutputSmooth
 {
-    ID3D12RootSignature* root = nullptr;
-    ID3D12PipelineState* pso = nullptr;
+    ID3D12RootSignature *root = nullptr, *residualRoot = nullptr;
+    ID3D12PipelineState *pso = nullptr, *residualPso = nullptr;
 
   public:
     OutputSmooth() = default;
     OutputSmooth(const OutputSmooth&) = delete;
     ~OutputSmooth()
     {
-        if (root)
-            root->Release();
-        if (pso)
-            pso->Release();
+        for (auto* r : { root, residualRoot })
+            if (r)
+                r->Release();
+        for (auto* p : { pso, residualPso })
+            if (p)
+                p->Release();
     }
-    void Create(ID3D12Device* d, const std::wstring& dir)
+    void Create(ID3D12Device* d, const std::wstring& dir, bool residual = false)
     {
-        D3D12_ROOT_PARAMETER p[3] {};
+        ID3D12RootSignature*& root = residual ? residualRoot : this->root;
+        ID3D12PipelineState*& pso = residual ? residualPso : this->pso;
+        D3D12_ROOT_PARAMETER p[5] {};
         p[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
         p[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
         p[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
         p[2].Constants = { 0, 0, 4 };
+        p[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+        p[3].Descriptor.ShaderRegister = 1;
+        p[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+        p[4].Descriptor.ShaderRegister = 1;
         D3D12_ROOT_SIGNATURE_DESC rd {};
-        rd.NumParameters = 3;
+        rd.NumParameters = residual ? 5 : 3;
         rd.pParameters = p;
         ID3DBlob *blob = nullptr, *error = nullptr;
         HRESULT hr = D3D12SerializeRootSignature(&rd, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &error);
@@ -386,7 +395,9 @@ class OutputSmooth
         if (FAILED(hr))
             throw std::runtime_error("output smooth root");
         blob = error = nullptr;
-        hr = CompileNativeShader(dir + L"\\native_output_smooth.hlsl", nullptr, "main", &blob, &error);
+        const D3D_SHADER_MACRO macros[] = { { "SMOOTH_RESIDUAL", "1" }, { nullptr, nullptr } };
+        hr = CompileNativeShader(dir + L"\\native_output_smooth.hlsl", residual ? macros : nullptr,
+                                 residual ? "residual_main" : "main", &blob, &error);
         if (FAILED(hr))
         {
             const std::string m =
@@ -427,6 +438,35 @@ class OutputSmooth
         std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
         c->ResourceBarrier(1, &b);
     }
+    // The same blend on rgb minus base (the network's input), toward warped (the previous frame's difference, read
+    // only with history). This frame's difference goes to residual, which is readable between frames once written.
+    void RecordResidual(ID3D12GraphicsCommandList* c, ID3D12Resource* rgb, ID3D12Resource* warped, ID3D12Resource* base,
+                        ID3D12Resource* residual, bool written, float threshold, float strength, UINT pixels,
+                        bool history)
+    {
+        UINT words[4] { 0, 0, pixels, history ? 1u : 0u };
+        std::memcpy(words, &threshold, 4);
+        std::memcpy(words + 1, &strength, 4);
+        D3D12_RESOURCE_BARRIER b[2] {};
+        for (UINT i = 0; i < 2; ++i)
+        {
+            b[i].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            b[i].Transition = { i ? residual : rgb, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS };
+        }
+        c->ResourceBarrier(written ? 2 : 1, b);
+        c->SetComputeRootSignature(residualRoot);
+        c->SetPipelineState(residualPso);
+        c->SetComputeRootShaderResourceView(0, (history ? warped : base)->GetGPUVirtualAddress());
+        c->SetComputeRootUnorderedAccessView(1, rgb->GetGPUVirtualAddress());
+        c->SetComputeRoot32BitConstants(2, 4, words, 0);
+        c->SetComputeRootShaderResourceView(3, base->GetGPUVirtualAddress());
+        c->SetComputeRootUnorderedAccessView(4, residual->GetGPUVirtualAddress());
+        c->Dispatch((pixels + 63) / 64, 1, 1);
+        for (auto& t : b)
+            std::swap(t.Transition.StateBefore, t.Transition.StateAfter);
+        c->ResourceBarrier(2, b);
+    }
 };
 
 // Per-pass history, as upstream's native_game_frame.h builds it for one pass: the game's motion vectors become
@@ -437,14 +477,25 @@ struct TemporalChain
     NativeTemporalCoordinates coordinates;
     NativeTemporalSample samplers[3];
     OutputSmooth smooth; // on the last pass's output, toward its warped history
+    // With SMOOTH_RESIDUAL: the last output minus the network's input, kept for the next frame and warped like the
+    // histories. Created on the first frame that asks for it.
+    ID3D12Resource* residual = nullptr;
+    NativeTemporalSample residualSampler;
+    bool residualWritten = false, residualValid = false;
     UINT passesReady = 0;
     bool valid[3] {}; // pass k's history holds its output from the previous frame
     UINT motionTextureWidth = 0, motionTextureHeight = 0, motionWidth = 0, motionHeight = 0;
     float scaleX = 0, scaleY = 0;
+    ~TemporalChain()
+    {
+        if (residual)
+            residual->Release();
+    }
     void Invalidate()
     {
         for (auto& v : valid)
             v = false;
+        residualValid = false;
     }
 };
 
@@ -763,6 +814,26 @@ void EnsureTemporal(Session* s, const Job& j)
             t->samplers[k].Create(s->device, t->feeds[k].History(), t->coordinates.Output(), ng.valid_width,
                                   ng.valid_height, ng.processing_width * ng.processing_height, s->shaderDir, true);
         }
+        if (j.smoothResidual && !t->residual)
+        {
+            D3D12_HEAP_PROPERTIES hp {};
+            hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+            D3D12_RESOURCE_DESC rd {};
+            rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+            rd.Width = UINT64(ng.valid_width) * ng.valid_height * 16;
+            rd.Height = 1;
+            rd.DepthOrArraySize = rd.MipLevels = 1;
+            rd.SampleDesc.Count = 1;
+            rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+            rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+            if (FAILED(NativeCreateCommittedResource(s->device, &hp, D3D12_HEAP_FLAG_NONE, &rd,
+                                                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+                                                     IID_PPV_ARGS(&t->residual))))
+                throw std::runtime_error("residual buffer");
+            t->residualSampler.Create(s->device, t->residual, t->coordinates.Output(), ng.valid_width, ng.valid_height,
+                                      ng.processing_width * ng.processing_height, s->shaderDir, true);
+            t->smooth.Create(s->device, s->shaderDir, true);
+        }
     }
     catch (...)
     {
@@ -989,7 +1060,8 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
                                 "PrepareFrame: previous frame consumer not yet submitted (bridge not Ready)");
             }
             const uint32_t allowedFlags = LMXXF_NR_FRAME_FLAG_STRENGTH | LMXXF_NR_FRAME_FLAG_DEBUG_VIEW |
-                                          LMXXF_NR_FRAME_FLAG_CODEC_PASSTHROUGH | LMXXF_NR_FRAME_FLAG_TEMPORAL;
+                                          LMXXF_NR_FRAME_FLAG_CODEC_PASSTHROUGH | LMXXF_NR_FRAME_FLAG_TEMPORAL |
+                                          LMXXF_NR_FRAME_FLAG_SMOOTH_RESIDUAL;
             if ((info->flags & ~allowedFlags) != 0)
                 return Fail(LMXXF_NR_INVALID_ARGUMENT, "PrepareFrame: unknown flags");
             if (session->shaderDir.empty())
@@ -1212,6 +1284,7 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
                 {
                     session->job.smoothThreshold = std::min(info->smooth_threshold, 1.f);
                     session->job.smoothStrength = std::min(info->smooth_strength, 1.f);
+                    session->job.smoothResidual = (info->flags & LMXXF_NR_FRAME_FLAG_SMOOTH_RESIDUAL) != 0;
                 }
                 try
                 {
@@ -1308,6 +1381,11 @@ int32_t RecordInputs(void* context, void* job, void* command_list)
                     list->ResourceBarrier(1, &motionBarrier);
                 }
                 t->coordinates.Record(list);
+                if (j->smoothResidual && t->residualValid)
+                {
+                    t->residualSampler.Record(list);
+                    j->residualHistory = true;
+                }
                 ID3D12Resource* histories[3] {};
                 for (UINT k = 0; k < j->passes; ++k)
                 {
@@ -1460,12 +1538,23 @@ int32_t RecordOutputs(void* context, void* job, void* command_list)
                             "RecordOutputs: job not in NR_COMPLETE or PRODUCER_SUBMITTED state");
             ListContract(session, list);
 
+            bool residualRecorded = false;
             if (!j->codec_passthrough)
             {
                 session->bridge->RecordOutputReadable(list);
                 // Before the output is shown or becomes history, so the blend is recursive.
                 const UINT last = j->passes - 1;
-                if (j->temporal && session->temporal && j->smoothStrength > 0.f && (j->histories >> last & 1u))
+                if (j->temporal && session->temporal && j->smoothStrength > 0.f && j->smoothResidual)
+                {
+                    const auto ng = NativeCurrentNetworkGeometry();
+                    TemporalChain* t = session->temporal;
+                    t->smooth.RecordResidual(list, session->bridge->Output(), t->residualSampler.Output(),
+                                             session->rgbInput->PostBase(), t->residual, t->residualWritten,
+                                             j->smoothThreshold, j->smoothStrength, ng.valid_width * ng.valid_height,
+                                             j->residualHistory);
+                    residualRecorded = t->residualWritten = true;
+                }
+                else if (j->temporal && session->temporal && j->smoothStrength > 0.f && (j->histories >> last & 1u))
                 {
                     const auto ng = NativeCurrentNetworkGeometry();
                     session->temporal->smooth.Record(list, session->bridge->Output(),
@@ -1476,6 +1565,7 @@ int32_t RecordOutputs(void* context, void* job, void* command_list)
             }
             if (auto* t = j->temporal ? session->temporal : nullptr)
             {
+                t->residualValid = residualRecorded;
                 for (UINT k = 0; k < 3; ++k)
                 {
                     t->valid[k] = k < j->passes;

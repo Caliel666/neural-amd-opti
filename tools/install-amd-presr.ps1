@@ -1104,8 +1104,8 @@ if (Test-Path -LiteralPath $gameIni -PathType Leaf) {
         'LmxxfDiagnostic' = 'off'
         'LmxxfFitLarge' = 'false'
         'AmdModelScale' = '1'
-        'AmdEncoding' = '0'
-        'AmdEveryFrame' = 'true'
+        'AmdEncoding' = 'auto'
+        'AmdEveryFrame' = 'auto'
     })
     Write-Host "Upserted OptiScaler.ini [DlssNr] defaults (Enabled=true, NrBackend=$activeBackend, LmxxfFitLarge=false, ...)" -ForegroundColor Green
 }

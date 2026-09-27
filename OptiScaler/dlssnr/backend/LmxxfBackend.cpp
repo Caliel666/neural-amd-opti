@@ -705,6 +705,8 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
         fi.smooth_threshold =
             std::clamp(Config::Instance()->LmxxfSmoothThreshold.value_or_default(), 0.f, 255.f) / 255.f;
         fi.smooth_strength = std::clamp(Config::Instance()->LmxxfSmoothStrength.value_or_default(), 0.f, 1.f);
+        if (Lmxxf() && Config::Instance()->LmxxfSmoothResidual.value_or_default())
+            fi.flags |= LMXXF_NR_FRAME_FLAG_SMOOTH_RESIDUAL;
     }
 
     LmxxfNrJob job {};
