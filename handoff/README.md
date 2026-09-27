@@ -824,8 +824,9 @@ frame, same harness: 0.4.1 14.7 ms, 0.4.2 12.3 ms, 0.4.3 10.9 ms.
 ### Next release
 
 Not versioned yet. The mochizuki runtime is faster and rounds its input the way NVIDIA's network does;
-`Setup.bat` stops forcing Linear with the history off on danielblnc; and two temporal stabilizers are in,
-both off by default. Every existing default in `Config.h` and the packaged INI is as in `v0.4.3-amd-nr`.
+`Setup.bat` stops forcing Linear with the history off on danielblnc; two temporal stabilizers are in,
+both off by default; danielblnc's 0.4.2 is public and the recommended runtime; and the host accepts
+danielblnc's 0.5.0 supporter build. Every existing default in `Config.h` and the packaged INI is as in `v0.4.3-amd-nr`.
 
 **mochizuki runtime speed.** Nine changes to the mochizuki runtime, each taken from
 upstream's `linux/` tree at v0.0.2 (`4f62a8a`) or v0.0.2.1 (`4f663b5`) and kept only where the
@@ -970,6 +971,32 @@ light into an RGBA16F texture before the model, and the decode overflows half pr
 (`exports\mochizuki-work\stab-install-history-defaults\verify-hard-content`) found outputs capped at
 107.06 on a sequence with highlights up to 4096, which Linear kept. Whether Cyberpunk 2077's
 pre-upscaler colour goes that high is unmeasured.
+
+**danielblnc 0.4.2 is public.** danielblnc published 0.4.2 on 2026-09-27 ([Alpha 0.4.2](https://github.com/danielblnc/DLSS-NR-on-AMD/releases/tag/v0.4.2)). The public setup holds the same
+`version.dll` as the supporter build `v0.4.3-amd-nr` already accepts (`kAmd042`, `8aa2dcc5…`), so the host
+needs no change. The AMD-NR installer's payload installs it with `0.4.3-amd-nr` since that day (installer
+`handoffs/HANDOFF-runtime-0.4.2-2026-09-27.md`); its ReShade route stays on the patched 0.4.1. Here
+`install-amd-presr.ps1`, `README.md` and the host's log recommend 0.4.2 where they named 0.4.1, and only
+0.4.3 and 0.5.0 are called supporter builds.
+
+**danielblnc 0.5.0 (supporter build).** Another early build danielblnc gives his supporters; this
+project does not ship it, and neither does the installer's payload. The host accepts it when the user
+brings one, like 0.4.2 and 0.4.3: `kAmd050` in `AmdLayout.h` (SHA `cddfb09e…`, 38,703,616 bytes, in the
+setup's `.rdata` at file offset `0x26175f`) and its bootstrap entry in `RuntimeHostLoad.h` (DllMain calls
+CreateThread at `0x6eed`; worker `0x8ea0`). `install-amd-presr.ps1` knows the hash, ranks it newest, takes
+it out of its setup like the others and recommends 0.4.2. The DLL tripled in size because it adds
+RDNA3 (gfx11) register kernels beside the RDNA4 ones; on the RX 9070 XT it logs `network kernels:
+register kernels (RDNA4)`. One new `[DlssNrOnAmd]` key, `Rdna3RegKernels`, which the runtime reads and
+ignores. The weights are the same as 0.4.1's.
+Mapped from 0.4.3 with the same two methods (`daniel-runtime/analysis-opti`: `map_layout_043_050.txt`,
+`datamap_043_050.txt`), which agree on all 42 data fields. Shutdown, the wait helper and the bootstrap
+worker are 0.4.3's instruction for instruction; Init, Record and Notify only moved engine members (+0x30),
+which the host never touches. The `ANCHORS` rows come from `implement/anchors/derive_050.py`.
+`amd_layout_binary_check.py` passes on 0.3.1, 0.4.0, 0.4.1, 0.4.2, 0.4.3 and 0.5.0; the synthetic
+bootstrap fixture and `test-amd-host-contracts.cmd` (with the binaries) pass; the installer exit tests
+pass (22). `tools/test-amd-runtime-init.cmd` on an RX 9070 XT, alternating with 0.4.3: init true with
+the 0.4.x weights, 24 of 24 frames per wait mode with no timeout, dispatch wait 10.17 to 10.43 ms per
+frame against 10.65 to 10.66 ms for 0.4.3. Not tested in a game.
 
 **Residual stabilizer (danielblnc, mochizuki), off by default.** `[DlssNr] AmdStabilizerStrength` /
 `AmdStabilizerThreshold` and `MochizukiStabilizerStrength` / `MochizukiStabilizerThreshold` (strength 0 to

@@ -2,7 +2,7 @@
 .SYNOPSIS
   Stage and zip a complete user package (no NVIDIA / author proprietary files).
   Default product: OptiScaler-0.4.3-amd-nr, the version in OptiScaler/resource.h.
-  The danielblnc runtime it drives is 0.4.1 (0.4.0, 0.3.1, 0.3.0 and the 0.4.2/0.4.3 supporter builds
+  The danielblnc runtime it drives is 0.4.2 (0.4.1, 0.4.0, 0.3.1, 0.3.0 and the 0.4.3/0.5.0 supporter builds
   still accepted), supplied by the user.
   The mochizuki runtime (MochizukiNrRuntime.dll and dlssnr-amd\) is not packaged: the AMD-NR
   installer or a local build supplies it, and its model is never in this package.

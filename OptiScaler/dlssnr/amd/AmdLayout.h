@@ -334,8 +334,9 @@ inline constexpr AmdLayout kAmd041 {
     .useGameExposure = 0xaa674,
 };
 
-// 0.4.2 and 0.4.3 version.dll (SHA 8aa2dcc5 and d1e32086), early builds danielblnc gives his
-// supporters; they are not distributed with this project. Carved from their setups the same way,
+// 0.4.2 and 0.4.3 version.dll (SHA 8aa2dcc5 and d1e32086). 0.4.2 is public since 2026-09-27 (its setup
+// holds this same file); 0.4.3 is an early build danielblnc gives his supporters, not distributed with
+// this project. Carved from their setups the same way,
 // size 0xc61600 and 0xc28c00. Mapped from 0.4.1 two ways that agree on every field
 // (map_layout_041_042/043.txt and datamap_041_042/043.txt). Init, shutdown, the wait helper and
 // the bootstrap are 0.4.1's instruction for instruction; Record and Notify only moved engine
@@ -459,9 +460,74 @@ inline constexpr AmdLayout kAmd043 {
     .quality = 0xb19c5,
 };
 
-inline constexpr const AmdLayout* kAmdLayouts[] = {
-    &kAmd0217, &kAmd03, &kAmd031, &kAmd040, &kAmd041, &kAmd042, &kAmd043
+// 0.5.0 version.dll (SHA cddfb09e), another early build danielblnc gives his supporters, not
+// distributed with this project. Carved from its setup the same way, size 0x24e9600: it adds RDNA3
+// (gfx11) register kernels beside the RDNA4 ones. Mapped from 0.4.3 two ways that agree on every
+// field (map_layout_043_050.txt and datamap_043_050.txt). Shutdown, the wait helper and the bootstrap
+// are 0.4.3's instruction for instruction; Init, Record and Notify only moved engine members, which the
+// host never touches, and Record logs which kernels run. New INI key: Rdna3RegKernels, which the
+// runtime reads and ignores.
+inline constexpr AmdLayout kAmd050 {
+    .name = "0.5.0",
+    .size = 38703616,
+    .sha256 = Sha256FromHex("cddfb09e019347957bf7b96c95c0e900e8d3062dfaed697a8a96b0a039aec31a"),
+    .d3dCompileIat = 0,
+    .init = 0x29870,
+    .record = 0x15640,
+    .notify = 0xa000,
+    .shutdown = 0x19340,
+    .trampoline = 0xb6b88,
+    .device = 0xb5c18,
+    .queue = 0xb5c20,
+    .engine = 0xb5c30,
+    .historyView = 0xb5d88,
+    .historyValid = 0xb5d90,
+    .initDone = 0xb60c8,
+    .nativeFailure = 0xb60ca,
+    .configuredInline = 0xb65d0,
+    .jobDone = 0xb6604,
+    .timeoutCount = 0xb6608,
+    .watchdog = 0xb6634,
+    .interop = 0xb6828,
+    .pendingList = 0xb6908,
+    .jobId = 0xb6914,
+    .depthInverted = 0xb69b8,
+    .explicitDepth = 0xb69bc,
+    .enabled = 0xb69c4,
+    .temporal = 0xb69c5,
+    .fsrInputs = 0xb69c6,
+    .depthPresent = 0xb69c7,
+    .tonemap = 0xb69c8,
+    .tone = 0xb69d8,
+    .structure = 0xb69dc,
+    .skin = 0xb69e0,
+    .charMask = 0xb69e8,
+    .toneChannels = 0xb69ec,
+    .hipOrdinal = 0xb6ae8,
+    .recreate = 0xb6ac0,
+    .recordLock = 0xb6a48,
+    .gate4c = 0xb68f4,
+    .gate68 = 0xb6910,
+    .counter78 = 0xb6920,
+    .spinDraw = 0xb67d4,
+    .graphicsPso = 0xb67f0,
+    .predicateReady = 0xb6748,
+    .graphicsWaitBegin = 0x19b90,
+    .graphicsWaitEnd = 0x1a2b6,
+    .waitDispatchInit = 0x19d80,
+    .waitDispatchFallback = 0x1a120,
+    .waitDispatchSlices = 0x1a17a,
+    .waitDispatchFinish = 0x1a267,
+    .scale = 0xb69e4,
+    .style = 0xb69f0,
+    .toneCurve = 0xb69f4,
+    .toneLift = 0xb69f8,
+    .useGameExposure = 0xb69fc,
+    .quality = 0xb69fd,
 };
+
+inline constexpr const AmdLayout* kAmdLayouts[] = { &kAmd0217, &kAmd03,  &kAmd031, &kAmd040,
+                                                    &kAmd041,  &kAmd042, &kAmd043, &kAmd050 };
 
 // Compile-time sanity: the hex helper must land on the first/last digest byte
 // of each known runtime. A wrong-length literal already fails Sha256FromHex;
@@ -473,4 +539,5 @@ static_assert(kAmd040.sha256.bytes[0] == 0xd6 && kAmd040.sha256.bytes[31] == 0x8
 static_assert(kAmd041.sha256.bytes[0] == 0x82 && kAmd041.sha256.bytes[31] == 0x76);
 static_assert(kAmd042.sha256.bytes[0] == 0x8a && kAmd042.sha256.bytes[31] == 0x5a);
 static_assert(kAmd043.sha256.bytes[0] == 0xd1 && kAmd043.sha256.bytes[31] == 0x57);
+static_assert(kAmd050.sha256.bytes[0] == 0xcd && kAmd050.sha256.bytes[31] == 0x1a);
 } // namespace AmdPreSr
