@@ -61,6 +61,7 @@
 #include <memory>
 #include <mutex>
 #include <new>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -802,14 +803,29 @@ struct SharedBuffer
         hp.Type = D3D12_HEAP_TYPE_DEFAULT;
         D3D12_RESOURCE_DESC rd {};
         rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-        rd.Width = (bytes + 65535) & ~UINT64(65535);
+        // Never below 16 MB. In Cyberpunk 2077 the driver refused the handle (E_INVALIDARG) of buffers of 1.9 to 4.2 MB,
+        // for seconds to minutes, and never of those of 7.4 MB and more.
+        rd.Width = std::max((bytes + 65535) & ~UINT64(65535), UINT64(16) << 20);
         rd.Height = rd.DepthOrArraySize = rd.MipLevels = 1;
         rd.SampleDesc.Count = 1;
         rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
         Check(d->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_SHARED, &rd, D3D12_RESOURCE_STATE_COMMON, nullptr,
                                          IID_PPV_ARGS(&resource)),
               "shared buffer");
-        Check(d->CreateSharedHandle(resource, nullptr, GENERIC_ALL, nullptr, &handle), "shared buffer handle");
+        if (const HRESULT hr = d->CreateSharedHandle(resource, nullptr, GENERIC_ALL, nullptr, &handle); FAILED(hr))
+        {
+            // Seen in a game only (E_INVALIDARG); these say which of its causes it was.
+            D3D12_HEAP_PROPERTIES got {};
+            D3D12_HEAP_FLAGS flags {};
+            const HRESULT query = resource->GetHeapProperties(&got, &flags);
+            nr::logf("[mochizuki] shared buffer handle failed (0x%08lX): %llu bytes, heap type %d flags 0x%X (query "
+                     "0x%08lX), device 0x%08lX, %d other shared buffers alive",
+                     static_cast<unsigned long>(hr), static_cast<unsigned long long>(rd.Width), int(got.Type),
+                     unsigned(flags), static_cast<unsigned long>(query),
+                     static_cast<unsigned long>(d->GetDeviceRemovedReason()), alive.load());
+            Check(hr, "shared buffer handle");
+        }
+        ++alive;
 
         VkExternalMemoryBufferCreateInfo external { VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO };
         external.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE_BIT;
@@ -842,11 +858,16 @@ struct SharedBuffer
         if (memory)
             vkFreeMemory(device, memory, nullptr);
         if (handle)
+        {
             CloseHandle(handle);
+            --alive;
+        }
         if (resource)
             resource->Release();
         *this = {};
     }
+
+    static inline std::atomic<int> alive {};
 };
 
 // A D3D12 fence of the game's device that the Vulkan device imports as a timeline semaphore.
@@ -1249,6 +1270,9 @@ constexpr uint32_t kWatchMs = 250;
 constexpr uint32_t kStallMs = 5'000;
 // Out of memory: a network build or the frame's buffers are tried again after these, then no more for that key.
 constexpr ULONGLONG kOomRetryMs[] = { 5'000, 30'000, 120'000 };
+// The frame's buffers after the driver refused a shared handle (E_INVALIDARG; SharedBuffer's 16 MB floor keeps it
+// away in Cyberpunk 2077): sooner and more often than after running out of memory.
+constexpr ULONGLONG kInvalidRetryMs[] = { 1'000, 2'000, 5'000, 10'000, 30'000, 60'000 };
 constexpr ULONGLONG kVramRetryMs = 10'000; // the VRAM check, after it refused
 // The VRAM check: what a network costs (its weights and fixed buffers, then per model pixel, times a factor for the
 // passes it is built for, plus images at the frame's extent when the model is scaled down), what the frame's buffers
@@ -1293,12 +1317,14 @@ template <class Key> struct Hold
 
     bool Holds(const Key& k, ULONGLONG now) const { return active && key == k && (!again || now < until); }
 
-    // The step failed for k: out of memory is tried again after kOomRetryMs, then no more for k; any other kind never
-    // for k. The delay in ms, 0 for none.
-    ULONGLONG Failed(const Key& k, NrError::Kind kind, const char* text)
+    // The step failed for k: out of memory is tried again after kOomRetryMs, and an invalid argument, when
+    // `invalidToo`, after kInvalidRetryMs; then no more for k. Any other kind never for k. The delay in ms, 0 for none.
+    ULONGLONG Failed(const Key& k, NrError::Kind kind, const char* text, bool invalidToo = false)
     {
-        const uint32_t oom = kind == NrError::OutOfMemory ? (active && key == k ? oomFailures : 0) + 1 : 0;
-        const ULONGLONG delay = oom && oom <= std::size(kOomRetryMs) ? kOomRetryMs[oom - 1] : 0;
+        const bool invalid = invalidToo && kind == NrError::Invalid;
+        const uint32_t oom = kind == NrError::OutOfMemory || invalid ? (active && key == k ? oomFailures : 0) + 1 : 0;
+        const std::span<const ULONGLONG> retry = invalid ? std::span<const ULONGLONG>(kInvalidRetryMs) : kOomRetryMs;
+        const ULONGLONG delay = oom && oom <= retry.size() ? retry[oom - 1] : 0;
         Set(k, delay != 0, delay, text);
         oomFailures = oom;
         return delay;
@@ -2873,10 +2899,12 @@ struct Session
             char text[384];
             std::snprintf(text, sizeof text, "the frame's buffers at %ux%u could not be made (%s): %s", g.width,
                           g.height, KindName(kind), e.what());
-            const ULONGLONG delay = geometryHold.Failed(g, kind, text);
+            // In Cyberpunk 2077 the driver refused a shared buffer's handle (E_INVALIDARG) for a while, then took it:
+            // an invalid argument is tried again too.
+            const ULONGLONG delay = geometryHold.Failed(g, kind, text, true);
             NoteError(text);
             if (delay)
-                nr::logf("[mochizuki] out of memory: the frame's buffers are made again in %llu s",
+                nr::logf("[mochizuki] the frame's buffers are made again in %llu s",
                          static_cast<unsigned long long>(delay / 1000));
             why = text;
             return false;
