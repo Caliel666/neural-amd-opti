@@ -58,6 +58,14 @@ if not %errorlevel%==0 exit /b 1
 if not %errorlevel%==0 exit /b 1
 "%AMD_TEST_OUT%\amd_runtime_host_load.exe" "%AMD_TEST_OUT%\amd_runtime_bootstrap_fixture_041.dll" --layout=0.4.1
 if not %errorlevel%==0 exit /b 1
+"%AMD_TEST_PYTHON%" -B tests\amd_runtime_host_fixture.py "%AMD_TEST_OUT%\amd_runtime_bootstrap_fixture_042.dll" --layout 0.4.2
+if not %errorlevel%==0 exit /b 1
+"%AMD_TEST_OUT%\amd_runtime_host_load.exe" "%AMD_TEST_OUT%\amd_runtime_bootstrap_fixture_042.dll" --layout=0.4.2
+if not %errorlevel%==0 exit /b 1
+"%AMD_TEST_PYTHON%" -B tests\amd_runtime_host_fixture.py "%AMD_TEST_OUT%\amd_runtime_bootstrap_fixture_043.dll" --layout 0.4.3
+if not %errorlevel%==0 exit /b 1
+"%AMD_TEST_OUT%\amd_runtime_host_load.exe" "%AMD_TEST_OUT%\amd_runtime_bootstrap_fixture_043.dll" --layout=0.4.3
+if not %errorlevel%==0 exit /b 1
 rem AmdLayout.h and the bootstrap contracts against the runtime binaries. None ship with the
 rem repository: set AMD_RUNTIME_DIR to a folder holding them (version.dll or dlssnr_amd_pass*.dll,
 rem searched recursively). Without it only the headers are checked.

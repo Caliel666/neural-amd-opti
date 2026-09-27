@@ -302,6 +302,12 @@ class Config
     // Share of the network's effect, 0-1: the runtime's Scale as a fraction of its 4/128 default.
     // danielblnc 0.3.1 and later (the runtimes whose layout maps Scale).
     CustomOptional<float> AmdEffectStrength { 1.0f };
+    // The runtime's arithmetic: 0 fast (its default, about 13% faster on RX 9000), 1 quality
+    // (NVIDIA's reference arithmetic). danielblnc 0.4.2 and later.
+    CustomOptional<int> AmdQuality { 0 };
+    // The display curve the danielblnc runtime shows the network the frame through: 0 Reinhard
+    // (its default), 1 ACES. danielblnc 0.4.0 and later.
+    CustomOptional<int> AmdToneCurve { 0 };
     // NVIDIA's colour grade for Model B (1, natural) or C (2, cinematic); 0 = none.
     CustomOptional<int> AmdColourGrade { 0 };
     // 1-5 in the ini; the menu offers 2-5. Too few and a frame that finds every

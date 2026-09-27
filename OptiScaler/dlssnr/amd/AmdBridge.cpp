@@ -756,6 +756,8 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
     if (s.skin < 0)
         s.skin = s.structure;
     s.strength = std::clamp(cfg.AmdEffectStrength.value_or_default(), 0.f, 1.f);
+    s.fast = cfg.AmdQuality.value_or_default() == 0;
+    s.toneCurve = UINT(std::clamp(cfg.AmdToneCurve.value_or_default(), 0, 1));
     s.grade = UINT(std::clamp(cfg.AmdColourGrade.value_or_default(), 0, 2));
     // Evaluate cut: Split proxy + SetBetween(EnqueueHip). Live only when SubmissionHooksWanted() (NrBackend=lmxxf
     // or mochizuki).

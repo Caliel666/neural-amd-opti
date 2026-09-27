@@ -800,6 +800,18 @@ struct Backend::Impl
             return;
         InitHip();
         auto path = directory / (L"dlssnr_amd_pass" + std::to_wstring(i + 1) + L".dll");
+        // One module per pass, so one file per pass: passes 2 and 3 are copies of pass 1, made here when missing or
+        // of another runtime, so a runtime is installed by replacing pass 1 alone. Pass 1 loaded first and set L.
+        if (i > 0 && IdentifyRuntime(path) != L)
+        {
+            std::error_code ec;
+            std::filesystem::copy_file(directory / L"dlssnr_amd_pass1.dll", path,
+                                       std::filesystem::copy_options::overwrite_existing, ec);
+            if (ec)
+                throw std::runtime_error("Could not copy dlssnr_amd_pass1.dll to pass " + std::to_string(i + 1) + ": " +
+                                         ec.message());
+            Log("AMD runtime: pass " + std::to_string(i + 1) + " copied from pass 1");
+        }
         auto identified = IdentifyRuntime(path);
         if (!identified)
             throw std::runtime_error("Private AMD runtime hash mismatch: pass " + std::to_string(i + 1));
@@ -864,7 +876,8 @@ struct Backend::Impl
         At<int>(h, L->tonemap) = -1;
         // 0.4.x reads these from dlssnr_on_amd.ini in DllMain, and only its own Present detour
         // reads them again, which the isolated bootstrap never installs. Pin the runtime defaults,
-        // which reproduce 0.3.1: no style, Reinhard, no lift, the game's exposure when given.
+        // which reproduce 0.3.1: no style, Reinhard, no lift, the game's exposure when given. The
+        // tone curve and Quality then follow the menu on every frame.
         if (L->style)
             At<int>(h, L->style) = 0;
         if (L->toneCurve)
@@ -963,8 +976,8 @@ Backend::Backend(ID3D12Device* d, ID3D12CommandQueue* q, const std::filesystem::
     // lands. Three earlier rounds were analysed without a tag and the logs could
     // not be told apart.
     p->LogDiagnostic("AMD graphics build source=" AMD_GRAPHICS_SOURCE_ID);
-    p->Log("AMD submission revision 20260926-1.8.8: multi-slot default; 0.3.1/0.4.x new wait with guarded restore; "
-           "Every-frame back on Ins menu; runtime 0.4.1" +
+    p->Log("AMD submission revision 20260927-1.8.9: multi-slot default; 0.3.1/0.4.x new wait with guarded restore; "
+           "Every-frame back on Ins menu; runtime 0.4.1, or the 0.4.2/0.4.3 supporter builds" +
            std::string(kBuildTag));
     try
     {
@@ -1603,7 +1616,8 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
             cfg.encoding != p->lastSettings.encoding || cfg.toneChannels != p->lastSettings.toneChannels ||
             cfg.modelScale != p->lastSettings.modelScale || !p->haveSettings || cfg.tone != p->lastSettings.tone ||
             cfg.structure != p->lastSettings.structure || cfg.skin != p->lastSettings.skin ||
-            cfg.everyFrame != p->lastSettings.everyFrame || (L->scale && cfg.strength != p->lastSettings.strength);
+            cfg.everyFrame != p->lastSettings.everyFrame || (L->scale && cfg.strength != p->lastSettings.strength) ||
+            (L->toneCurve && cfg.toneCurve != p->lastSettings.toneCurve);
         const bool explicitReset = p->resetRequested.exchange(false);
         const bool gap = p->lastSubmitted && GetTickCount64() - p->lastSubmitted > 250;
         if (f.reset || resize || guideChange || passChange || p->resetAfterTimeout || settingsChanged ||
@@ -1650,6 +1664,10 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
             At<float>(r, L->skin) = cfg.skin;
             if (L->scale)
                 At<float>(r, L->scale) = cfg.strength * 4.f / 128.f;
+            if (L->quality)
+                At<uint8_t>(r, L->quality) = cfg.fast ? 1 : 0;
+            if (L->toneCurve)
+                At<int>(r, L->toneCurve) = int(cfg.toneCurve);
             At<UINT>(r, L->toneChannels) = cfg.toneChannels ? 1u : 0u;
             At<UINT>(r, L->charMask) = 1; // Enable native semantic character-mask channel.
             // The old shader ceiling expired at high render resolutions even

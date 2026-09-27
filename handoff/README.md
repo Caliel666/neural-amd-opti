@@ -38,7 +38,7 @@ Everything is on `dlss-neural-rendering`. The work was committed on the branch `
 merge, then formatting), which pull request #1 merged into `dlss-neural-rendering`. Fixes since
 then are committed there directly.
 
-Six GitHub releases, all built by `tools/PACKAGE_RELEASE.ps1`:
+Eight GitHub releases, all built by `tools/PACKAGE_RELEASE.ps1`:
 
 - `v0.1.0-amd-nr`: the FidelityFX upscaler, frame generation and denoiser never load from the
   package layout, so FSR falls back to FSR 2 and Ray Reconstruction is greyed out. Do not use it.
@@ -55,17 +55,21 @@ Six GitHub releases, all built by `tools/PACKAGE_RELEASE.ps1`:
   runtime 0.4.0").
 - `v0.4.2-amd-nr`: danielblnc runtime 0.4.1 next to 0.4.0, 0.3.1 and 0.3.0 (section 5,
   "danielblnc runtime 0.4.1").
+- `v0.4.3-amd-nr`: danielblnc's supporter builds 0.4.2 and 0.4.3 accepted when the user brings one
+  (0.4.1 stays the default), the "DLSS 5 mode" and "Tone curve" controls, pass 2 and 3 made from
+  pass 1, and mochizuki kept on after a render-resolution change (section 5, "danielblnc runtime
+  0.4.2 and 0.4.3").
 
-The build reports itself as `0.4.2-amd-nr`, and the packager writes
-`dist/OptiScaler-0.4.2-amd-nr.zip`.
+The build reports itself as `0.4.3-amd-nr`, and the packager writes
+`dist/OptiScaler-0.4.3-amd-nr.zip`.
 
 The [AMD-NR ReShade Installer](https://github.com/zmodelerlover/AMD-NR-ReShade-Installer) installs
 this build as its OptiScaler route. v0.4.0 knows only `v0.1.1-amd-nr`; v0.5.0 and later offer every
 version its payload manifest lists, newest first, and install the newest with the lmxxf weights. The
-manifest has pinned `v0.4.2-amd-nr` since installer v0.6.3 (2026-09-26); v0.5.x installs it without
+manifest has pinned `v0.4.3-amd-nr` since installer v0.6.4 (2026-09-27); v0.5.x installs it without
 mochizuki. The manifest pins each release zip by URL and SHA-256, and every file it extracts from it
-by hash. The danielblnc runtime (0.4.1, `823063eb…`, inside the `v0.4.2-amd-nr` release entry as its
-own `opti-runtime`, and 0.4.0 inside `v0.4.1-amd-nr`; 0.3.1, `b108d640…`, at the top level for every older release, which does not
+by hash. The danielblnc runtime (0.4.1, `823063eb…`, inside the `v0.4.2-amd-nr` and `v0.4.3-amd-nr`
+release entries as their own `opti-runtime`, and 0.4.0 inside `v0.4.1-amd-nr`; 0.3.1, `b108d640…`, at the top level for every older release, which does not
 accept 0.4.x) and the lmxxf weights (`native-game-tiled-assets.zip`) come from the Hugging Face
 dataset `zmodelerlover/amd-nr`, never from this repository. v0.6.0 and later also offer mochizuki: with **NR runtime: mochizuki** ticked
 on an RDNA4 card it installs `MochizukiNrRuntime.dll` with `dlssnr-amd\shaders\`,
@@ -776,6 +780,45 @@ The weights are unchanged (the loader is 0.4.0's).
 per frame, 0.4.0 15.1-15.3 ms. The harness keeps the GPU otherwise idle, so it does not show what
 the priority stream buys under a game's load.
 
+
+### danielblnc runtime 0.4.2 and 0.4.3 (supporter builds)
+
+Released in `v0.4.3-amd-nr`. danielblnc gives these early builds to his supporters; this project does not
+ship them, and neither does the installer's payload. The host accepts them when the user brings
+one: `kAmd042` (SHA `8aa2dcc5…`, 12,981,760 bytes) and `kAmd043` (SHA `d1e32086…`, 12,749,824
+bytes) in `AmdLayout.h`, with their bootstrap entries in `RuntimeHostLoad.h` (DllMain calls
+CreateThread at `0x715d` in both; worker `0x8cc0` and `0x90a0`). `install-amd-presr.ps1` knows both
+hashes, ranks them above 0.4.1 and takes them out of their setups like the others; it still
+recommends 0.4.1 to everyone else.
+
+**One file is enough.** A runtime keeps its state in its own module, so each pass needs its own
+file. `InitPass` makes `dlssnr_amd_pass2.dll` and `pass3.dll` as copies of `pass1.dll` when they are
+missing or hold another runtime (logs "pass N copied from pass 1"), so installing a runtime by hand
+means replacing `dlssnr_amd_pass1.dll` alone.
+
+**How the tables were mapped.** From 0.4.1, with the same two methods (`map_layout_041_042.txt`,
+`map_layout_041_043.txt`, `datamap_041_042.txt`, `datamap_041_043.txt`); they agree on every field.
+Init, shutdown, the wait helper and the bootstrap worker are 0.4.1's instruction for instruction;
+Record, Notify and 0.4.3's Init only moved engine members. `graphicsWaitEnd` is the helper's
+`.pdata` end, as before. The `ANCHORS` rows come from `implement/anchors/derive_042_043.py`.
+
+**What changed in the runtime.** New kernels (the DLL grew by 3 MB) and three `[DlssNrOnAmd]`
+keys: `NoiseHandoff` (default 0) and `Quality` (default `fast`) in 0.4.2, `OverlayKey` (default
+`End`) in 0.4.3. The weights are the same as 0.4.1's.
+
+**Fast and quality.** `Quality` is a byte (`quality` in the layout: `0xaf84d`, `0xb19c5`), 1 = fast
+(the runtime's default: cheaper arithmetic, RX 9000 only; on other GPUs only the colour conversion
+changes), 0 = reference (NVIDIA's arithmetic). The runtime's per-job function copies it into the
+engine every job and logs `quality: ...` in `dlssnr_on_amd.log` when it changes; the network then
+re-uploads the flag and replans, so it can switch while the game runs. The host writes it before
+each Record from `[DlssNr] AmdQuality` (0 fast, 1 quality; menu "DLSS 5 mode"), so an ini left in
+the game folder does not decide it. Smoke test, 0.4.3, dispatch wait: reference 12.6 ms, fast 10.8
+ms per frame. The other two keys are left at the runtime's defaults.
+
+**Checked without a game.** `amd_layout_binary_check.py` passes on 0.3.1, 0.4.0, 0.4.1, 0.4.2 and
+0.4.3; the synthetic bootstrap fixtures pass for both contracts; `tools/test-amd-runtime-init.cmd` on
+an RX 9070 XT passes for both, 24 of 24 frames per wait mode with no timeout. Dispatch wait per
+frame, same harness: 0.4.1 14.7 ms, 0.4.2 12.3 ms, 0.4.3 10.9 ms.
 ---
 
 ## 6. Diagnostics playbook

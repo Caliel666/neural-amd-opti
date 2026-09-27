@@ -745,12 +745,17 @@ void RenderMenu(Config* config, float menuResScale)
             scheduling();
             ImGui::SeparatorText("Effect");
             // Only a runtime whose layout maps its Scale can take a strength.
+            bool hasToneCurve = false;
             {
                 const char* runtime = DlssNr::AmdBridge::RuntimeName();
-                bool hasScale = false;
+                bool hasScale = false, hasQuality = false;
                 for (const auto* layout : AmdPreSr::kAmdLayouts)
                     if (runtime && std::strcmp(layout->name, runtime) == 0)
+                    {
                         hasScale = layout->scale != 0;
+                        hasQuality = layout->quality != 0;
+                        hasToneCurve = layout->toneCurve != 0;
+                    }
                 ImGui::BeginDisabled(!hasScale);
                 static float strength = 100.f;
                 static bool editingStrength = false;
@@ -766,6 +771,15 @@ void RenderMenu(Config* config, float menuResScale)
                            "\nruntime's own default; 0% leaves the frame as the game drew it while"
                            "\nthe network still runs. Changing it restarts the model's history."
                            "\n\nNeeds the danielblnc runtime 0.3.1 or later.");
+                ImGui::BeginDisabled(!hasQuality);
+                int quality = std::clamp(config->AmdQuality.value_or_default(), 0, 1);
+                if (ImGui::Combo("DLSS 5 mode", &quality, "Fast\0Quality\0"))
+                    config->AmdQuality = quality;
+                ImGui::EndDisabled();
+                HelpMarker("Fast: cheaper arithmetic where the difference is barely visible, about 13%"
+                           "\nfaster (RX 9000; on other GPUs only the colour conversion changes)."
+                           "\nQuality: NVIDIA's own arithmetic."
+                           "\n\nNeeds the danielblnc runtime 0.4.2 or later.");
             }
             static int passes = 1;
             static bool editingPasses = false;
@@ -787,6 +801,14 @@ void RenderMenu(Config* config, float menuResScale)
                        "\n\nNatural (Model B): exposure -0.1 EV, softer contrast, 10% less saturation."
                        "\nCinematic (Model C): 15% less saturation."
                        "\n\nColour only: the network itself runs the same either way.");
+            ImGui::BeginDisabled(!hasToneCurve);
+            int curve = std::clamp(config->AmdToneCurve.value_or_default(), 0, 1);
+            if (ImGui::Combo("Tone curve", &curve, "Reinhard (soft)\0ACES (filmic)\0"))
+                config->AmdToneCurve = curve;
+            ImGui::EndDisabled();
+            HelpMarker("The display curve the network sees the frame through. Changing it"
+                       "\nrestarts the model's history."
+                       "\n\nNeeds the danielblnc runtime 0.4.0 or later.");
             // The stored value is 1 Linear, 2 sRGB, 3 Gamma 2.2, and the combo index is one below it.
             // An old INI's 0 (Auto, which converted nothing) shows as Linear.
             int encoding = std::clamp(config->AmdEncoding.value_or_default(), 1, 3) - 1;

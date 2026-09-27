@@ -46,7 +46,7 @@ INI_KEYS = {
     "Tonemap": "tonemap", "LocalTone": "tone", "LocalStructure": "structure", "SkinStructure": "skin",
     "UseAutoMask": "charMask", "ToneChannels": "toneChannels", "Scale": "scale", "SpinDraw": "spinDraw",
     "Async": "configuredInline", "Interop": "interop", "Style": "style", "ToneCurve": "toneCurve",
-    "ToneLift": "toneLift", "UseGameExposure": "useGameExposure",
+    "ToneLift": "toneLift", "UseGameExposure": "useGameExposure", "Quality": "quality",
 }
 # Fields the checks in check_layout pin by what the code does with them (besides INI_KEYS).
 BEHAVIOUR_CHECKED = {"enabled", "nativeFailure", "initDone", "trampoline"}
@@ -56,11 +56,78 @@ BEHAVIOUR_CHECKED = {"enabled", "nativeFailure", "initDone", "trampoline"}
 # next call goes to or None[, offset the site adds to the field]). The instruction at the site must
 # have exactly these bytes around its disp32, and the disp32 must reach the field. The 0.4.0 sites
 # are the ones the verified maps cite. The 0.4.1 rows are the same instructions, found through the
-# aligned instructions of each matched function (analysis-opti/implement/anchors/derive_041.py).
+# aligned instructions of each matched function (analysis-opti/implement/anchors/derive_041.py), and the
+# 0.4.2 and 0.4.3 rows are the 0.4.1 ones mapped the same way (derive_042_043.py).
 # The 0.3.1 and 0.3.0 rows are the same instructions in the same order, found by shape (daniel-runtime/analysis-opti/implement/anchors/derive_anchors.py and
 # anchors.txt, which prints each site with its neighbours). 0.3.0 has no Notify-side jobDone wait
 # and no mapped wait helper, so it lacks those rows.
 ANCHORS = {
+    "0.4.3": [
+        ("device", 0xa232, "48 83 3d", "00", "notify", None),
+        ("queue", 0xa228, "48 83 3d", "00", "notify", None),
+        ("queue", 0xa291, "48 89 35", "", "notify", None),
+        ("engine", 0xc32b, "48 8d 0d", "", None, "init"),
+        ("engine", 0x17e85, "48 8d 0d", "", "record", None),
+        ("historyView", 0x1d666, "4c 8b 05", "", None, None),
+        ("historyValid", 0x17e9b, "c6 05", "00", "record", None),
+        ("jobDone", 0x15b8b, "39 05", "", "record", None),
+        ("jobDone", 0xa468, "39 2d", "", "notify", None),
+        ("timeoutCount", 0x197ef, "c7 05", "00 00 00 00", "shutdown", None),
+        ("timeoutCount", 0x1eb39, "3b 05", "", None, None),
+        ("watchdog", 0x18a3c, "44 8b 05", "", "record", "graphicsWaitBegin"),
+        ("pendingList", 0xa2e5, "f0 48 0f b1 0d", "", "notify", None),
+        ("pendingList", 0x18fc1, "48 87 05", "", "record", None),
+        ("jobId", 0x15b85, "8b 05", "", "record", None),
+        ("jobId", 0x18f9b, "44 89 25", "", "record", None),
+        ("depthInverted", 0x17bed, "44 8b 15", "", "record", None),
+        ("depthInverted", 0x14430, "44 89 0d", "", None, None),
+        ("explicitDepth", 0x1441e, "c6 05", "01", None, None),
+        ("hipOrdinal", 0x15884, "8b 0d", "", "record", None),
+        ("recreate", 0x15b59, "80 3d", "01", "record", None),
+        ("recreate", 0x15e91, "c6 05", "00", "record", None),
+        ("recordLock", 0x15e68, "48 8d 0d", "", "record", None),
+        ("recordLock", 0x15e7c, "81 3d", "ff ff ff 7f", "record", "shutdown", 0x4c),
+        ("gate4c", 0x15b66, "83 3d", "00", "record", None),
+        ("gate68", 0x15b6f, "83 3d", "00", "record", None),
+        ("gate68", 0xa2f9, "87 2d", "", "notify", None),
+        ("counter78", 0x1848e, "ff 05", "", "record", None),
+        ("graphicsPso", 0x1a03f, "48 83 3d", "00", "graphicsWaitBegin", None),
+        ("graphicsPso", 0x1a060, "48 8b 15", "", "graphicsWaitBegin", None),
+        ("predicateReady", 0x19d49, "80 3d", "01", "graphicsWaitBegin", None),
+    ],
+    "0.4.2": [
+        ("device", 0x9de2, "48 83 3d", "00", "notify", None),
+        ("queue", 0x9dd8, "48 83 3d", "00", "notify", None),
+        ("queue", 0x9e41, "48 89 35", "", "notify", None),
+        ("engine", 0xbedb, "48 8d 0d", "", None, "init"),
+        ("engine", 0x176d5, "48 8d 0d", "", "record", None),
+        ("historyView", 0x1cec6, "4c 8b 05", "", None, None),
+        ("historyValid", 0x176eb, "c6 05", "00", "record", None),
+        ("jobDone", 0x153db, "39 05", "", "record", None),
+        ("jobDone", 0xa018, "39 2d", "", "notify", None),
+        ("timeoutCount", 0x1903f, "c7 05", "00 00 00 00", "shutdown", None),
+        ("timeoutCount", 0x1e3b7, "3b 05", "", None, None),
+        ("watchdog", 0x1828c, "44 8b 05", "", "record", "graphicsWaitBegin"),
+        ("pendingList", 0x9e95, "f0 48 0f b1 0d", "", "notify", None),
+        ("pendingList", 0x18811, "48 87 05", "", "record", None),
+        ("jobId", 0x153d5, "8b 05", "", "record", None),
+        ("jobId", 0x187eb, "44 89 25", "", "record", None),
+        ("depthInverted", 0x1743d, "44 8b 15", "", "record", None),
+        ("depthInverted", 0x13c80, "44 89 0d", "", None, None),
+        ("explicitDepth", 0x13c6e, "c6 05", "01", None, None),
+        ("hipOrdinal", 0x150d4, "8b 0d", "", "record", None),
+        ("recreate", 0x153a9, "80 3d", "01", "record", None),
+        ("recreate", 0x156e1, "c6 05", "00", "record", None),
+        ("recordLock", 0x156b8, "48 8d 0d", "", "record", None),
+        ("recordLock", 0x156cc, "81 3d", "ff ff ff 7f", "record", "shutdown", 0x4c),
+        ("gate4c", 0x153b6, "83 3d", "00", "record", None),
+        ("gate68", 0x153bf, "83 3d", "00", "record", None),
+        ("gate68", 0x9ea9, "87 2d", "", "notify", None),
+        ("counter78", 0x17cde, "ff 05", "", "record", None),
+        ("graphicsPso", 0x1988f, "48 83 3d", "00", "graphicsWaitBegin", None),
+        ("graphicsPso", 0x198b0, "48 8b 15", "", "graphicsWaitBegin", None),
+        ("predicateReady", 0x19599, "80 3d", "01", "graphicsWaitBegin", None),
+    ],
     "0.4.1": [
         ("device", 0x9db2, "48 83 3d", "00", "notify", None),
         ("queue", 0x9da8, "48 83 3d", "00", "notify", None),

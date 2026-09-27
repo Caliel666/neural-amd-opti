@@ -67,6 +67,10 @@ struct Settings
     float tone = 0, structure = 1, skin = 1;
     // Share of the network's effect, 1 = the runtime's default Scale of 4/128.
     float strength = 1;
+    // The runtime's Quality: true = fast, false = reference (0.4.2 and later).
+    bool fast = true;
+    // The runtime's ToneCurve: 0 Reinhard, 1 ACES (0.4.0 and later).
+    UINT toneCurve = 0;
     // NVIDIA's colour grade for Model B (1, natural) or C (2, cinematic); 0 = none.
     UINT grade = 0;
     LookSettings look;

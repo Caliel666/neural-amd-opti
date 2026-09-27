@@ -14,7 +14,7 @@ next launch) or `NrBackend` in `OptiScaler.ini`.
 
 | | danielblnc | lmxxf | mochizuki (experimental) |
 |---|---|---|---|
-| Runtime | [DLSS-NR-on-AMD](https://github.com/danielblnc/DLSS-NR-on-AMD) 0.4.1 (recommended; its faster kernels run on RDNA4), 0.4.0, 0.3.1 or 0.3.0, as `dlssnr_amd_pass1-3.dll` | [lmxxf's open-source HIP port](https://github.com/lmxxf/dlss5-on-amd-9070xt-porting), `LmxxfNrRuntime.dll` built here | [mochizuki0323's Vulkan port](https://github.com/mochizuki0323/DLSSNR-AMD), `MochizukiNrRuntime.dll` built here, not in the package |
+| Runtime | [DLSS-NR-on-AMD](https://github.com/danielblnc/DLSS-NR-on-AMD) 0.4.1 (recommended; its faster kernels run on RDNA4), 0.4.0, 0.3.1 or 0.3.0, or the 0.4.2 and 0.4.3 builds danielblnc gives his supporters, as `dlssnr_amd_pass1-3.dll` | [lmxxf's open-source HIP port](https://github.com/lmxxf/dlss5-on-amd-9070xt-porting), `LmxxfNrRuntime.dll` built here | [mochizuki0323's Vulkan port](https://github.com/mochizuki0323/DLSSNR-AMD), `MochizukiNrRuntime.dll` built here, not in the package |
 | Weights | `dlssnr_on_amd_weights.bin` | `native-game-tiled-assets\` | `dlssnr-amd\dlssnr.bin`, made from your own `nvngx_dlssnr.dll` 310.8.0 |
 | GPUs | RDNA3 and RDNA4 with HIP 7 | RDNA4 (gfx1201 modules) | RDNA4 (Vulkan FP8) |
 | Where it runs | Before Super Resolution, or on the finished frame (the only choice for Ray Reconstruction titles) | Before Super Resolution, render resolution up to 1080p | Before Super Resolution, on a Vulkan device of its own beside the game's DirectX 12 |
@@ -57,6 +57,10 @@ OptiScaler's copy.
    running it, and runs the setup only to make the weights. 0.4.x uses the same weights as 0.3.x.
    To update from an older runtime, drop the 0.4.1 setup next to `Setup.bat` and run Setup again: when more
    than one known runtime is found, the newest is installed and its version is printed.
+   danielblnc's 0.4.2 and 0.4.3 supporter builds are not in any package; if you have one, put its
+   setup next to `Setup.bat`, or replace `dlssnr_amd_pass1.dll` in the game folder with its
+   `version.dll` (and delete that `version.dll` from the game folder if its own setup put it there).
+   Passes 2 and 3 are copied from pass 1 when they are missing or hold another runtime.
    For lmxxf, put `native-game-tiled-assets\` next to `Setup.bat` or in the game folder; the
    runtime, modules and shaders ship in the package. For
    mochizuki, copy `MochizukiNrRuntime.dll` and its `dlssnr-amd\` folder (`shaders\`, your
@@ -82,6 +86,8 @@ All in `OptiScaler.ini`, section `[DlssNr]`, and in the **Neural** tab of the ov
 | `AmdEncoding` | 1 Linear, 2 sRGB (default), 3 Gamma 2.2 |
 | `AmdEffectStrength` | Share of the network's effect, 0 to 1 (danielblnc 0.3.1 and later) |
 | `AmdColourGrade` | 0 none, 1 natural, 2 cinematic |
+| `AmdQuality` | "DLSS 5 mode": 0 fast (default, about 13% faster on RX 9000), 1 quality (NVIDIA's own arithmetic). danielblnc 0.4.2 and later |
+| `AmdToneCurve` | The display curve the network sees the frame through: 0 Reinhard (default), 1 ACES. danielblnc 0.4.0 and later |
 | `AmdSlots`, `AmdGraphicsWait` | Frames in flight and wait mode (danielblnc) |
 | `AmdDynamicScale`, `AmdDynamicTargetFps` | Lower the NR resolution while under the target frame rate |
 | `LmxxfFitLarge` | Let lmxxf take a render resolution above 1080p (can hitch; off by default) |

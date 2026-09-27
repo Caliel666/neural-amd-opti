@@ -527,6 +527,8 @@ bool Config::Reload(std::filesystem::path iniPath)
             AmdNeuralLightingStrength.set_from_config(readFloat("DlssNr", "AmdNeuralLightingStrength"));
             AmdEncoding.set_from_config(readInt("DlssNr", "AmdEncoding"));
             AmdEffectStrength.set_from_config(readFloat("DlssNr", "AmdEffectStrength"));
+            AmdQuality.set_from_config(readInt("DlssNr", "AmdQuality"));
+            AmdToneCurve.set_from_config(readInt("DlssNr", "AmdToneCurve"));
             AmdColourGrade.set_from_config(readInt("DlssNr", "AmdColourGrade"));
             AmdSlots.set_from_config(readInt("DlssNr", "AmdSlots"));
             AmdNrScale.set_from_config(readFloat("DlssNr", "AmdModelScale"));
@@ -1668,6 +1670,8 @@ bool Config::SaveIni()
         ini.SetValue("DlssNr", "AmdEncoding", GetIntValue(Instance()->AmdEncoding.value_for_config()).c_str());
         ini.SetValue("DlssNr", "AmdEffectStrength",
                      GetFloatValue(Instance()->AmdEffectStrength.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "AmdQuality", GetIntValue(Instance()->AmdQuality.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "AmdToneCurve", GetIntValue(Instance()->AmdToneCurve.value_for_config()).c_str());
         ini.SetValue("DlssNr", "AmdColourGrade", GetIntValue(Instance()->AmdColourGrade.value_for_config()).c_str());
         ini.SetValue("DlssNr", "AmdSlots", GetIntValue(Instance()->AmdSlots.value_for_config()).c_str());
         ini.SetValue("DlssNr", "AmdModelScale", GetFloatValue(Instance()->AmdNrScale.value_for_config()).c_str());

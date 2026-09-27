@@ -128,6 +128,10 @@ struct AmdLayout
     std::uint32_t toneCurve = 0;
     std::uint32_t toneLift = 0;
     std::uint32_t useGameExposure = 0;
+    // 0.4.2 and later: [DlssNrOnAmd] Quality, a byte, 1 = fast (the default: cheaper arithmetic,
+    // about 13% faster on RX 9000), 0 = reference (NVIDIA's own arithmetic). The runtime copies it
+    // into the engine on every job, so it can change while the game runs. 0 = not mapped.
+    std::uint32_t quality = 0;
 };
 
 // 0.2.17 pass DLL, SHA256 bc97f3b0...
@@ -330,7 +334,134 @@ inline constexpr AmdLayout kAmd041 {
     .useGameExposure = 0xaa674,
 };
 
-inline constexpr const AmdLayout* kAmdLayouts[] = { &kAmd0217, &kAmd03, &kAmd031, &kAmd040, &kAmd041 };
+// 0.4.2 and 0.4.3 version.dll (SHA 8aa2dcc5 and d1e32086), early builds danielblnc gives his
+// supporters; they are not distributed with this project. Carved from their setups the same way,
+// size 0xc61600 and 0xc28c00. Mapped from 0.4.1 two ways that agree on every field
+// (map_layout_041_042/043.txt and datamap_041_042/043.txt). Init, shutdown, the wait helper and
+// the bootstrap are 0.4.1's instruction for instruction; Record and Notify only moved engine
+// members, which the host never touches. New INI keys: NoiseHandoff and Quality (0.4.2),
+// OverlayKey (0.4.3). Same weights as 0.4.1.
+inline constexpr AmdLayout kAmd042 {
+    .name = "0.4.2",
+    .size = 12981760,
+    .sha256 = Sha256FromHex("8aa2dcc5b6596aca97995dbfd4e0a9790d8c15108495e0ed154dd15dbb5b465a"),
+    .d3dCompileIat = 0,
+    .init = 0x28170,
+    .record = 0x15040,
+    .notify = 0x9db0,
+    .shutdown = 0x18cf0,
+    .trampoline = 0xaf9b0,
+    .device = 0xaeaa0,
+    .queue = 0xaeaa8,
+    .engine = 0xaeab8,
+    .historyView = 0xaec00,
+    .historyValid = 0xaec08,
+    .initDone = 0xaef18,
+    .nativeFailure = 0xaef1a,
+    .configuredInline = 0xaf420,
+    .jobDone = 0xaf454,
+    .timeoutCount = 0xaf458,
+    .watchdog = 0xaf484,
+    .interop = 0xaf678,
+    .pendingList = 0xaf758,
+    .jobId = 0xaf764,
+    .depthInverted = 0xaf808,
+    .explicitDepth = 0xaf80c,
+    .enabled = 0xaf814,
+    .temporal = 0xaf815,
+    .fsrInputs = 0xaf816,
+    .depthPresent = 0xaf817,
+    .tonemap = 0xaf818,
+    .tone = 0xaf828,
+    .structure = 0xaf82c,
+    .skin = 0xaf830,
+    .charMask = 0xaf838,
+    .toneChannels = 0xaf83c,
+    .hipOrdinal = 0xaf938,
+    .recreate = 0xaf910,
+    .recordLock = 0xaf898,
+    .gate4c = 0xaf744,
+    .gate68 = 0xaf760,
+    .counter78 = 0xaf770,
+    .spinDraw = 0xaf624,
+    .graphicsPso = 0xaf640,
+    .predicateReady = 0xaf598,
+    .graphicsWaitBegin = 0x19540,
+    .graphicsWaitEnd = 0x19c66,
+    .waitDispatchInit = 0x19730,
+    .waitDispatchFallback = 0x19ad0,
+    .waitDispatchSlices = 0x19b2a,
+    .waitDispatchFinish = 0x19c17,
+    .scale = 0xaf834,
+    .style = 0xaf840,
+    .toneCurve = 0xaf844,
+    .toneLift = 0xaf848,
+    .useGameExposure = 0xaf84c,
+    .quality = 0xaf84d,
+};
+
+inline constexpr AmdLayout kAmd043 {
+    .name = "0.4.3",
+    .size = 12749824,
+    .sha256 = Sha256FromHex("d1e320862a8763ac39e7ce194536d4b6c55ba61bae9e8a92753cec32df67a457"),
+    .d3dCompileIat = 0,
+    .init = 0x28a20,
+    .record = 0x157f0,
+    .notify = 0xa200,
+    .shutdown = 0x194a0,
+    .trampoline = 0xb1b50,
+    .device = 0xb0c10,
+    .queue = 0xb0c18,
+    .engine = 0xb0c28,
+    .historyView = 0xb0d70,
+    .historyValid = 0xb0d78,
+    .initDone = 0xb1090,
+    .nativeFailure = 0xb1092,
+    .configuredInline = 0xb1598,
+    .jobDone = 0xb15cc,
+    .timeoutCount = 0xb15d0,
+    .watchdog = 0xb15fc,
+    .interop = 0xb17f0,
+    .pendingList = 0xb18d0,
+    .jobId = 0xb18dc,
+    .depthInverted = 0xb1980,
+    .explicitDepth = 0xb1984,
+    .enabled = 0xb198c,
+    .temporal = 0xb198d,
+    .fsrInputs = 0xb198e,
+    .depthPresent = 0xb198f,
+    .tonemap = 0xb1990,
+    .tone = 0xb19a0,
+    .structure = 0xb19a4,
+    .skin = 0xb19a8,
+    .charMask = 0xb19b0,
+    .toneChannels = 0xb19b4,
+    .hipOrdinal = 0xb1ab0,
+    .recreate = 0xb1a88,
+    .recordLock = 0xb1a10,
+    .gate4c = 0xb18bc,
+    .gate68 = 0xb18d8,
+    .counter78 = 0xb18e8,
+    .spinDraw = 0xb179c,
+    .graphicsPso = 0xb17b8,
+    .predicateReady = 0xb1710,
+    .graphicsWaitBegin = 0x19cf0,
+    .graphicsWaitEnd = 0x1a416,
+    .waitDispatchInit = 0x19ee0,
+    .waitDispatchFallback = 0x1a280,
+    .waitDispatchSlices = 0x1a2da,
+    .waitDispatchFinish = 0x1a3c7,
+    .scale = 0xb19ac,
+    .style = 0xb19b8,
+    .toneCurve = 0xb19bc,
+    .toneLift = 0xb19c0,
+    .useGameExposure = 0xb19c4,
+    .quality = 0xb19c5,
+};
+
+inline constexpr const AmdLayout* kAmdLayouts[] = {
+    &kAmd0217, &kAmd03, &kAmd031, &kAmd040, &kAmd041, &kAmd042, &kAmd043
+};
 
 // Compile-time sanity: the hex helper must land on the first/last digest byte
 // of each known runtime. A wrong-length literal already fails Sha256FromHex;
@@ -340,4 +471,6 @@ static_assert(kAmd03.sha256.bytes[0] == 0x83 && kAmd03.sha256.bytes[31] == 0x38)
 static_assert(kAmd031.sha256.bytes[0] == 0xb1 && kAmd031.sha256.bytes[31] == 0x54);
 static_assert(kAmd040.sha256.bytes[0] == 0xd6 && kAmd040.sha256.bytes[31] == 0x80);
 static_assert(kAmd041.sha256.bytes[0] == 0x82 && kAmd041.sha256.bytes[31] == 0x76);
+static_assert(kAmd042.sha256.bytes[0] == 0x8a && kAmd042.sha256.bytes[31] == 0x5a);
+static_assert(kAmd043.sha256.bytes[0] == 0xd1 && kAmd043.sha256.bytes[31] == 0x57);
 } // namespace AmdPreSr
