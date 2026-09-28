@@ -1033,6 +1033,22 @@ uncovered background (ghost 0.00165 against -0.00013) and settles one frame late
 is why it stays off (`exports\mochizuki-work\stab-lmxxf-residual-smooth\RESULTS.txt`). Cost when on:
 about +0.26 to +0.37 ms a frame at 1080p on a busy GPU. Not tested in a game.
 
+### After 0.4.4 (not released yet)
+
+**danielblnc 0.4.3 is public** since 2026-09-28 ([Alpha 0.4.3](https://github.com/danielblnc/DLSS-NR-on-AMD/releases/tag/v0.4.3)).
+Its setup holds the same `version.dll` `d1e32086` this host already accepted, so only the text changed:
+`README.md`, `install-amd-presr.ps1` (rank note and messages), `PACKAGE_RELEASE.ps1`, the host's log line
+and `tests/amd_installer_exit.py` recommend 0.4.3. Only 0.5.0 is supporter-only now. The AMD-NR installer
+already installs 0.4.3 with OptiScaler 0.4.4 (payload, not this repo).
+
+**lmxxf and mochizuki beside a separate ReShade.** With ReShade loaded as `dxgi.dll` (OptiScaler as
+`winmm.dll`), mochizuki never ran: the log stopped at `AMD pre-SR: awaiting execution queue observation`.
+ReShade wraps the game's D3D12 lists. NGX got ReShade's wrapper, and `ExecuteCommandLists` got ReShade's
+`_orig`, our `CommandListProxy`, so `AwaitingListTracker` never matched a pointer. `Run` in `AmdBridge.cpp`
+now asks the list for `ILogicalCommandList` (ReShade passes unknown interfaces on to `_orig`) and works with
+our proxy, so the list and its device are the ones the queue sees. Without a wrapping layer nothing changes.
+Confirmed by a user in Conan Exiles Enhanced (RX 9070) with the test build.
+
 ---
 
 ## 6. Diagnostics playbook
