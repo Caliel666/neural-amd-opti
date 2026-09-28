@@ -366,9 +366,9 @@ function Find-FirstFile([string[]]$paths) {
 # Hash: only known danielblnc runtimes are supported. The RVA layout is pinned to
 # each binary — a different build will not run correctly. Fail closed.
 # 0.3.0 = AmdLayout.h kAmd03; 0.3.1 = kAmd031 (mapped 2026-09-16); 0.4.0 = kAmd040 and
-# 0.4.1 = kAmd041 (2026-09-26). 0.4.2 = kAmd042, public since 2026-09-27 and the recommended one.
-# 0.4.3 and 0.5.0 = kAmd043/kAmd050, danielblnc's early builds for his supporters: accepted when the user
-# has them, never shipped.
+# 0.4.1 = kAmd041 (2026-09-26). 0.4.2 = kAmd042, public since 2026-09-27. 0.4.3 = kAmd043, public since
+# 2026-09-28 and the recommended one. 0.5.0 = kAmd050, danielblnc's early build for his supporters: accepted
+# when the user has it, never shipped.
 $expectedA030 = '8321CAE728D28CB7632D0D58D3D913E91132BF7645C126505698FBE4CD5A0138'
 $expectedA031 = 'B108D6407EB7F094A4F9111EDD778EEE7B978B648D413A9FC7AEEDFDD914C154'
 $expectedA040 = 'D62BE3D8B9FBB3C6C81982C4DDB3DFA00EB9662E3206925CBE5B7E1BC6798B80'
@@ -665,7 +665,7 @@ if ($installDaniel) {
     if (-not $srcA -or !(Test-Path -LiteralPath $srcA -PathType Leaf)) {
         Fail @"
 Still missing a known DLSS-NR-on-AMD runtime (version.dll) after danielblnc setup.
-Supported: 0.4.2 (recommended), 0.4.1, 0.4.0, 0.3.1 or 0.3.0, and the 0.4.3 and 0.5.0 supporter builds.
+Supported: 0.4.3 (recommended), 0.4.2, 0.4.1, 0.4.0, 0.3.1 or 0.3.0, and the 0.5.0 supporter build.
 1. Run dlssnr_on_amd_setup.exe yourself and finish its install
 2. Put the version.dll it produces next to Setup.bat (or leave it in the game folder)
 Download from https://github.com/danielblnc/DLSS-NR-on-AMD/releases
@@ -676,8 +676,8 @@ Download from https://github.com/danielblnc/DLSS-NR-on-AMD/releases
     $nameA = Get-RuntimeName $hashA
     if ($nameA) {
         Write-Host ("danielblnc runtime {0} (SHA256 {1})" -f $nameA, $hashA) -ForegroundColor Green
-        if ((Get-RuntimeRank $hashA) -lt (Get-RuntimeRank $expectedA042)) {
-            Write-Host ("NOTE: runtime {0} is supported, but 0.4.2 is recommended (faster on RDNA4 GPUs)." -f $nameA) -ForegroundColor Yellow
+        if ((Get-RuntimeRank $hashA) -lt (Get-RuntimeRank $expectedA043)) {
+            Write-Host ("NOTE: runtime {0} is supported, but 0.4.3 is recommended (faster on RDNA4 GPUs)." -f $nameA) -ForegroundColor Yellow
         }
     } else {
         Write-Host ("danielblnc runtime SHA256: {0}" -f $hashA)

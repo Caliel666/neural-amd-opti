@@ -334,9 +334,8 @@ inline constexpr AmdLayout kAmd041 {
     .useGameExposure = 0xaa674,
 };
 
-// 0.4.2 and 0.4.3 version.dll (SHA 8aa2dcc5 and d1e32086). 0.4.2 is public since 2026-09-27 (its setup
-// holds this same file); 0.4.3 is an early build danielblnc gives his supporters, not distributed with
-// this project. Carved from their setups the same way,
+// 0.4.2 and 0.4.3 version.dll (SHA 8aa2dcc5 and d1e32086). 0.4.2 is public since 2026-09-27 and 0.4.3 since
+// 2026-09-28 (their setups hold these same files). Carved from their setups the same way,
 // size 0xc61600 and 0xc28c00. Mapped from 0.4.1 two ways that agree on every field
 // (map_layout_041_042/043.txt and datamap_041_042/043.txt). Init, shutdown, the wait helper and
 // the bootstrap are 0.4.1's instruction for instruction; Record and Notify only moved engine

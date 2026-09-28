@@ -389,6 +389,23 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
 {
     if (outResult)
         *outResult = nullptr;
+    // A layer that wraps the game's lists, ReShade loaded as dxgi.dll, hands NGX its wrapper and gives
+    // ExecuteCommandLists ours from under it. Work with ours, so the list and its device are the ones
+    // the queue sees; otherwise the list is never observed and NR stays off.
+    DlssNr::Submission::ILogicalCommandList* logical = nullptr;
+    if (cmd &&
+        SUCCEEDED(cmd->QueryInterface(__uuidof(DlssNr::Submission::ILogicalCommandList),
+                                      reinterpret_cast<void**>(&logical))) &&
+        logical)
+    {
+        ID3D12GraphicsCommandList* ours = nullptr;
+        if (SUCCEEDED(logical->QueryInterface(IID_PPV_ARGS(&ours))) && ours)
+        {
+            cmd = ours;
+            ours->Release(); // the game holds the list for this evaluate
+        }
+        logical->Release();
+    }
     // Process exit has begun: the original colour goes to SR.
     if (Exiting())
         return true;

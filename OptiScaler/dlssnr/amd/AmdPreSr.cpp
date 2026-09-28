@@ -939,7 +939,7 @@ Backend::Backend(ID3D12Device* d, ID3D12CommandQueue* q, const std::filesystem::
     // not be told apart.
     p->LogDiagnostic("AMD graphics build source=" AMD_GRAPHICS_SOURCE_ID);
     p->Log("AMD submission revision 20260927-1.8.9: multi-slot default; 0.3.1/0.4.x new wait with guarded restore; "
-           "Every-frame back on Ins menu; runtime 0.4.2 or 0.4.1, or the 0.4.3/0.5.0 supporter builds" +
+           "Every-frame back on Ins menu; runtime 0.4.3, 0.4.2 or 0.4.1, or the 0.5.0 supporter build" +
            std::string(kBuildTag));
     try
     {
