@@ -38,7 +38,7 @@ Everything is on `dlss-neural-rendering`. The work was committed on the branch `
 merge, then formatting), which pull request #1 merged into `dlss-neural-rendering`. Fixes since
 then are committed there directly.
 
-Ten GitHub releases, all built by `tools/PACKAGE_RELEASE.ps1`:
+Eleven GitHub releases, all built by `tools/PACKAGE_RELEASE.ps1`:
 
 - `v0.1.0-amd-nr`: the FidelityFX upscaler, frame generation and denoiser never load from the
   package layout, so FSR falls back to FSR 2 and Ray Reconstruction is greyed out. Do not use it.
@@ -64,14 +64,17 @@ Ten GitHub releases, all built by `tools/PACKAGE_RELEASE.ps1`:
   supporter build accepted and the public 0.4.2 recommended (section 5, "0.4.4").
 - `v0.4.5-amd-nr`: lmxxf and mochizuki beside a ReShade that wraps the game's lists, danielblnc's
   0.5.1 supporter build accepted and the public 0.4.3 recommended (section 5, "0.4.5").
+- `v0.4.6-amd-nr`: the RenoDX composition after the AMD runtimes, one Effect strength on danielblnc, its
+  own Black lift and exposure source, the upscale ratio and output scaling in the Upscaling tab, an old
+  INI's `AmdEncoding=0` read as sRGB, and the public 0.5.0 recommended (section 5, "0.4.6").
 
-The build reports itself as `0.4.5-amd-nr`, and the packager writes
-`dist/OptiScaler-0.4.5-amd-nr.zip`.
+The build reports itself as `0.4.6-amd-nr`, and the packager writes
+`dist/OptiScaler-0.4.6-amd-nr.zip`.
 
 The [AMD-NR ReShade Installer](https://github.com/zmodelerlover/AMD-NR-ReShade-Installer) installs
 this build as its OptiScaler route. v0.4.0 knows only `v0.1.1-amd-nr`; v0.5.0 and later offer every
 version its payload manifest lists, newest first, and install the newest with the lmxxf weights. The
-manifest has pinned `v0.4.5-amd-nr` since installer v0.6.8 (2026-09-28); v0.5.x installs it without
+manifest has pinned `v0.4.6-amd-nr` since 2026-09-29 (payload only; the app stays v0.6.8); v0.5.x installs it without
 mochizuki. The manifest pins each release zip by URL and SHA-256, and every file it extracts from it
 by hash. The danielblnc runtime (0.4.2, `8aa2dcc5…`, inside the `v0.4.3-amd-nr` and `v0.4.4-amd-nr`
 release entries as their own `opti-runtime`, 0.4.1 inside `v0.4.2-amd-nr` and 0.4.0 inside `v0.4.1-amd-nr`; 0.3.1, `b108d640…`, at the top level for every older release, which does not
@@ -1063,6 +1066,50 @@ wait helper kept their addresses, and Record and Notify only moved engine member
 passes on 0.3.1 to 0.5.1, the host contracts and installer exit tests pass, and
 `tools/test-amd-runtime-init.cmd` on an RX 9070 XT runs 24 of 24 frames per wait mode with no timeout:
 9.69 to 9.79 ms per frame in dispatch wait, 10.22 ms on 0.5.0 in the same session. Not tested in a game.
+
+### 0.4.6
+
+Released in `v0.4.6-amd-nr`. The mochizuki and lmxxf runtimes are 0.4.4's; the installer's payload reuses them.
+
+**danielblnc 0.5.0 is public** since 2026-09-29 ([Alpha 0.5.0](https://github.com/danielblnc/DLSS-NR-on-AMD/releases/tag/v0.5.0)),
+the same `version.dll` `cddfb09e` `kAmd050` maps, so only the text changed: README, Setup and the host's log
+recommend it, and only 0.5.1 is a supporter build. The installer's payload installs it on both routes.
+
+**An old INI's `AmdEncoding=0` reads as sRGB.** The Setup.bat before 0.4.4 wrote 0 (the former Auto) into every game
+it set up, and 0 read as Linear, so those games never got the sRGB default a first install gets. It now reads as
+sRGB, and the menu shows it so; choosing Linear writes 1 as before.
+
+**danielblnc's own Black lift and exposure source** (`AmdToneLift` 0-0.25, `AmdUseGameExposure`; Colour section,
+"Black lift" and "Exposure: Game / Auto"). The host used to pin both at init (no lift, the game's exposure). The
+runtime reads ToneLift in the per-job options copy (0x1c0a0 on 0.4.3) and UseGameExposure in a function Record calls
+every frame (0x19ba0), so both are written on every Record like the tone curve, and a change restarts the history.
+
+**One Effect strength on danielblnc** (`AmdEffectStrength`, now 0-2): without the composition it is the runtime's
+Scale; with it the runtime keeps its default and the slider is the composition's intensity, which moves without
+restarting the model's history. lmxxf and mochizuki keep "Effect intensity" (`RenoIntensity`) in the composition
+block. Above 100% without the composition the runtime gets up to twice its default Scale, untested in a game.
+
+**Upscale Ratio Override and Output Scaling** moved from the Image tab to the Upscaling tab
+(`MenuCommon::RenderUpscaleRatioSettings`), unchanged.
+
+
+**RenoDX composition** (`RenoComposition`, `[DlssNr] RenoComposition`, off by default; menu "RenoDX
+composition" in every runtime's Effect section). The composition of RenoDX's DLSS Neural Rendering add-on
+as it stands in PEQHUB/RenoDX-DLSS5-Generic (MIT, credited in `Licenses/RenoDX_ATTRIBUTION.txt`), after the
+runtime and the stabilizer, before SR, on all three runtimes. The runtime's answer is not taken as the
+picture: its edit is measured in a proxy (linear light over the pre-exposure and a divisor, through the
+max-channel shoulder at 0.75) and put back on the game's own colour as a gain bounded in log2 (luminance by
+`RenoGuard`, 2x by default, chroma `RenoChromaClamp` stops), faded out on the black floor. `RenoIntensity`
+scales the edit up to 1 and above it raises the luminance ratio to a power inside the guard; both are the ReShade
+add-on's controls. `RenoColour` 0 keeps only the edit's luminance ratio (the game's hue). The divisor is their Stable governor (median to 0.30 only when the frame
+is proven over-range; attack 4, release 0.5 stops per second, hysteresis). `RenoPedestal` takes the network's
+lift off near-black 32x32 blocks. danielblnc's frames are composed in the transfer `AmdEncoding` gives them;
+lmxxf and mochizuki as they are.
+`tests/amd_reno_composition.cpp` (in `test-amd-host-contracts.cmd`) runs the stage on the GPU: the game's
+colour unchanged where the runtime changed nothing, +1 and -1 stop carried, +4 bounded to +2, a clipped HDR
+highlight keeping its range, colour 0 keeping hue and luminance, the black floor untouched, the pedestal
+removed only in dark areas, an sRGB frame round-tripped, and the divisor snapping and holding. Cost on an RX
+9070 XT: 0.07 ms at 1080p and 0.11 ms at 1440p, 0.18 and 0.26 ms with the pedestal. Tried and approved in Cyberpunk 2077 by the user.
 
 ---
 

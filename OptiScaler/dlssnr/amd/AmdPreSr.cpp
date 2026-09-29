@@ -839,7 +839,7 @@ struct Backend::Impl
         // 0.4.x reads these from dlssnr_on_amd.ini in DllMain, and only its own Present detour
         // reads them again, which the isolated bootstrap never installs. Pin the runtime defaults,
         // which reproduce 0.3.1: no style, Reinhard, no lift, the game's exposure when given. The
-        // tone curve and Quality then follow the menu on every frame.
+        // tone curve, lift, exposure source and Quality then follow the menu on every frame.
         if (L->style)
             At<int>(h, L->style) = 0;
         if (L->toneCurve)
@@ -939,7 +939,7 @@ Backend::Backend(ID3D12Device* d, ID3D12CommandQueue* q, const std::filesystem::
     // not be told apart.
     p->LogDiagnostic("AMD graphics build source=" AMD_GRAPHICS_SOURCE_ID);
     p->Log("AMD submission revision 20260927-1.8.9: multi-slot default; 0.3.1/0.4.x new wait with guarded restore; "
-           "Every-frame back on Ins menu; runtime 0.4.3, 0.4.2 or 0.4.1, or the 0.5.0/0.5.1 supporter builds" +
+           "Every-frame back on Ins menu; runtime 0.5.0, 0.4.3, 0.4.2 or 0.4.1, or the 0.5.1 supporter build" +
            std::string(kBuildTag));
     try
     {
@@ -1579,7 +1579,9 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
             cfg.modelScale != p->lastSettings.modelScale || !p->haveSettings || cfg.tone != p->lastSettings.tone ||
             cfg.structure != p->lastSettings.structure || cfg.skin != p->lastSettings.skin ||
             cfg.everyFrame != p->lastSettings.everyFrame || (L->scale && cfg.strength != p->lastSettings.strength) ||
-            (L->toneCurve && cfg.toneCurve != p->lastSettings.toneCurve);
+            (L->toneCurve && cfg.toneCurve != p->lastSettings.toneCurve) ||
+            (L->toneLift && cfg.toneLift != p->lastSettings.toneLift) ||
+            (L->useGameExposure && cfg.gameExposure != p->lastSettings.gameExposure);
         const bool explicitReset = p->resetRequested.exchange(false);
         const bool gap = p->lastSubmitted && GetTickCount64() - p->lastSubmitted > 250;
         if (f.reset || resize || guideChange || passChange || p->resetAfterTimeout || settingsChanged ||
@@ -1630,6 +1632,11 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
                 At<uint8_t>(r, L->quality) = cfg.fast ? 1 : 0;
             if (L->toneCurve)
                 At<int>(r, L->toneCurve) = int(cfg.toneCurve);
+            // Both reach the network through the job the runtime builds on each Record, as the tone curve does.
+            if (L->toneLift)
+                At<float>(r, L->toneLift) = cfg.toneLift;
+            if (L->useGameExposure)
+                At<uint8_t>(r, L->useGameExposure) = cfg.gameExposure ? 1 : 0;
             At<UINT>(r, L->toneChannels) = cfg.toneChannels ? 1u : 0u;
             At<UINT>(r, L->charMask) = 1; // Enable native semantic character-mask channel.
             // The old shader ceiling expired at high render resolutions even

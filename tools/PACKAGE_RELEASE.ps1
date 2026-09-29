@@ -1,19 +1,19 @@
-﻿<#
+<#
 .SYNOPSIS
   Stage and zip a complete user package (no NVIDIA / author proprietary files).
-  Default product: OptiScaler-0.4.5-amd-nr, the version in OptiScaler/resource.h.
-  The danielblnc runtime it drives is 0.4.3 (0.4.2, 0.4.1, 0.4.0, 0.3.1, 0.3.0 and the 0.5.0/0.5.1 supporter builds
+  Default product: OptiScaler-0.4.6-amd-nr, the version in OptiScaler/resource.h.
+  The danielblnc runtime it drives is 0.5.0 (0.4.3, 0.4.2, 0.4.1, 0.4.0, 0.3.1, 0.3.0 and the 0.5.1 supporter build
   still accepted), supplied by the user.
   The mochizuki runtime (MochizukiNrRuntime.dll and dlssnr-amd\) is not packaged: the AMD-NR
   installer or a local build supplies it, and its model is never in this package.
 
 .EXAMPLE
   .\PACKAGE_RELEASE.ps1
-  .\PACKAGE_RELEASE.ps1 -Version 0.4.5-amd-nr -DepsRoot 'C:\path\with\OptiScaler'
+  .\PACKAGE_RELEASE.ps1 -Version 0.4.6-amd-nr -DepsRoot 'C:\path\with\OptiScaler'
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = '0.4.5-amd-nr',
+    [string]$Version = '0.4.6-amd-nr',
     [string]$OutDir = 'dist',
     [string]$Name = '',
     [string]$OptiDll = '',
@@ -179,7 +179,7 @@ $ini = [regex]::Replace($ini, '(?ms)(\[FrameGen\].*?^Enabled=)[^\r\n]*', '$1fals
 $ini = [regex]::Replace($ini, '(?ms)^\[DlssNr\].*?(?=^\[|\z)', @"
 [DlssNr]
 ; Product $Version - NR slots default 3 (2-5 in-game, 1-5 here).
-; Requires DLSS-NR-on-AMD 0.4.3 (0.4.2, 0.4.1, 0.4.0, 0.3.1 and 0.3.0 still work;
+; Requires DLSS-NR-on-AMD 0.5.0 (0.4.3, 0.4.2, 0.4.1, 0.4.0, 0.3.1 and 0.3.0 still work;
 ; https://github.com/danielblnc/DLSS-NR-on-AMD)
 ; as dlssnr_amd_pass1-3.dll (Setup copies version.dll from the package folder, or takes it
 ; out of dlssnr_on_amd_setup.exe).
@@ -256,6 +256,8 @@ AmdDynamicTargetFps=60
 AmdEncoding=2
 AmdEffectStrength=1.0
 AmdColourGrade=0
+AmdToneLift=0
+AmdUseGameExposure=true
 AmdEveryFrame=false
 AmdSlots=3
 AmdGraphicsWait=1
@@ -264,6 +266,14 @@ AmdNeuralLighting=true
 AmdNeuralLightingStrength=0.5
 AmdStabilizerStrength=0
 AmdStabilizerThreshold=2
+; RenoDX composition after the runtime, every runtime: off by default (RenoIntensity 0-2, RenoGuard
+; 1-8x, RenoColour 0-1, RenoChromaClamp 0.25-2 stops, RenoPedestal takes off the black lift).
+RenoComposition=false
+RenoIntensity=1
+RenoGuard=2
+RenoColour=1
+RenoChromaClamp=1
+RenoPedestal=false
 Passes=1
 LocalTone=0
 LocalStructure=1

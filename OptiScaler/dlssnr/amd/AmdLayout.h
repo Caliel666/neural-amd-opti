@@ -459,8 +459,8 @@ inline constexpr AmdLayout kAmd043 {
     .quality = 0xb19c5,
 };
 
-// 0.5.0 version.dll (SHA cddfb09e), another early build danielblnc gives his supporters, not
-// distributed with this project. Carved from its setup the same way, size 0x24e9600: it adds RDNA3
+// 0.5.0 version.dll (SHA cddfb09e), first an early build for danielblnc's supporters and public since
+// 2026-09-29 (its setup holds this same file). Carved from its setup the same way, size 0x24e9600: it adds RDNA3
 // (gfx11) register kernels beside the RDNA4 ones. Mapped from 0.4.3 two ways that agree on every
 // field (map_layout_043_050.txt and datamap_043_050.txt). Shutdown, the wait helper and the bootstrap
 // are 0.4.3's instruction for instruction; Init, Record and Notify only moved engine members, which the

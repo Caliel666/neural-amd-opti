@@ -7520,6 +7520,205 @@ void MenuCommon::RenderLowLatencySettings(RenderMenuContext& ctx)
     PopulateCombo("Force State", config->FN_ForceReflex, lowlatency_states);
 }
 
+// Render-resolution ratios and output scaling: how big the upscaler input is, so it sits with the upscaler settings.
+void MenuCommon::RenderUpscaleRatioSettings(RenderMenuContext& ctx)
+{
+    auto& state = ctx.state;
+    auto config = ctx.config;
+    auto& currentFeature = ctx.currentFeature;
+    auto& menuResScale = ctx.menuResScale;
+
+    if (currentFeature == nullptr || currentFeature->IsFrozen())
+        return;
+
+    // UPSCALE RATIO OVERRIDE -----------------
+
+    auto minSliderLimit = config->ExtendedLimits.value_or_default() ? 0.1f : 1.0f;
+    auto maxSliderLimit = config->ExtendedLimits.value_or_default() ? 6.0f : 3.0f;
+
+    ImGui::SeparatorText("Upscale Ratio Override");
+
+    if (bool upOverride = config->UpscaleRatioOverrideEnabled.value_or_default();
+        ImGui::Checkbox("Override all", &upOverride))
+    {
+        config->UpscaleRatioOverrideEnabled = upOverride;
+
+        if (upOverride)
+            config->QualityRatioOverrideEnabled = false;
+    }
+    ShowHelpMarker("Overrides every upscaler preset with the set value\n\n"
+                   "1.5x on a 1080p screen means an internal res of 720p\n"
+                   "1080 / 1.5 = 720");
+
+    if (bool qOverride = config->QualityRatioOverrideEnabled.value_or_default();
+        ImGui::Checkbox("Override per quality preset", &qOverride))
+    {
+        config->QualityRatioOverrideEnabled = qOverride;
+
+        if (qOverride)
+            config->UpscaleRatioOverrideEnabled = false;
+    }
+
+    ShowHelpMarker("Lets you override each preset's ratio individually\n"
+                   "Note that not every game supports every quality preset\n\n"
+                   "1.5x on a 1080p screen means internal resolution of 720p\n"
+                   "1080 / 1.5 = 720");
+
+    if (config->UpscaleRatioOverrideEnabled.value_or_default())
+    {
+        float urOverride = config->UpscaleRatioOverrideValue.value_or_default();
+        ImGui::SliderFloat("All Ratios", &urOverride, minSliderLimit, maxSliderLimit, "%.3f");
+        config->UpscaleRatioOverrideValue = urOverride;
+    }
+
+    if (config->QualityRatioOverrideEnabled.value_or_default())
+    {
+        float qDlaa = config->QualityRatio_DLAA.value_or_default();
+        if (ImGui::SliderFloat("DLAA", &qDlaa, minSliderLimit, maxSliderLimit, "%.3f"))
+            config->QualityRatio_DLAA = qDlaa;
+
+        float qUq = config->QualityRatio_UltraQuality.value_or_default();
+        if (ImGui::SliderFloat("Ultra Quality", &qUq, minSliderLimit, maxSliderLimit, "%.3f"))
+            config->QualityRatio_UltraQuality = qUq;
+
+        float qQ = config->QualityRatio_Quality.value_or_default();
+        if (ImGui::SliderFloat("Quality", &qQ, minSliderLimit, maxSliderLimit, "%.3f"))
+            config->QualityRatio_Quality = qQ;
+
+        float qB = config->QualityRatio_Balanced.value_or_default();
+        if (ImGui::SliderFloat("Balanced", &qB, minSliderLimit, maxSliderLimit, "%.3f"))
+            config->QualityRatio_Balanced = qB;
+
+        float qP = config->QualityRatio_Performance.value_or_default();
+        if (ImGui::SliderFloat("Performance", &qP, minSliderLimit, maxSliderLimit, "%.3f"))
+            config->QualityRatio_Performance = qP;
+
+        float qUp = config->QualityRatio_UltraPerformance.value_or_default();
+        if (ImGui::SliderFloat("Ultra Performance", &qUp, minSliderLimit, maxSliderLimit, "%.3f"))
+            config->QualityRatio_UltraPerformance = qUp;
+    }
+
+    if (currentFeature != nullptr && !currentFeature->IsFrozen())
+    {
+        // OUTPUT SCALING -----------------------------
+        // if (state.api == DX12 || state.api == DX11)
+        {
+            // if motion vectors are not display size
+            ImGui::BeginDisabled(!currentFeature->LowResMV() &&
+                                 currentFeature->RenderWidth() != currentFeature->DisplayWidth());
+
+            ImGui::SeparatorText("Output Scaling");
+
+            float defaultRatio = 1.5f;
+
+            if (_ssRatio == 0.0f)
+            {
+                _ssRatio = config->OutputScalingMultiplier.value_or(defaultRatio);
+                _ssEnabled = config->OutputScalingEnabled.value_or_default();
+                _ssDownsampler = config->OutputScalingDownscaler.value_or_default();
+            }
+
+            ImGui::BeginDisabled((currentBackend == Upscaler::XeSS || currentBackend == Upscaler::DLSS) &&
+                                 currentFeature->RenderWidth() > currentFeature->DisplayWidth());
+            ImGui::Checkbox("Enable", &_ssEnabled);
+            ImGui::EndDisabled();
+
+            ShowHelpMarker("Upscales the image internally to a higher output resolution\n"
+                           "then downscales it back to your display resolution\n\n"
+                           "Values <1.0 make the upscaler cheaper\n"
+                           "Values >1.0 make image sharper at the cost of performance\n\n"
+                           "If greyed out, please check Git Wiki - Unreal Engine tweaks\n\n"
+                           "Target res and total ratio at the bottom (max. total 3.0!)");
+
+            ImGui::SameLine(0.0f, 6.0f);
+
+            ImGui::BeginDisabled(!_ssEnabled);
+            {
+                ImGui::PushItemWidth(95.0f * menuResScale);
+
+                // clang-format off
+                std::vector<MenuOption<Scaler>> ds_options = {
+                    { Scaler::FSR1, "FSR1",
+                        "Default option.\nGood enough image quality and very fast." },
+                    { Scaler::Bicubic, "Bicubic",
+                        "Fastest traditional option.\nProduces a very soft/blurry image, but might be okay for downscaling." },
+                    { Scaler::CatmullRom, "Catmull-Rom",
+                        "Designed primarily for downscaling.\nRetains good contrast with minimal artefacts, but softer than Lanczos." },
+                    { Scaler::Lanczos2, "Lanczos2",
+                        "Lighter and faster than Lanczos3.\nLess prone to ringing artefacts, but slightly blurrier." },
+                    { Scaler::Lanczos3, "Lanczos3",
+                        "Heavier version of Lanczos2.\nOffers the sharpest image, but is the most prone to ringing.\nConsidered the best along with Kaiser3." },
+                    { Scaler::Kaiser2, "Kaiser2",
+                        "Similar to Lanczos2.\nSmoother and less prone to artefacts than Lanczos, but slightly blurrier." },
+                    { Scaler::Kaiser3, "Kaiser3",
+                        "Similar to Lanczos3.\nFar less prone to artefacting than Lanczos3, but much heavier on the GPU.\nConsidered the best along with Lanczos3." },
+                    { Scaler::Magic, "MAGIC",
+                        "Specialised to prevent artifacts.\nEliminates harsh halos for a natural look, but can appear slightly soft." }
+                };
+                // clang-format on
+
+                const bool isUpsampleRatio = _ssRatio < 1.0f;
+                const std::string disabledReason = "Only FSR1 and Bicubic are supported when Ratio is below 1.0.";
+
+                for (auto& opt : ds_options)
+                {
+                    if (isUpsampleRatio && opt.value > Scaler::Bicubic)
+                        opt.set_disabled(true, opt.tooltip + "\n\n" + disabledReason);
+                }
+
+                if (isUpsampleRatio && _ssDownsampler > Scaler::Bicubic)
+                    _ssDownsampler = Scaler::FSR1;
+
+                PopulateCombo("Downscaler", _ssDownsampler, ds_options);
+
+                ImGui::PopItemWidth();
+            }
+            ImGui::EndDisabled();
+
+            bool applyEnabled = _ssEnabled != config->OutputScalingEnabled.value_or_default() ||
+                                _ssRatio != config->OutputScalingMultiplier.value_or(defaultRatio) ||
+                                _ssDownsampler != config->OutputScalingDownscaler.value_or_default();
+
+            ImGui::BeginDisabled(!applyEnabled);
+            if (ImGui::Button("Apply Change"))
+            {
+                config->OutputScalingEnabled = _ssEnabled;
+                config->OutputScalingMultiplier = _ssRatio;
+
+                if (_ssRatio < 1.0f && _ssDownsampler > Scaler::Bicubic)
+                    _ssDownsampler = Scaler::FSR1;
+
+                config->OutputScalingDownscaler = _ssDownsampler;
+
+                const bool usesDlssd = currentFeature->GetUpscalerType() == Upscaler::DLSSD;
+                if (usesDlssd)
+                    state.newBackend = Upscaler::DLSSD;
+                else
+                    state.newBackend = currentBackend;
+
+                MARK_ALL_BACKENDS_CHANGED();
+            }
+            ImGui::EndDisabled();
+
+            ImGui::BeginDisabled(!_ssEnabled || currentFeature->RenderWidth() > currentFeature->DisplayWidth());
+            ImGui::SliderFloat("Ratio", &_ssRatio, 0.5f, 3.0f, "%.2f");
+            ImGui::EndDisabled();
+
+            if (currentFeature != nullptr && !currentFeature->IsFrozen())
+            {
+                ImGui::Text("Output Scaling is %s, Target Res: %dx%d (%.2f)\nJitter Count: %d",
+                            config->OutputScalingEnabled.value_or_default() ? "ENABLED" : "DISABLED",
+                            (uint32_t) (currentFeature->DisplayWidth() * _ssRatio),
+                            (uint32_t) (currentFeature->DisplayHeight() * _ssRatio),
+                            ((float) currentFeature->DisplayWidth() * _ssRatio) / (float) currentFeature->RenderWidth(),
+                            currentFeature->JitterCount());
+            }
+
+            ImGui::EndDisabled();
+        }
+    }
+}
+
 void MenuCommon::RenderActiveImageSettings(RenderMenuContext& ctx)
 {
     auto& state = ctx.state;
@@ -7785,194 +7984,6 @@ void MenuCommon::RenderActiveImageSettings(RenderMenuContext& ctx)
             }
 
             ImGui::EndDisabled();
-        }
-
-        // UPSCALE RATIO OVERRIDE -----------------
-
-        auto minSliderLimit = config->ExtendedLimits.value_or_default() ? 0.1f : 1.0f;
-        auto maxSliderLimit = config->ExtendedLimits.value_or_default() ? 6.0f : 3.0f;
-
-        ImGui::SeparatorText("Upscale Ratio Override");
-
-        if (bool upOverride = config->UpscaleRatioOverrideEnabled.value_or_default();
-            ImGui::Checkbox("Override all", &upOverride))
-        {
-            config->UpscaleRatioOverrideEnabled = upOverride;
-
-            if (upOverride)
-                config->QualityRatioOverrideEnabled = false;
-        }
-        ShowHelpMarker("Overrides every upscaler preset with the set value\n\n"
-                       "1.5x on a 1080p screen means an internal res of 720p\n"
-                       "1080 / 1.5 = 720");
-
-        if (bool qOverride = config->QualityRatioOverrideEnabled.value_or_default();
-            ImGui::Checkbox("Override per quality preset", &qOverride))
-        {
-            config->QualityRatioOverrideEnabled = qOverride;
-
-            if (qOverride)
-                config->UpscaleRatioOverrideEnabled = false;
-        }
-
-        ShowHelpMarker("Lets you override each preset's ratio individually\n"
-                       "Note that not every game supports every quality preset\n\n"
-                       "1.5x on a 1080p screen means internal resolution of 720p\n"
-                       "1080 / 1.5 = 720");
-
-        if (config->UpscaleRatioOverrideEnabled.value_or_default())
-        {
-            float urOverride = config->UpscaleRatioOverrideValue.value_or_default();
-            ImGui::SliderFloat("All Ratios", &urOverride, minSliderLimit, maxSliderLimit, "%.3f");
-            config->UpscaleRatioOverrideValue = urOverride;
-        }
-
-        if (config->QualityRatioOverrideEnabled.value_or_default())
-        {
-            float qDlaa = config->QualityRatio_DLAA.value_or_default();
-            if (ImGui::SliderFloat("DLAA", &qDlaa, minSliderLimit, maxSliderLimit, "%.3f"))
-                config->QualityRatio_DLAA = qDlaa;
-
-            float qUq = config->QualityRatio_UltraQuality.value_or_default();
-            if (ImGui::SliderFloat("Ultra Quality", &qUq, minSliderLimit, maxSliderLimit, "%.3f"))
-                config->QualityRatio_UltraQuality = qUq;
-
-            float qQ = config->QualityRatio_Quality.value_or_default();
-            if (ImGui::SliderFloat("Quality", &qQ, minSliderLimit, maxSliderLimit, "%.3f"))
-                config->QualityRatio_Quality = qQ;
-
-            float qB = config->QualityRatio_Balanced.value_or_default();
-            if (ImGui::SliderFloat("Balanced", &qB, minSliderLimit, maxSliderLimit, "%.3f"))
-                config->QualityRatio_Balanced = qB;
-
-            float qP = config->QualityRatio_Performance.value_or_default();
-            if (ImGui::SliderFloat("Performance", &qP, minSliderLimit, maxSliderLimit, "%.3f"))
-                config->QualityRatio_Performance = qP;
-
-            float qUp = config->QualityRatio_UltraPerformance.value_or_default();
-            if (ImGui::SliderFloat("Ultra Performance", &qUp, minSliderLimit, maxSliderLimit, "%.3f"))
-                config->QualityRatio_UltraPerformance = qUp;
-        }
-
-        if (currentFeature != nullptr && !currentFeature->IsFrozen())
-        {
-            // OUTPUT SCALING -----------------------------
-            // if (state.api == DX12 || state.api == DX11)
-            {
-                // if motion vectors are not display size
-                ImGui::BeginDisabled(!currentFeature->LowResMV() &&
-                                     currentFeature->RenderWidth() != currentFeature->DisplayWidth());
-
-                ImGui::SeparatorText("Output Scaling");
-
-                float defaultRatio = 1.5f;
-
-                if (_ssRatio == 0.0f)
-                {
-                    _ssRatio = config->OutputScalingMultiplier.value_or(defaultRatio);
-                    _ssEnabled = config->OutputScalingEnabled.value_or_default();
-                    _ssDownsampler = config->OutputScalingDownscaler.value_or_default();
-                }
-
-                ImGui::BeginDisabled((currentBackend == Upscaler::XeSS || currentBackend == Upscaler::DLSS) &&
-                                     currentFeature->RenderWidth() > currentFeature->DisplayWidth());
-                ImGui::Checkbox("Enable", &_ssEnabled);
-                ImGui::EndDisabled();
-
-                ShowHelpMarker("Upscales the image internally to a higher output resolution\n"
-                               "then downscales it back to your display resolution\n\n"
-                               "Values <1.0 make the upscaler cheaper\n"
-                               "Values >1.0 make image sharper at the cost of performance\n\n"
-                               "If greyed out, please check Git Wiki - Unreal Engine tweaks\n\n"
-                               "Target res and total ratio at the bottom (max. total 3.0!)");
-
-                ImGui::SameLine(0.0f, 6.0f);
-
-                ImGui::BeginDisabled(!_ssEnabled);
-                {
-                    ImGui::PushItemWidth(95.0f * menuResScale);
-
-                    // clang-format off
-                    std::vector<MenuOption<Scaler>> ds_options = {
-                        { Scaler::FSR1, "FSR1",
-                            "Default option.\nGood enough image quality and very fast." },
-                        { Scaler::Bicubic, "Bicubic",
-                            "Fastest traditional option.\nProduces a very soft/blurry image, but might be okay for downscaling." },
-                        { Scaler::CatmullRom, "Catmull-Rom",
-                            "Designed primarily for downscaling.\nRetains good contrast with minimal artefacts, but softer than Lanczos." },
-                        { Scaler::Lanczos2, "Lanczos2",
-                            "Lighter and faster than Lanczos3.\nLess prone to ringing artefacts, but slightly blurrier." },
-                        { Scaler::Lanczos3, "Lanczos3",
-                            "Heavier version of Lanczos2.\nOffers the sharpest image, but is the most prone to ringing.\nConsidered the best along with Kaiser3." },
-                        { Scaler::Kaiser2, "Kaiser2",
-                            "Similar to Lanczos2.\nSmoother and less prone to artefacts than Lanczos, but slightly blurrier." },
-                        { Scaler::Kaiser3, "Kaiser3",
-                            "Similar to Lanczos3.\nFar less prone to artefacting than Lanczos3, but much heavier on the GPU.\nConsidered the best along with Lanczos3." },
-                        { Scaler::Magic, "MAGIC",
-                            "Specialised to prevent artifacts.\nEliminates harsh halos for a natural look, but can appear slightly soft." }
-                    };
-                    // clang-format on
-
-                    const bool isUpsampleRatio = _ssRatio < 1.0f;
-                    const std::string disabledReason = "Only FSR1 and Bicubic are supported when Ratio is below 1.0.";
-
-                    for (auto& opt : ds_options)
-                    {
-                        if (isUpsampleRatio && opt.value > Scaler::Bicubic)
-                            opt.set_disabled(true, opt.tooltip + "\n\n" + disabledReason);
-                    }
-
-                    if (isUpsampleRatio && _ssDownsampler > Scaler::Bicubic)
-                        _ssDownsampler = Scaler::FSR1;
-
-                    PopulateCombo("Downscaler", _ssDownsampler, ds_options);
-
-                    ImGui::PopItemWidth();
-                }
-                ImGui::EndDisabled();
-
-                bool applyEnabled = _ssEnabled != config->OutputScalingEnabled.value_or_default() ||
-                                    _ssRatio != config->OutputScalingMultiplier.value_or(defaultRatio) ||
-                                    _ssDownsampler != config->OutputScalingDownscaler.value_or_default();
-
-                ImGui::BeginDisabled(!applyEnabled);
-                if (ImGui::Button("Apply Change"))
-                {
-                    config->OutputScalingEnabled = _ssEnabled;
-                    config->OutputScalingMultiplier = _ssRatio;
-
-                    if (_ssRatio < 1.0f && _ssDownsampler > Scaler::Bicubic)
-                        _ssDownsampler = Scaler::FSR1;
-
-                    config->OutputScalingDownscaler = _ssDownsampler;
-
-                    const bool usesDlssd = currentFeature->GetUpscalerType() == Upscaler::DLSSD;
-                    if (usesDlssd)
-                        state.newBackend = Upscaler::DLSSD;
-                    else
-                        state.newBackend = currentBackend;
-
-                    MARK_ALL_BACKENDS_CHANGED();
-                }
-                ImGui::EndDisabled();
-
-                ImGui::BeginDisabled(!_ssEnabled || currentFeature->RenderWidth() > currentFeature->DisplayWidth());
-                ImGui::SliderFloat("Ratio", &_ssRatio, 0.5f, 3.0f, "%.2f");
-                ImGui::EndDisabled();
-
-                if (currentFeature != nullptr && !currentFeature->IsFrozen())
-                {
-                    ImGui::Text("Output Scaling is %s, Target Res: %dx%d (%.2f)\nJitter Count: %d",
-                                config->OutputScalingEnabled.value_or_default() ? "ENABLED" : "DISABLED",
-                                (uint32_t) (currentFeature->DisplayWidth() * _ssRatio),
-                                (uint32_t) (currentFeature->DisplayHeight() * _ssRatio),
-                                ((float) currentFeature->DisplayWidth() * _ssRatio) /
-                                    (float) currentFeature->RenderWidth(),
-                                currentFeature->JitterCount());
-                }
-
-                ImGui::EndDisabled();
-            }
         }
 
         // INIT -----------------------------
@@ -9335,6 +9346,7 @@ void MenuCommon::RenderMainMenuTabs(RenderMenuContext& ctx)
     if (ImGui::BeginTabItem("Upscaling"))
     {
         RenderActiveUpscalerSettings(ctx);
+        RenderUpscaleRatioSettings(ctx);
         RenderFsrCommonSettings(ctx);
         RenderUpscalerInputsSettings(ctx);
         ImGui::EndTabItem();

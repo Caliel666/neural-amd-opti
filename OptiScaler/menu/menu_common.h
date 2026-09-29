@@ -178,6 +178,7 @@ class MenuCommon
     static void RenderFramerateSettings(RenderMenuContext& ctx);
     static void RenderFakenvapiSettings(RenderMenuContext& ctx);
     static void RenderLowLatencySettings(RenderMenuContext& ctx);
+    static void RenderUpscaleRatioSettings(RenderMenuContext& ctx);
     static void RenderActiveImageSettings(RenderMenuContext& ctx);
     static void RenderMagnifierSettings(RenderMenuContext& ctx);
     static void RenderQuirksSettings(RenderMenuContext& ctx);

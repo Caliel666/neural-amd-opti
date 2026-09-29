@@ -295,23 +295,40 @@ class Config
     CustomOptional<float> DlssNrLocalTone { 1.0f };
     CustomOptional<bool> AmdNeuralLighting { true };
     CustomOptional<float> AmdNeuralLightingStrength { .5f };
-    // 1 Linear, 2 sRGB, 3 Gamma 2.2. An old INI's 0 (Auto) reads as Linear, which it matched.
+    // 1 Linear, 2 sRGB, 3 Gamma 2.2. An old INI's 0 (the former Auto) reads as sRGB, the default.
     // sRGB by default: in Cyberpunk 2077 it was the steadiest and held highlights best. The
     // others stay selectable per game.
     CustomOptional<int> AmdEncoding { 2 };
-    // Share of the network's effect, 0-1: the runtime's Scale as a fraction of its 4/128 default.
-    // danielblnc 0.3.1 and later (the runtimes whose layout maps Scale).
+    // danielblnc's one Effect strength, 0-2. Without the RenoDX composition it is the runtime's Scale as a fraction of
+    // its 4/128 default (0.3.1 and later, the runtimes whose layout maps Scale); with it the runtime keeps its default
+    // and this is the composition's intensity in place of RenoIntensity.
     CustomOptional<float> AmdEffectStrength { 1.0f };
     // Stabilizer after the runtime, before SR: along the game's motion vectors it smooths frame-to-frame changes of
     // the effect smaller than the threshold (1/255 of the tone-mapped sRGB value, 0.5-8) by the strength (0-1, 0 off).
     CustomOptional<float> AmdStabilizerStrength { 0.0f };
     CustomOptional<float> AmdStabilizerThreshold { 2.0f };
+    // RenoDX's composition after the runtime (and the stabilizer), before SR, on every runtime: the runtime's edit
+    // put back on the game's own colour as a gain bounded in log2 (RenoComposition.h). Off by default. Intensity (0-2)
+    // and Guard (1-8, the most a pixel's brightness may move, as a multiple either way) are the ReShade add-on's.
+    // Colour 0 keeps the game's hue (the edit's luminance only), 1 the edit's colour too; ChromaClamp bounds the colour
+    // edit in stops (0.25-2); Pedestal takes off the lift the network adds in near-black areas.
+    CustomOptional<bool> DlssNrRenoComposition { false };
+    CustomOptional<float> DlssNrRenoIntensity { 1.0f };
+    CustomOptional<float> DlssNrRenoGuard { 2.0f };
+    CustomOptional<float> DlssNrRenoColour { 1.0f };
+    CustomOptional<float> DlssNrRenoChromaClamp { 1.0f };
+    CustomOptional<bool> DlssNrRenoPedestal { false };
     // The runtime's arithmetic: 0 fast (its default, about 13% faster on RX 9000), 1 quality
     // (NVIDIA's reference arithmetic). danielblnc 0.4.2 and later.
     CustomOptional<int> AmdQuality { 0 };
     // The display curve the danielblnc runtime shows the network the frame through: 0 Reinhard
     // (its default), 1 ACES. danielblnc 0.4.0 and later.
     CustomOptional<int> AmdToneCurve { 0 };
+    // The danielblnc runtime's own Black lift (ToneLift, 0-0.25, 0 its default) and exposure source
+    // (UseGameExposure: true the exposure the game hands the upscaler when it does, false its own auto-exposure).
+    // danielblnc 0.4.0 and later.
+    CustomOptional<float> AmdToneLift { 0.0f };
+    CustomOptional<bool> AmdUseGameExposure { true };
     // NVIDIA's colour grade for Model B (1, natural) or C (2, cinematic); 0 = none.
     CustomOptional<int> AmdColourGrade { 0 };
     // 1-5 in the ini; the menu offers 2-5. Too few and a frame that finds every

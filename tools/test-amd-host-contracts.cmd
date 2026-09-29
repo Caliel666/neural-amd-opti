@@ -23,6 +23,10 @@ cl /nologo /std:c++20 /EHsc /W4 /utf-8 tests\amd_graphics_snapshot.cpp /Fe"%AMD_
 if not %errorlevel%==0 exit /b 1
 "%AMD_TEST_OUT%\amd_graphics_snapshot.exe"
 if not %errorlevel%==0 exit /b 1
+cl /nologo /std:c++20 /EHsc /W4 /utf-8 tests\amd_reno_composition.cpp /Fe"%AMD_TEST_OUT%\amd_reno_composition.exe" /Fo"%AMD_TEST_OUT%\amd_reno_composition.obj" /link d3d12.lib dxgi.lib d3dcompiler.lib
+if not %errorlevel%==0 exit /b 1
+"%AMD_TEST_OUT%\amd_reno_composition.exe"
+if not %errorlevel%==0 exit /b 1
 cl /nologo /std:c++20 /EHsc /W4 /utf-8 tests\amd_graphics_tracker.cpp /Fe"%AMD_TEST_OUT%\amd_graphics_tracker.exe" /Fo"%AMD_TEST_OUT%\amd_graphics_tracker.obj"
 if not %errorlevel%==0 exit /b 1
 "%AMD_TEST_OUT%\amd_graphics_tracker.exe"

@@ -30,6 +30,25 @@ from RenoDX's DLSS 5 Neural Rendering addon. Specifically:
     the whole colour by one factor so only saturation gives way, and is the
     identity when nothing is out of gamut.
 
+The composition after the AMD runtimes, OptiScaler/dlssnr/amd/RenoComposition.h, is
+taken from the same addon as it stands in PEQHUB/RenoDX-DLSS5-Generic (MIT, derived
+from RenoDX and carrying the notice below):
+
+  * The proxy the edit is measured in: linear light over a divisor, through the
+    hue-preserving shoulder on the max channel at 0.75 (v6_encode).
+
+  * The Display codec's bounded resolve: the edit as log2(N / P), its luminance
+    bounded to +-2 stops and its chroma to a clamp in stops, faded out by the
+    proxy's floor trust, and put back on the game's own colour as a gain
+    (v6_resolve, ProxyFloorTrust).
+
+  * The Stable normalization governor: the one-sided median-to-0.30 estimate
+    over a 64x36 lattice with its continuous shoulder gate, and the commitment
+    with attack and release limits and a hysteresis hold (v6_autoscale).
+
+  * The dark-pedestal removal over 32x32 blocks gated on the block's brightest
+    untouched pixel (v6_pedestal_reduce, v6_commit).
+
 This is their design. It was reimplemented here with different names and
 comments, which does not make it original work, and it is credited as theirs.
 

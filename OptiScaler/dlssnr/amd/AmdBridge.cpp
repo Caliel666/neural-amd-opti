@@ -3,6 +3,7 @@
 #include "AwaitingListTracker.h"
 #include "../submission/SubmissionTls.h"
 #include "AmdPreSr.h"
+#include "RenoComposition.h"
 #include "ResidualStabilizer.h"
 #include "DynamicScale.h"
 #include "PresentExperimental.h"
@@ -86,6 +87,12 @@ std::unique_ptr<AmdPreSr::ResidualStabilizer> stabilizer;
 uint64_t lastStabilizedSerial = 0;
 ULONGLONG lastStabilizedTick = 0;
 bool stabilizerFailed = false;
+// RenoDX's composition after the runtime and the stabilizer (pre-SR, every runtime), made with the backend; the last
+// Run it composed and when, for its divisor's rate limits. Used under frameMutex.
+std::unique_ptr<AmdPreSr::RenoComposition> composition;
+uint64_t lastComposedSerial = 0;
+ULONGLONG lastComposedTick = 0;
+bool compositionFailed = false;
 
 thread_local uint64_t submitOrdinal = 0; // Monotonic per-thread submission counter.
 
@@ -525,6 +532,7 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
         backendAdapter = adapter;
         // Before the backend is published: InvalidateHistory reaches the stabilizer through it.
         stabilizer = std::make_unique<AmdPreSr::ResidualStabilizer>(device);
+        composition = std::make_unique<AmdPreSr::RenoComposition>(device);
         backend.store(b);
         neuralTimer = std::make_unique<GpuTime_Dx12>(device);
     }
@@ -783,8 +791,10 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
     s.spinDraw = Config::Instance()->AmdGraphicsWait.value_or_default() ? 1 : 0;
     // The pinned AMD binary explicitly disables the broad lighting/colour
     // channels. Its embedded UI warns that nonzero tone mostly darkens frames.
-    // An old INI's 0 (Auto) converted nothing, the same as Linear, so it reads as Linear.
-    s.encoding = std::clamp(cfg.AmdEncoding.value_or_default(), 1, 3);
+    // An old INI's 0 (the former Auto, which the Setup.bat before 0.4.4 wrote into every game) reads as sRGB, the
+    // default, so those games get what a first install gets.
+    const int encoding = cfg.AmdEncoding.value_or_default();
+    s.encoding = encoding == 0 ? 2 : std::clamp(encoding, 1, 3);
     // tone must be 0 whenever toneChannels is: 0.3.1 zeroed it itself, 0.4.x passes it through.
     s.toneChannels = cfg.AmdNeuralLightingStrength.value_or_default() > 0;
     s.tone = s.toneChannels ? std::clamp(cfg.AmdNeuralLightingStrength.value_or_default(), 0.f, 1.f) : 0.f;
@@ -792,9 +802,15 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
     s.skin = cfg.DlssNrSkinStructure.value_or_default();
     if (s.skin < 0)
         s.skin = s.structure;
-    s.strength = std::clamp(cfg.AmdEffectStrength.value_or_default(), 0.f, 1.f);
+    // One Effect strength on danielblnc: with the RenoDX composition the runtime keeps its default and the strength is
+    // the composition's intensity, which moves without restarting the model's history.
+    s.strength = cfg.DlssNrRenoComposition.value_or_default()
+                     ? 1.f
+                     : std::clamp(cfg.AmdEffectStrength.value_or_default(), 0.f, 2.f);
     s.fast = cfg.AmdQuality.value_or_default() == 0;
     s.toneCurve = UINT(std::clamp(cfg.AmdToneCurve.value_or_default(), 0, 1));
+    s.toneLift = std::clamp(cfg.AmdToneLift.value_or_default(), 0.f, .25f);
+    s.gameExposure = cfg.AmdUseGameExposure.value_or_default();
     s.grade = UINT(std::clamp(cfg.AmdColourGrade.value_or_default(), 0, 2));
     // Evaluate cut: Split proxy + SetBetween(EnqueueHip). Live only when SubmissionHooksWanted() (NrBackend=lmxxf
     // or mochizuki).
@@ -847,6 +863,32 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
     }
     else
         stabilizer->Idle();
+    if (replacement && !afterUpscale && cfg.DlssNrRenoComposition.value_or_default() && !compositionFailed)
+    {
+        // The divisor moves at a rate per second; a gap, a reset or the first frame takes this frame's estimate.
+        const bool continuous = lastComposedSerial == runSerial - 1 && now - lastComposedTick < 250 && !f.reset;
+        try
+        {
+            // danielblnc's answer is in the frame's own transfer (AmdEncoding); lmxxf and mochizuki take and give
+            // the colour as it is.
+            replacement = composition->Record(
+                cmd, f, replacement, active == DlssNr::Backend::Kind::Daniel ? s.encoding : 1u, !continuous,
+                continuous ? float(now - lastComposedTick) / 1000.f : 0.f,
+                active == DlssNr::Backend::Kind::Daniel ? cfg.AmdEffectStrength.value_or_default()
+                                                        : cfg.DlssNrRenoIntensity.value_or_default(),
+                cfg.DlssNrRenoGuard.value_or_default(), cfg.DlssNrRenoColour.value_or_default(),
+                cfg.DlssNrRenoChromaClamp.value_or_default(), cfg.DlssNrRenoPedestal.value_or_default());
+            lastComposedSerial = runSerial;
+            lastComposedTick = now;
+        }
+        catch (const std::exception& e)
+        {
+            compositionFailed = true;
+            LOG_ERROR("AMD pre-SR: RenoDX composition off for this session: {}", e.what());
+        }
+    }
+    else
+        composition->Idle();
     if (neuralTimer)
     {
         neuralTimer->End(cmd);

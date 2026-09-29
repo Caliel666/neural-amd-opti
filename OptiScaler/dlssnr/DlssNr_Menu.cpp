@@ -176,6 +176,50 @@ static void NeuralPassLine(Config* config, const char* help)
     HelpMarker(help);
 }
 
+// RenoDX's composition (RenoComposition.h): shared by the three runtimes, drawn in each one's Effect section.
+// danielblnc's Effect strength is its intensity, so its page draws no second slider for it.
+static void RenoCompositionControls(Config* config, bool withIntensity = true)
+{
+    bool on = config->DlssNrRenoComposition.value_or_default();
+    if (ImGui::Checkbox("RenoDX composition", &on))
+        config->DlssNrRenoComposition = on;
+    HelpMarker("Puts the network's change back on the game's own picture as a bounded gain, the way"
+               "\nRenoDX's DLSS Neural Rendering add-on does, instead of taking the network's picture."
+               "\nHighlights the network clipped keep their range, and near-black areas are left alone."
+               "\nMost useful in HDR games. Off by default.");
+    ImGui::BeginDisabled(!on);
+    if (withIntensity)
+    {
+        float intensity = config->DlssNrRenoIntensity.value_or_default();
+        if (ImGui::SliderFloat("Effect intensity", &intensity, 0.0f, 2.0f, "%.2f"))
+            config->DlssNrRenoIntensity = intensity;
+        HelpMarker("The weight of the network's change. 0 is the game's own picture, 1 the change as the"
+                   "\nnetwork made it. Above 1 the brightness change is pushed further, still inside the"
+                   "\nhighlight guard, and the colour change stays as it was.");
+    }
+    float guard = config->DlssNrRenoGuard.value_or_default();
+    if (ImGui::SliderFloat("Highlight guard", &guard, 1.0f, 8.0f, "%.1fx"))
+        config->DlssNrRenoGuard = guard;
+    HelpMarker("The most the composition may brighten or darken a pixel, as a multiple of what it was."
+               "\nOne number from the brightness, applied to the whole colour, so it bounds light without"
+               "\ntouching hue. 2.0x by default; raise it only if bright areas look held back.");
+    float colour = config->DlssNrRenoColour.value_or_default();
+    if (ImGui::SliderFloat("Composition colour", &colour, 0.0f, 1.0f, "%.2f"))
+        config->DlssNrRenoColour = colour;
+    HelpMarker("1 carries the network's colour change; 0 keeps the game's own colour at the network's"
+               "\nbrightness.");
+    float clamp = config->DlssNrRenoChromaClamp.value_or_default();
+    if (ImGui::SliderFloat("Colour limit", &clamp, 0.25f, 2.0f, "%.2f stops"))
+        config->DlssNrRenoChromaClamp = clamp;
+    HelpMarker("The largest colour change the composition lets through, in stops. The brightness change"
+               "\nis held by the highlight guard.");
+    bool pedestal = config->DlssNrRenoPedestal.value_or_default();
+    if (ImGui::Checkbox("Remove black lift", &pedestal))
+        config->DlssNrRenoPedestal = pedestal;
+    HelpMarker("Takes off the brightening the network adds in near-black areas, so blacks stay black.");
+    ImGui::EndDisabled();
+}
+
 void RenderMenu(Config* config, float menuResScale)
 {
 
@@ -300,6 +344,7 @@ void RenderMenu(Config* config, float menuResScale)
                 config->DlssNrColourStrength = colour;
             HelpMarker("How much of the model's colour change reaches the frame. Above 1 it is"
                        "\nexaggerated, up to twice its size at 2.");
+            RenoCompositionControls(config);
             ImGui::SeparatorText("Inspect");
             int debugView = std::clamp(int(config->DlssNrDebugView.value_or_default()), 0, 4);
             if (ImGui::Combo("Debug view", &debugView,
@@ -423,6 +468,7 @@ void RenderMenu(Config* config, float menuResScale)
             liveSlider("Highlight guard", config->MochizukiMaxRatio, 1.0f, 8.0f);
             HelpMarker("The most the result may multiply or divide a pixel's brightness by. Keeps the"
                        "\nnetwork from restyling light sources. 2 by default.");
+            RenoCompositionControls(config);
 
             ImGui::SeparatorText("Model");
             int style = int(std::min(config->MochizukiStyle.value_or_default(), 2u));
@@ -782,21 +828,28 @@ void RenderMenu(Config* config, float menuResScale)
                         hasQuality = layout->quality != 0;
                         hasToneCurve = layout->toneCurve != 0;
                     }
-                ImGui::BeginDisabled(!hasScale);
+                // One strength for both ways of putting the network back: the runtime's Scale, or with the RenoDX
+                // composition on, the composition's intensity.
+                const bool composing = config->DlssNrRenoComposition.value_or_default();
+                ImGui::BeginDisabled(!hasScale && !composing);
                 static float strength = 100.f;
                 static bool editingStrength = false;
                 if (!editingStrength)
                     strength = config->AmdEffectStrength.value_or_default() * 100.f;
-                ImGui::SliderFloat("Effect strength", &strength, 0, 100, "%.0f%%");
+                ImGui::SliderFloat("Effect strength", &strength, 0, 200, "%.0f%%");
                 editingStrength = ImGui::IsItemActive();
-                // Commit once on release: every change restarts the model's history.
+                // Commit once on release: without the composition every change restarts the model's history.
                 if (ImGui::IsItemDeactivatedAfterEdit())
                     config->AmdEffectStrength = strength / 100.f;
                 ImGui::EndDisabled();
                 HelpMarker("How much of the network's result reaches the frame. 100% is the"
                            "\nruntime's own default; 0% leaves the frame as the game drew it while"
-                           "\nthe network still runs. Changing it restarts the model's history."
-                           "\n\nNeeds the danielblnc runtime 0.3.1 or later.");
+                           "\nthe network still runs. Above 100% the effect is pushed further."
+                           "\n\nWith RenoDX composition on, this is the composition's intensity: above"
+                           "\n100% only the brightness change grows, inside the highlight guard, and"
+                           "\nchanging it keeps the model's history. Off, it sets the runtime's own"
+                           "\nstrength and every change restarts the model's history."
+                           "\n\nNeeds the danielblnc runtime 0.3.1 or later without the composition.");
                 ImGui::BeginDisabled(!hasQuality);
                 int quality = std::clamp(config->AmdQuality.value_or_default(), 0, 1);
                 if (ImGui::Combo("DLSS 5 mode", &quality, "Fast\0Quality\0"))
@@ -818,6 +871,7 @@ void RenderMenu(Config* config, float menuResScale)
             neuralSlider("Lightning Strength", config->AmdNeuralLightingStrength, 0, 1);
             neuralSlider("AMD structure", config->DlssNrLocalStructure, 0, 2);
             neuralSlider("AMD character structure", config->DlssNrSkinStructure, 0, 2);
+            RenoCompositionControls(config, false);
             ImGui::SeparatorText("Colour");
             int grade = std::clamp(config->AmdColourGrade.value_or_default(), 0, 2);
             if (ImGui::Combo("Colour grade", &grade, "None\0Natural\0Cinematic\0"))
@@ -835,9 +889,31 @@ void RenderMenu(Config* config, float menuResScale)
             HelpMarker("The display curve the network sees the frame through. Changing it"
                        "\nrestarts the model's history."
                        "\n\nNeeds the danielblnc runtime 0.4.0 or later.");
+            ImGui::BeginDisabled(!hasToneCurve);
+            static float lift = 0.f;
+            static bool editingLift = false;
+            if (!editingLift)
+                lift = config->AmdToneLift.value_or_default();
+            ImGui::SliderFloat("Black lift", &lift, 0.0f, 0.25f, "%.3f");
+            editingLift = ImGui::IsItemActive();
+            // Commit once on release: every change restarts the model's history.
+            if (ImGui::IsItemDeactivatedAfterEdit())
+                config->AmdToneLift = lift;
+            int exposure = config->AmdUseGameExposure.value_or_default() ? 0 : 1;
+            if (ImGui::Combo("Exposure", &exposure, "Game\0Auto\0"))
+                config->AmdUseGameExposure = exposure == 0;
+            ImGui::EndDisabled();
+            HelpMarker("Black lift: the runtime's own lift of the darkest tones on the curve above, 0 by"
+                       "\ndefault (none)."
+                       "\n\nExposure: the brightness the network sees the frame at. Game uses the exposure"
+                       "\nthe game hands the upscaler, when it does; Auto is the runtime's own estimate,"
+                       "\nwhich puts the frame's mean at the middle of the curve."
+                       "\n\nBoth are danielblnc's own controls and restart the model's history when"
+                       "\nchanged. Needs the danielblnc runtime 0.4.0 or later.");
             // The stored value is 1 Linear, 2 sRGB, 3 Gamma 2.2, and the combo index is one below it.
-            // An old INI's 0 (Auto, which converted nothing) shows as Linear.
-            int encoding = std::clamp(config->AmdEncoding.value_or_default(), 1, 3) - 1;
+            // An old INI's 0 (the former Auto) shows as sRGB, which is what it runs as.
+            const int stored = config->AmdEncoding.value_or_default();
+            int encoding = (stored == 0 ? 2 : std::clamp(stored, 1, 3)) - 1;
             if (ImGui::Combo("Encoding", &encoding, "Linear\0sRGB (default)\0Gamma 2.2\0"))
                 config->AmdEncoding = encoding + 1;
             HelpMarker("sRGB and Gamma 2.2 decode the frame to linear light before the model and"
@@ -915,6 +991,8 @@ void RenderMenu(Config* config, float menuResScale)
                     config->AmdNeuralLighting = true;
                     config->AmdEncoding = 2;
                     config->AmdEffectStrength = 1.0f;
+                    config->AmdToneLift = 0.0f;
+                    config->AmdUseGameExposure = true;
                     config->AmdColourGrade = 0;
                     config->AmdNeuralLightingStrength = .5f;
                     DlssNr::AmdBridge::InvalidateHistory();

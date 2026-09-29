@@ -73,6 +73,9 @@ struct Settings
     bool fast = true;
     // The runtime's ToneCurve: 0 Reinhard, 1 ACES (0.4.0 and later).
     UINT toneCurve = 0;
+    // The runtime's ToneLift (0-0.25) and UseGameExposure (false = its own auto-exposure), 0.4.0 and later.
+    float toneLift = 0;
+    bool gameExposure = true;
     // NVIDIA's colour grade for Model B (1, natural) or C (2, cinematic); 0 = none.
     UINT grade = 0;
     LookSettings look;

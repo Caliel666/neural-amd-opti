@@ -529,8 +529,16 @@ bool Config::Reload(std::filesystem::path iniPath)
             AmdEffectStrength.set_from_config(readFloat("DlssNr", "AmdEffectStrength"));
             AmdStabilizerStrength.set_from_config(readFloat("DlssNr", "AmdStabilizerStrength"));
             AmdStabilizerThreshold.set_from_config(readFloat("DlssNr", "AmdStabilizerThreshold"));
+            DlssNrRenoComposition.set_from_config(readBool("DlssNr", "RenoComposition"));
+            DlssNrRenoIntensity.set_from_config(readFloat("DlssNr", "RenoIntensity"));
+            DlssNrRenoGuard.set_from_config(readFloat("DlssNr", "RenoGuard"));
+            DlssNrRenoColour.set_from_config(readFloat("DlssNr", "RenoColour"));
+            DlssNrRenoChromaClamp.set_from_config(readFloat("DlssNr", "RenoChromaClamp"));
+            DlssNrRenoPedestal.set_from_config(readBool("DlssNr", "RenoPedestal"));
             AmdQuality.set_from_config(readInt("DlssNr", "AmdQuality"));
             AmdToneCurve.set_from_config(readInt("DlssNr", "AmdToneCurve"));
+            AmdToneLift.set_from_config(readFloat("DlssNr", "AmdToneLift"));
+            AmdUseGameExposure.set_from_config(readBool("DlssNr", "AmdUseGameExposure"));
             AmdColourGrade.set_from_config(readInt("DlssNr", "AmdColourGrade"));
             AmdSlots.set_from_config(readInt("DlssNr", "AmdSlots"));
             AmdNrScale.set_from_config(readFloat("DlssNr", "AmdModelScale"));
@@ -1679,8 +1687,20 @@ bool Config::SaveIni()
                      GetFloatValue(Instance()->AmdStabilizerStrength.value_for_config()).c_str());
         ini.SetValue("DlssNr", "AmdStabilizerThreshold",
                      GetFloatValue(Instance()->AmdStabilizerThreshold.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "RenoComposition",
+                     GetBoolValue(Instance()->DlssNrRenoComposition.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "RenoIntensity",
+                     GetFloatValue(Instance()->DlssNrRenoIntensity.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "RenoGuard", GetFloatValue(Instance()->DlssNrRenoGuard.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "RenoColour", GetFloatValue(Instance()->DlssNrRenoColour.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "RenoChromaClamp",
+                     GetFloatValue(Instance()->DlssNrRenoChromaClamp.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "RenoPedestal", GetBoolValue(Instance()->DlssNrRenoPedestal.value_for_config()).c_str());
         ini.SetValue("DlssNr", "AmdQuality", GetIntValue(Instance()->AmdQuality.value_for_config()).c_str());
         ini.SetValue("DlssNr", "AmdToneCurve", GetIntValue(Instance()->AmdToneCurve.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "AmdToneLift", GetFloatValue(Instance()->AmdToneLift.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "AmdUseGameExposure",
+                     GetBoolValue(Instance()->AmdUseGameExposure.value_for_config()).c_str());
         ini.SetValue("DlssNr", "AmdColourGrade", GetIntValue(Instance()->AmdColourGrade.value_for_config()).c_str());
         ini.SetValue("DlssNr", "AmdSlots", GetIntValue(Instance()->AmdSlots.value_for_config()).c_str());
         ini.SetValue("DlssNr", "AmdModelScale", GetFloatValue(Instance()->AmdNrScale.value_for_config()).c_str());
