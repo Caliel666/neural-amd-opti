@@ -58,12 +58,46 @@ BEHAVIOUR_CHECKED = {"enabled", "nativeFailure", "initDone", "trampoline"}
 # are the ones the verified maps cite. The 0.4.1 rows are the same instructions, found through the
 # aligned instructions of each matched function (analysis-opti/implement/anchors/derive_041.py), and the
 # 0.4.2 and 0.4.3 rows are the 0.4.1 ones mapped the same way (derive_042_043.py), and the 0.5.0 rows
-# the 0.4.3 ones (derive_050.py).
+# the 0.4.3 ones (derive_050.py). The 0.5.1 rows are the 0.5.0 ones through derive_051.py, at the same
+# addresses.
 # The 0.3.1 and 0.3.0 rows are the same instructions in the same order, found by shape (daniel-runtime/analysis-opti/implement/anchors/derive_anchors.py and
 # anchors.txt, which prints each site with its neighbours). 0.3.0 has no Notify-side jobDone wait
 # and no mapped wait helper, so it lacks those rows.
 ANCHORS = {
     "0.5.0": [
+        ('device', 0xa032, '48 83 3d', '00', 'notify', None),
+        ('queue', 0xa028, '48 83 3d', '00', 'notify', None),
+        ('queue', 0xa091, '48 89 35', '', 'notify', None),
+        ('engine', 0xc159, '48 8d 0d', '', None, 'init'),
+        ('engine', 0x17cd5, '48 8d 0d', '', 'record', None),
+        ('historyView', 0x1d506, '4c 8b 05', '', None, None),
+        ('historyValid', 0x17ceb, 'c6 05', '00', 'record', None),
+        ('jobDone', 0x159db, '39 05', '', 'record', None),
+        ('jobDone', 0xa268, '39 2d', '', 'notify', None),
+        ('timeoutCount', 0x1968f, 'c7 05', '00 00 00 00', 'shutdown', None),
+        ('timeoutCount', 0x1e9d9, '3b 05', '', None, None),
+        ('watchdog', 0x188dd, '44 8b 05', '', 'record', 'graphicsWaitBegin'),
+        ('pendingList', 0xa0e5, 'f0 48 0f b1 0d', '', 'notify', None),
+        ('pendingList', 0x18e62, '48 87 05', '', 'record', None),
+        ('jobId', 0x159d5, '8b 05', '', 'record', None),
+        ('jobId', 0x18e3c, '44 89 25', '', 'record', None),
+        ('depthInverted', 0x17a3d, '44 8b 15', '', 'record', None),
+        ('depthInverted', 0x14280, '44 89 0d', '', None, None),
+        ('explicitDepth', 0x1426e, 'c6 05', '01', None, None),
+        ('hipOrdinal', 0x156d4, '8b 0d', '', 'record', None),
+        ('recreate', 0x159a9, '80 3d', '01', 'record', None),
+        ('recreate', 0x15ce1, 'c6 05', '00', 'record', None),
+        ('recordLock', 0x15cb8, '48 8d 0d', '', 'record', None),
+        ('recordLock', 0x15ccc, '81 3d', 'ff ff ff 7f', 'record', 'shutdown', 0x4c),
+        ('gate4c', 0x159b6, '83 3d', '00', 'record', None),
+        ('gate68', 0x159bf, '83 3d', '00', 'record', None),
+        ('gate68', 0xa0f9, '87 2d', '', 'notify', None),
+        ('counter78', 0x1832f, 'ff 05', '', 'record', None),
+        ('graphicsPso', 0x19edf, '48 83 3d', '00', 'graphicsWaitBegin', None),
+        ('graphicsPso', 0x19f00, '48 8b 15', '', 'graphicsWaitBegin', None),
+        ('predicateReady', 0x19be9, '80 3d', '01', 'graphicsWaitBegin', None),
+    ],
+    "0.5.1": [
         ('device', 0xa032, '48 83 3d', '00', 'notify', None),
         ('queue', 0xa028, '48 83 3d', '00', 'notify', None),
         ('queue', 0xa091, '48 89 35', '', 'notify', None),

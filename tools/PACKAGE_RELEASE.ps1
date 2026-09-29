@@ -1,19 +1,19 @@
 ﻿<#
 .SYNOPSIS
   Stage and zip a complete user package (no NVIDIA / author proprietary files).
-  Default product: OptiScaler-0.4.4-amd-nr, the version in OptiScaler/resource.h.
-  The danielblnc runtime it drives is 0.4.3 (0.4.2, 0.4.1, 0.4.0, 0.3.1, 0.3.0 and the 0.5.0 supporter build
+  Default product: OptiScaler-0.4.5-amd-nr, the version in OptiScaler/resource.h.
+  The danielblnc runtime it drives is 0.4.3 (0.4.2, 0.4.1, 0.4.0, 0.3.1, 0.3.0 and the 0.5.0/0.5.1 supporter builds
   still accepted), supplied by the user.
   The mochizuki runtime (MochizukiNrRuntime.dll and dlssnr-amd\) is not packaged: the AMD-NR
   installer or a local build supplies it, and its model is never in this package.
 
 .EXAMPLE
   .\PACKAGE_RELEASE.ps1
-  .\PACKAGE_RELEASE.ps1 -Version 0.4.4-amd-nr -DepsRoot 'C:\path\with\OptiScaler'
+  .\PACKAGE_RELEASE.ps1 -Version 0.4.5-amd-nr -DepsRoot 'C:\path\with\OptiScaler'
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = '0.4.4-amd-nr',
+    [string]$Version = '0.4.5-amd-nr',
     [string]$OutDir = 'dist',
     [string]$Name = '',
     [string]$OptiDll = '',

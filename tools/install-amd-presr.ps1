@@ -2,7 +2,7 @@
 .SYNOPSIS
   Install this project's OptiScaler into a game folder.
   Double-click Setup.bat (no args) to pick the game folder, or pass -GameDir.
-  Copies danielblnc's 0.5.0, 0.4.x, 0.3.1 or 0.3.0 runtime (version.dll) to dlssnr_amd_pass1-3.dll,
+  Copies danielblnc's 0.5.x, 0.4.x, 0.3.1 or 0.3.0 runtime (version.dll) to dlssnr_amd_pass1-3.dll,
   generates weights locally if needed, then installs OptiScaler as the chosen proxy.
 
 .DESCRIPTION
@@ -12,9 +12,9 @@
     OptiScaler.dll              this fork
     OptiScaler.ini              optional
     OptiScaler\                 FFX / XeSS / Agility deps
-    version.dll                 danielblnc AMD NR 0.5.0, 0.4.x, 0.3.1 or 0.3.0 (copied to pass1-3)
+    version.dll                 danielblnc AMD NR 0.5.x, 0.4.x, 0.3.1 or 0.3.0 (copied to pass1-3)
     nvngx_dlssnr.dll            optional, to generate weights with danielblnc setup
-    dlssnr_on_amd_setup.exe     optional, danielblnc 0.5.0 / 0.4.x / 0.3.1 / 0.3.0 setup; its
+    dlssnr_on_amd_setup.exe     optional, danielblnc 0.5.x / 0.4.x / 0.3.1 / 0.3.0 setup; its
                                 version.dll is taken out of it without running it
     dlssnr_on_amd_weights.bin   optional if you already have it
 
@@ -367,8 +367,8 @@ function Find-FirstFile([string[]]$paths) {
 # each binary — a different build will not run correctly. Fail closed.
 # 0.3.0 = AmdLayout.h kAmd03; 0.3.1 = kAmd031 (mapped 2026-09-16); 0.4.0 = kAmd040 and
 # 0.4.1 = kAmd041 (2026-09-26). 0.4.2 = kAmd042, public since 2026-09-27. 0.4.3 = kAmd043, public since
-# 2026-09-28 and the recommended one. 0.5.0 = kAmd050, danielblnc's early build for his supporters: accepted
-# when the user has it, never shipped.
+# 2026-09-28 and the recommended one. 0.5.0 and 0.5.1 = kAmd050/kAmd051, danielblnc's early builds for his
+# supporters: accepted when the user has them, never shipped.
 $expectedA030 = '8321CAE728D28CB7632D0D58D3D913E91132BF7645C126505698FBE4CD5A0138'
 $expectedA031 = 'B108D6407EB7F094A4F9111EDD778EEE7B978B648D413A9FC7AEEDFDD914C154'
 $expectedA040 = 'D62BE3D8B9FBB3C6C81982C4DDB3DFA00EB9662E3206925CBE5B7E1BC6798B80'
@@ -376,11 +376,13 @@ $expectedA041 = '823063EB4C76B1334FD1800C41798873AE61D4016AF0406F1F0B9DCE57B1D37
 $expectedA042 = '8AA2DCC5B6596ACA97995DBFD4E0A9790D8C15108495E0ED154DD15DBB5B465A'
 $expectedA043 = 'D1E320862A8763AC39E7CE194536D4B6C55BA61BAE9E8A92753CEC32DF67A457'
 $expectedA050 = 'CDDFB09E019347957BF7B96C95C0E900E8D3062DFAED697A8A96B0A039AEC31A'
+$expectedA051 = '493B4A3B80A21F7255109172AB7BB01BA08D35F2941718F441768F1ABFC48ACD'
 $knownA0217  = 'BC97F3B06718E19042ACAF227BFE15D1E43D4977F9DC2E39994FCC511445FF4E'
-$expectedAuthor = @($expectedA030, $expectedA031, $expectedA040, $expectedA041, $expectedA042, $expectedA043, $expectedA050)
+$expectedAuthor = @($expectedA030, $expectedA031, $expectedA040, $expectedA041, $expectedA042, $expectedA043, $expectedA050, $expectedA051)
 # Newest first. When more than one known runtime is at hand (an old version.dll next to
 # Setup.bat or in the game, a newer dlssnr_on_amd_setup.exe), the newest one is installed.
 $runtimeOrder = @(
+    @{ Hash = $expectedA051; Name = '0.5.1' },
     @{ Hash = $expectedA050; Name = '0.5.0' },
     @{ Hash = $expectedA043; Name = '0.4.3' },
     @{ Hash = $expectedA042; Name = '0.4.2' },
@@ -634,7 +636,7 @@ if ($installDaniel) {
                 try { Remove-Item -LiteralPath $fromSetup -Force } catch { }
             }
         } elseif ($srcA) {
-            Write-Host ("NOTE: dlssnr_on_amd_setup.exe holds no runtime this package supports (0.5.0, 0.4.x, 0.3.1, 0.3.0); installing the {0} at {1}." -f (Get-RuntimeName (Get-Sha256 $srcA)), $srcA) -ForegroundColor Yellow
+            Write-Host ("NOTE: dlssnr_on_amd_setup.exe holds no runtime this package supports (0.5.x, 0.4.x, 0.3.1, 0.3.0); installing the {0} at {1}." -f (Get-RuntimeName (Get-Sha256 $srcA)), $srcA) -ForegroundColor Yellow
         }
     }
 
@@ -665,7 +667,7 @@ if ($installDaniel) {
     if (-not $srcA -or !(Test-Path -LiteralPath $srcA -PathType Leaf)) {
         Fail @"
 Still missing a known DLSS-NR-on-AMD runtime (version.dll) after danielblnc setup.
-Supported: 0.4.3 (recommended), 0.4.2, 0.4.1, 0.4.0, 0.3.1 or 0.3.0, and the 0.5.0 supporter build.
+Supported: 0.4.3 (recommended), 0.4.2, 0.4.1, 0.4.0, 0.3.1 or 0.3.0, and the 0.5.0 and 0.5.1 supporter builds.
 1. Run dlssnr_on_amd_setup.exe yourself and finish its install
 2. Put the version.dll it produces next to Setup.bat (or leave it in the game folder)
 Download from https://github.com/danielblnc/DLSS-NR-on-AMD/releases
@@ -684,12 +686,12 @@ Download from https://github.com/danielblnc/DLSS-NR-on-AMD/releases
     }
     if ($expectedAuthor -notcontains $hashA) {
         $what = 'unknown build'
-        if ($hashA -eq $knownA0217) { $what = 'this is 0.2.17, not 0.3.0/0.3.1/0.4.x/0.5.0' }
+        if ($hashA -eq $knownA0217) { $what = 'this is 0.2.17, not 0.3.0/0.3.1/0.4.x/0.5.x' }
         Fail @"
 $srcA is not a supported DLSS-NR-on-AMD runtime ($what).
   file:     $srcA
   got:      $hashA
-  expected: $expectedA050 (0.5.0), $expectedA043 (0.4.3), $expectedA042 (0.4.2), $expectedA041 (0.4.1), $expectedA040 (0.4.0), $expectedA031 (0.3.1) or $expectedA030 (0.3.0)
+  expected: $expectedA051 (0.5.1), $expectedA050 (0.5.0), $expectedA043 (0.4.3), $expectedA042 (0.4.2), $expectedA041 (0.4.1), $expectedA040 (0.4.0), $expectedA031 (0.3.1) or $expectedA030 (0.3.0)
 Download 0.4.2 from https://github.com/danielblnc/DLSS-NR-on-AMD/releases
 "@
     }

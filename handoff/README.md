@@ -38,7 +38,7 @@ Everything is on `dlss-neural-rendering`. The work was committed on the branch `
 merge, then formatting), which pull request #1 merged into `dlss-neural-rendering`. Fixes since
 then are committed there directly.
 
-Nine GitHub releases, all built by `tools/PACKAGE_RELEASE.ps1`:
+Ten GitHub releases, all built by `tools/PACKAGE_RELEASE.ps1`:
 
 - `v0.1.0-amd-nr`: the FidelityFX upscaler, frame generation and denoiser never load from the
   package layout, so FSR falls back to FSR 2 and Ray Reconstruction is greyed out. Do not use it.
@@ -62,14 +62,16 @@ Nine GitHub releases, all built by `tools/PACKAGE_RELEASE.ps1`:
 - `v0.4.4-amd-nr`: a faster mochizuki runtime that rounds its input like the original, `Setup.bat`
   leaving encoding and history to the defaults, two stabilizers off by default, danielblnc's 0.5.0
   supporter build accepted and the public 0.4.2 recommended (section 5, "0.4.4").
+- `v0.4.5-amd-nr`: lmxxf and mochizuki beside a ReShade that wraps the game's lists, danielblnc's
+  0.5.1 supporter build accepted and the public 0.4.3 recommended (section 5, "0.4.5").
 
-The build reports itself as `0.4.4-amd-nr`, and the packager writes
-`dist/OptiScaler-0.4.4-amd-nr.zip`.
+The build reports itself as `0.4.5-amd-nr`, and the packager writes
+`dist/OptiScaler-0.4.5-amd-nr.zip`.
 
 The [AMD-NR ReShade Installer](https://github.com/zmodelerlover/AMD-NR-ReShade-Installer) installs
 this build as its OptiScaler route. v0.4.0 knows only `v0.1.1-amd-nr`; v0.5.0 and later offer every
 version its payload manifest lists, newest first, and install the newest with the lmxxf weights. The
-manifest has pinned `v0.4.4-amd-nr` since installer v0.6.5 (2026-09-27); v0.5.x installs it without
+manifest has pinned `v0.4.5-amd-nr` since installer v0.6.8 (2026-09-28); v0.5.x installs it without
 mochizuki. The manifest pins each release zip by URL and SHA-256, and every file it extracts from it
 by hash. The danielblnc runtime (0.4.2, `8aa2dcc5…`, inside the `v0.4.3-amd-nr` and `v0.4.4-amd-nr`
 release entries as their own `opti-runtime`, 0.4.1 inside `v0.4.2-amd-nr` and 0.4.0 inside `v0.4.1-amd-nr`; 0.3.1, `b108d640…`, at the top level for every older release, which does not
@@ -1033,7 +1035,9 @@ uncovered background (ghost 0.00165 against -0.00013) and settles one frame late
 is why it stays off (`exports\mochizuki-work\stab-lmxxf-residual-smooth\RESULTS.txt`). Cost when on:
 about +0.26 to +0.37 ms a frame at 1080p on a busy GPU. Not tested in a game.
 
-### After 0.4.4 (not released yet)
+### 0.4.5
+
+Released in `v0.4.5-amd-nr`. The mochizuki and lmxxf runtimes are 0.4.4's; the installer's payload reuses them.
 
 **danielblnc 0.4.3 is public** since 2026-09-28 ([Alpha 0.4.3](https://github.com/danielblnc/DLSS-NR-on-AMD/releases/tag/v0.4.3)).
 Its setup holds the same `version.dll` `d1e32086` this host already accepted, so only the text changed:
@@ -1048,6 +1052,17 @@ ReShade wraps the game's D3D12 lists. NGX got ReShade's wrapper, and `ExecuteCom
 now asks the list for `ILogicalCommandList` (ReShade passes unknown interfaces on to `_orig`) and works with
 our proxy, so the list and its device are the ones the queue sees. Without a wrapping layer nothing changes.
 Confirmed by a user in Conan Exiles Enhanced (RX 9070) with the test build.
+
+**danielblnc 0.5.1 (supporter build).** Not distributed, like 0.5.0. `kAmd051` (SHA `493b4a3b…`,
+38,569,472 bytes, same `.rdata` offset `0x26175f` in its setup) and its bootstrap entry (same call site
+`0x6eed` and worker `0x8ea0`; CreateThread's IAT slot is now `0xaa9c0`). Mapped from 0.5.0 two ways that
+agree on all 42 data fields (`map_layout_050_051.txt`, `datamap_050_051.txt`; the block moved +0x3010 up
+to `historyValid`, +0x3098 from `initDone`). Init moved to `0x2a0c0`; Record, Notify, shutdown and the
+wait helper kept their addresses, and Record and Notify only moved engine members (+0x88). No new INI key.
+`ANCHORS` rows from `implement/anchors/derive_051.py` (the same sites as 0.5.0). `amd_layout_binary_check.py`
+passes on 0.3.1 to 0.5.1, the host contracts and installer exit tests pass, and
+`tools/test-amd-runtime-init.cmd` on an RX 9070 XT runs 24 of 24 frames per wait mode with no timeout:
+9.69 to 9.79 ms per frame in dispatch wait, 10.22 ms on 0.5.0 in the same session. Not tested in a game.
 
 ---
 
