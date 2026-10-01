@@ -59,7 +59,8 @@ BEHAVIOUR_CHECKED = {"enabled", "nativeFailure", "initDone", "trampoline"}
 # aligned instructions of each matched function (analysis-opti/implement/anchors/derive_041.py), and the
 # 0.4.2 and 0.4.3 rows are the 0.4.1 ones mapped the same way (derive_042_043.py), and the 0.5.0 rows
 # the 0.4.3 ones (derive_050.py). The 0.5.1 rows are the 0.5.0 ones through derive_051.py, at the same
-# addresses.
+# addresses, and the 0.6.0 rows the 0.5.1 ones through derive_060.py, but for Record's depthInverted read,
+# which moved to another register (0x19a72, found by its field).
 # The 0.3.1 and 0.3.0 rows are the same instructions in the same order, found by shape (daniel-runtime/analysis-opti/implement/anchors/derive_anchors.py and
 # anchors.txt, which prints each site with its neighbours). 0.3.0 has no Notify-side jobDone wait
 # and no mapped wait helper, so it lacks those rows.
@@ -129,6 +130,39 @@ ANCHORS = {
         ('graphicsPso', 0x19edf, '48 83 3d', '00', 'graphicsWaitBegin', None),
         ('graphicsPso', 0x19f00, '48 8b 15', '', 'graphicsWaitBegin', None),
         ('predicateReady', 0x19be9, '80 3d', '01', 'graphicsWaitBegin', None),
+    ],
+    "0.6.0": [
+        ('device', 0xb4d2, '48 83 3d', '00', 'notify', None),
+        ('queue', 0xb4c8, '48 83 3d', '00', 'notify', None),
+        ('queue', 0xb531, '48 89 35', '', 'notify', None),
+        ('engine', 0xda0f, '48 8d 0d', '', None, 'init'),
+        ('engine', 0x19d2b, '48 8d 0d', '', 'record', None),
+        ('historyView', 0x1fcae, '4c 8b 05', '', None, None),
+        ('historyValid', 0x19d41, 'c6 05', '00', 'record', None),
+        ('jobDone', 0x17a1b, '39 05', '', 'record', None),
+        ('jobDone', 0xb708, '39 2d', '', 'notify', None),
+        ('timeoutCount', 0x1b76f, 'c7 05', '00 00 00 00', 'shutdown', None),
+        ('timeoutCount', 0x2129e, '3b 05', '', None, None),
+        ('watchdog', 0x1a98a, '44 8b 05', '', 'record', 'graphicsWaitBegin'),
+        ('pendingList', 0xb585, 'f0 48 0f b1 0d', '', 'notify', None),
+        ('pendingList', 0x1af38, '48 87 05', '', 'record', None),
+        ('jobId', 0x17a15, '8b 05', '', 'record', None),
+        ('jobId', 0x1aee9, '44 89 25', '', 'record', None),
+        ('depthInverted', 0x16260, '44 89 0d', '', None, None),
+        ('depthInverted', 0x19a72, '8b 15', '', 'record', None),
+        ('explicitDepth', 0x1624e, 'c6 05', '01', None, None),
+        ('hipOrdinal', 0x17714, '8b 0d', '', 'record', None),
+        ('recreate', 0x179e9, '80 3d', '01', 'record', None),
+        ('recreate', 0x17d21, 'c6 05', '00', 'record', None),
+        ('recordLock', 0x17cf8, '48 8d 0d', '', 'record', None),
+        ('recordLock', 0x17d0c, '81 3d', 'ff ff ff 7f', 'record', 'shutdown', 0x4c),
+        ('gate4c', 0x179f6, '83 3d', '00', 'record', None),
+        ('gate68', 0x179ff, '83 3d', '00', 'record', None),
+        ('gate68', 0xb599, '87 2d', '', 'notify', None),
+        ('counter78', 0x1a3b2, 'ff 05', '', 'record', None),
+        ('graphicsPso', 0x1c14f, '48 83 3d', '00', 'graphicsWaitBegin', None),
+        ('graphicsPso', 0x1c170, '48 8b 15', '', 'graphicsWaitBegin', None),
+        ('predicateReady', 0x1be59, '80 3d', '01', 'graphicsWaitBegin', None),
     ],
     "0.4.3": [
         ("device", 0xa232, "48 83 3d", "00", "notify", None),

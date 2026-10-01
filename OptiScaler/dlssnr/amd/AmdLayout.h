@@ -589,8 +589,75 @@ inline constexpr AmdLayout kAmd051 {
     .quality = 0xb9a95,
 };
 
+// 0.6.0 version.dll (SHA 195c4a89), an early build danielblnc gives his supporters, not distributed
+// with this project. Carved from its setup the same way (.rdata offset 0x262017), size 0x360d600: it
+// adds RDNA2 (gfx103x) kernels. Mapped from 0.5.1 two ways that agree on every field
+// (map_layout_051_060.txt, datamap_051_060.txt; the data moved +0x5060 to +0x50e8, and the option
+// bytes from enabled on are no longer one block). Notify is 0xb4a0 by the function match (the
+// instruction windows put it at a look-alike). The wait helper moved +0x2270 and matches byte for byte.
+// New INI keys (FreshExposure, JitterComp, PreHoldCounter, ResetOnEnable, SrgbApplyFix,
+// UsePreExposure) keep the runtime's defaults; the host writes none of them.
+inline constexpr AmdLayout kAmd060 {
+    .name = "0.6.0",
+    .size = 56677888,
+    .sha256 = Sha256FromHex("195c4a891b6eac4c1cb7671e10ff62bbbe2b17f1dfae1344dc5a6714e4775721"),
+    .d3dCompileIat = 0,
+    .init = 0x2cfb0,
+    .record = 0x17680,
+    .notify = 0xb4a0,
+    .shutdown = 0x1b420,
+    .trampoline = 0xbed08,
+    .device = 0xbdc88,
+    .queue = 0xbdc90,
+    .engine = 0xbdca0,
+    .historyView = 0xbde10,
+    .historyValid = 0xbde18,
+    .initDone = 0xbe1e8,
+    .nativeFailure = 0xbe1ea,
+    .configuredInline = 0xbe6f0,
+    .jobDone = 0xbe724,
+    .timeoutCount = 0xbe728,
+    .watchdog = 0xbe754,
+    .interop = 0xbe948,
+    .pendingList = 0xbea28,
+    .jobId = 0xbea34,
+    .depthInverted = 0xbead8,
+    .explicitDepth = 0xbeadc,
+    .enabled = 0xbeaed,
+    .temporal = 0xbeaee,
+    .fsrInputs = 0xbeaef,
+    .depthPresent = 0xbeaf0,
+    .tonemap = 0xbeaf4,
+    .tone = 0xbeb04,
+    .structure = 0xbeb08,
+    .skin = 0xbeb0c,
+    .charMask = 0xbeb14,
+    .toneChannels = 0xbeb18,
+    .hipOrdinal = 0xbec30,
+    .recreate = 0xbec08,
+    .recordLock = 0xbeb70,
+    .gate4c = 0xbea14,
+    .gate68 = 0xbea30,
+    .counter78 = 0xbea40,
+    .spinDraw = 0xbe8f4,
+    .graphicsPso = 0xbe910,
+    .predicateReady = 0xbe868,
+    .graphicsWaitBegin = 0x1be00,
+    .graphicsWaitEnd = 0x1c526,
+    .waitDispatchInit = 0x1bff0,
+    .waitDispatchFallback = 0x1c390,
+    .waitDispatchSlices = 0x1c3ea,
+    .waitDispatchFinish = 0x1c4d7,
+    .scale = 0xbeb10,
+    .style = 0xbeb1c,
+    .toneCurve = 0xbeb20,
+    .toneLift = 0xbeb24,
+    .useGameExposure = 0xbeb28,
+    .quality = 0xbeb29,
+};
+
 inline constexpr const AmdLayout* kAmdLayouts[] = { &kAmd0217, &kAmd03,  &kAmd031, &kAmd040, &kAmd041,
-                                                    &kAmd042,  &kAmd043, &kAmd050, &kAmd051 };
+                                                    &kAmd042,  &kAmd043, &kAmd050, &kAmd051, &kAmd060 };
 
 // Compile-time sanity: the hex helper must land on the first/last digest byte
 // of each known runtime. A wrong-length literal already fails Sha256FromHex;
@@ -604,4 +671,5 @@ static_assert(kAmd042.sha256.bytes[0] == 0x8a && kAmd042.sha256.bytes[31] == 0x5
 static_assert(kAmd043.sha256.bytes[0] == 0xd1 && kAmd043.sha256.bytes[31] == 0x57);
 static_assert(kAmd050.sha256.bytes[0] == 0xcd && kAmd050.sha256.bytes[31] == 0x1a);
 static_assert(kAmd051.sha256.bytes[0] == 0x49 && kAmd051.sha256.bytes[31] == 0xcd);
+static_assert(kAmd060.sha256.bytes[0] == 0x19 && kAmd060.sha256.bytes[31] == 0x21);
 } // namespace AmdPreSr

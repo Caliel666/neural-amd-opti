@@ -67,6 +67,8 @@ Eleven GitHub releases, all built by `tools/PACKAGE_RELEASE.ps1`:
 - `v0.4.6-amd-nr`: the RenoDX composition after the AMD runtimes, one Effect strength on danielblnc, its
   own Black lift and exposure source, the upscale ratio and output scaling in the Upscaling tab, an old
   INI's `AmdEncoding=0` read as sRGB, and the public 0.5.0 recommended (section 5, "0.4.6").
+- `v0.4.7-amd-nr`: danielblnc's 0.6.0 supporter build accepted (RDNA2) and the public 0.5.1 recommended
+  (section 5, "0.4.7").
 
 The build reports itself as `0.4.6-amd-nr`, and the packager writes
 `dist/OptiScaler-0.4.6-amd-nr.zip`.
@@ -1112,6 +1114,28 @@ removed only in dark areas, an sRGB frame round-tripped, and the divisor snappin
 9070 XT: 0.07 ms at 1080p and 0.11 ms at 1440p, 0.18 and 0.26 ms with the pedestal. Tried and approved in Cyberpunk 2077 by the user.
 
 ---
+
+### 0.4.7
+
+Released in `v0.4.7-amd-nr`. The mochizuki and lmxxf runtimes are 0.4.4's; the installer's payload reuses them.
+
+**danielblnc 0.5.1 is public** since 2026-10-01 ([Alpha 0.5.1](https://github.com/danielblnc/DLSS-NR-on-AMD/releases/tag/v0.5.1)).
+Its setup is byte for byte the supporter one, so the `version.dll` is the `493b4a3b` `kAmd051` already maps and only
+the text changed: README, Setup and the host's log recommend it.
+
+**danielblnc 0.6.0 (supporter build).** Not distributed. It adds RX 6000 (RDNA2) cards, which need AMD's HIP SDK
+7.2 runtime because their drivers ship HIP 6.4 only, and fixes flicker in dark areas and on small lights before
+upscaling. `kAmd060` (SHA `195c4a89…`, 56,677,888 bytes, `.rdata` offset `0x262017` in its setup). Mapped from 0.5.1
+two ways that agree on every data field (`map_layout_051_060.txt`, `datamap_051_060.txt`; the block moved +0x5060
+to +0x50e8, and the option bytes from `enabled` on are spread out). Every code entry moved: Init `0x2cfb0`, Record
+`0x17680`, Notify `0xb4a0` (the function match; the instruction windows picked a look-alike), shutdown `0x1b420`;
+the wait helper moved +0x2270 and matches byte for byte. The bootstrap calls CreateThread (IAT `0xaf170`) at
+`0x70ed` for the worker `0x91c0`. `ANCHORS` rows from `implement/anchors/derive_060.py`, but for Record's
+`depthInverted` read, now `8b 15` at `0x19a72`. Six new INI keys (FreshExposure, JitterComp, PreHoldCounter,
+ResetOnEnable, SrgbApplyFix, UsePreExposure) keep the runtime's defaults. `amd_layout_binary_check.py` passes on 0.3.1
+to 0.6.0, the host contracts and installer exit tests pass, and `tools/test-amd-runtime-init.cmd` on an RX 9070 XT runs
+24 of 24 frames per wait mode with no timeout, 9.41 ms per frame in dispatch wait. Not tested in a game, and not on an
+RDNA2 card.
 
 ## 6. Diagnostics playbook
 

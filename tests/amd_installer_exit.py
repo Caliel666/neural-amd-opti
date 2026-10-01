@@ -284,7 +284,7 @@ class InstallerExitTests(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertIn("WARNING: dlssnr_on_amd_setup.exe holds runtime 0.4.1, newer than the 0.3.0 given by -AuthorDll",
                       output)
-        self.assertIn("NOTE: runtime 0.3.0 is supported, but 0.5.0 is recommended", output)
+        self.assertIn("NOTE: runtime 0.3.0 is supported, but 0.5.1 is recommended", output)
         self.assertEqual((self.game / "dlssnr_amd_pass1.dll").read_bytes(), old)
 
     def test_unknown_author_dll_does_not_hold_back_a_newer_setup(self):

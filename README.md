@@ -14,9 +14,9 @@ next launch) or `NrBackend` in `OptiScaler.ini`.
 
 | | danielblnc | lmxxf | mochizuki (experimental) |
 |---|---|---|---|
-| Runtime | [DLSS-NR-on-AMD](https://github.com/danielblnc/DLSS-NR-on-AMD) 0.5.0 (recommended; public since 2026-09-29), 0.4.3, 0.4.2, 0.4.1, 0.4.0, 0.3.1 or 0.3.0, or the 0.5.1 build danielblnc gives his supporters, as `dlssnr_amd_pass1-3.dll` | [lmxxf's open-source HIP port](https://github.com/lmxxf/dlss5-on-amd-9070xt-porting), `LmxxfNrRuntime.dll` built here | [mochizuki0323's Vulkan port](https://github.com/mochizuki0323/DLSSNR-AMD), `MochizukiNrRuntime.dll` built here, not in the package |
+| Runtime | [DLSS-NR-on-AMD](https://github.com/danielblnc/DLSS-NR-on-AMD) 0.5.1 (recommended; public since 2026-10-01), 0.5.0, 0.4.3, 0.4.2, 0.4.1, 0.4.0, 0.3.1 or 0.3.0, or the 0.6.0 build danielblnc gives his supporters, as `dlssnr_amd_pass1-3.dll` | [lmxxf's open-source HIP port](https://github.com/lmxxf/dlss5-on-amd-9070xt-porting), `LmxxfNrRuntime.dll` built here | [mochizuki0323's Vulkan port](https://github.com/mochizuki0323/DLSSNR-AMD), `MochizukiNrRuntime.dll` built here, not in the package |
 | Weights | `dlssnr_on_amd_weights.bin` | `native-game-tiled-assets\` | `dlssnr-amd\dlssnr.bin`, made from your own `nvngx_dlssnr.dll` 310.8.0 |
-| GPUs | RDNA3 and RDNA4 with HIP 7 | RDNA4 (gfx1201 modules) | RDNA4 (Vulkan FP8) |
+| GPUs | RDNA3 and RDNA4 with HIP 7 (0.6.0 adds RDNA2, with the HIP SDK 7.2 runtime) | RDNA4 (gfx1201 modules) | RDNA4 (Vulkan FP8) |
 | Where it runs | Before Super Resolution, or on the finished frame (the only choice for Ray Reconstruction titles) | Before Super Resolution, render resolution up to 1080p | Before Super Resolution, on a Vulkan device of its own beside the game's DirectX 12 |
 | Controls | Passes 1-3, NR slots, wait mode, encoding (sRGB default), NR resolution with dynamic scaling, effect strength, lighting and structure | Passes 1-3, temporal history and smoothing, detail and colour strength, debug view | Passes 1-3, NR resolution, dynamic resolution, temporal history, detail and colour strength, style, intensity, tone, structure, skin, highlight guard |
 
@@ -55,9 +55,9 @@ OptiScaler's copy.
 2. For danielblnc, put its `version.dll` or `dlssnr_on_amd_setup.exe` next to `Setup.bat`, plus
    `dlssnr_on_amd_weights.bin` if you have it. Setup takes `version.dll` out of the setup without
    running it, and runs the setup only to make the weights. 0.4.x uses the same weights as 0.3.x.
-   To update from an older runtime, drop the 0.5.0 setup next to `Setup.bat` and run Setup again: when more
+   To update from an older runtime, drop the 0.5.1 setup next to `Setup.bat` and run Setup again: when more
    than one known runtime is found, the newest is installed and its version is printed.
-   danielblnc's 0.5.1 supporter build is not in any package; if you have it, put its
+   danielblnc's 0.6.0 supporter build is not in any package; if you have it, put its
    setup next to `Setup.bat`, or replace `dlssnr_amd_pass1.dll` in the game folder with its
    `version.dll` (and delete that `version.dll` from the game folder if its own setup put it there).
    Passes 2 and 3 are copied from pass 1 when they are missing or hold another runtime.
