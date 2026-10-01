@@ -525,7 +525,13 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrLocalTone.set_from_config(readFloat("DlssNr", "LocalTone"));
             AmdNeuralLighting.set_from_config(readBool("DlssNr", "AmdNeuralLighting"));
             AmdNeuralLightingStrength.set_from_config(readFloat("DlssNr", "AmdNeuralLightingStrength"));
-            AmdEncoding.set_from_config(readInt("DlssNr", "AmdEncoding"));
+            // An INI from before 0.4.8 has AmdColourGrade and no AmdStyle. Its AmdEncoding=2 is the sRGB its package
+            // wrote as the default, read as 0.4.8's Linear, and its colour grade became the network's Style. Saving
+            // writes AmdStyle, so this happens until the settings are first saved.
+            const auto oldGrade = readInt("DlssNr", "AmdColourGrade");
+            const bool before048 = oldGrade.has_value() && !readInt("DlssNr", "AmdStyle").has_value();
+            const auto encoding = readInt("DlssNr", "AmdEncoding");
+            AmdEncoding.set_from_config(before048 && encoding == 2 ? std::optional<int> {} : encoding);
             AmdEffectStrength.set_from_config(readFloat("DlssNr", "AmdEffectStrength"));
             AmdStabilizerStrength.set_from_config(readFloat("DlssNr", "AmdStabilizerStrength"));
             AmdStabilizerThreshold.set_from_config(readFloat("DlssNr", "AmdStabilizerThreshold"));
@@ -539,7 +545,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             AmdToneCurve.set_from_config(readInt("DlssNr", "AmdToneCurve"));
             AmdToneLift.set_from_config(readFloat("DlssNr", "AmdToneLift"));
             AmdUseGameExposure.set_from_config(readBool("DlssNr", "AmdUseGameExposure"));
-            AmdStyle.set_from_config(readInt("DlssNr", "AmdStyle"));
+            AmdStyle.set_from_config(before048 ? oldGrade : readInt("DlssNr", "AmdStyle"));
             AmdSlots.set_from_config(readInt("DlssNr", "AmdSlots"));
             AmdNrScale.set_from_config(readFloat("DlssNr", "AmdModelScale"));
             AmdDynamicScale.set_from_config(readBool("DlssNr", "AmdDynamicScale"));
