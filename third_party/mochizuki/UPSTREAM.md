@@ -461,6 +461,21 @@ Tried on 2026-09-27 (RX 9070 XT, driver 26.8.1) and left out:
 - Not tried: `DirectSrc` and the depth copy pass, `post_alpha`, the UNORM transfer change, `persist_strag`,
   `noise_field`, and upstream's 384-workgroup rule for the C=64 runs.
 
+16. From upstream after v0.0.2.1 (51b65a6, 2026-10-01), three changes, ported by hand because the files had moved
+   apart:
+   - `windows/src/core/nr_runtime.cpp`: the post block's history weight is multiplied by the model's own
+     `blend_scale`, 0.7397 (`kPostBlendScale`, from d1185d2); it was 1.0. Changes the output wherever history is used.
+   - `transfer_mode`: E5B9G9R9, R16G16B16A16 and R8G8B8A8 SNORM and the 16-bit packed formats go through the blit
+     (from 743326d). The host maps R9G9B9E5, B8G8R8X8 and the others to them and takes the blit-only ones where the
+     GPU can blit them.
+   - The preprocess (729a05d): `windows/shaders/passes/runtime_prep.comp` as upstream has it,
+     `RuntimeConfig::preprocess`, `Controls::preprocess` and `Runtime::preprocess_meter`, and the forward, back and
+     history-generation steps in `record_all`. The knee is undone on the linear path (`impl_->linear`), which is the
+     only one this host takes a knee on. Off, nothing of it is recorded; a network is built able to run it only after
+     a frame asked for it.
+   - Not taken yet: the in-place motion sampling and the per-frame pre-block noise from d1185d2, and the Windows
+     network rebuilt for the AMD compiler (228d3a6, b1419b0). See `handoff/mochizuki-upstream-2026-10-01.md`.
+
 ## Build
 
 `tools\build-mochizuki-runtime.cmd [out]` from an MSVC developer prompt, with the Vulkan SDK 1.4.357 or newer

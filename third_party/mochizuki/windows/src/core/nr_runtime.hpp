@@ -1,5 +1,6 @@
 #pragma once
 #include <atomic>
+#include <utility>
 #include <vector>
 #include <vulkan/vulkan.h>
 #include <cstdint>
@@ -20,6 +21,35 @@ struct PassControls {
     float local_structure = 1.0f;
     float skin_structure = -1.0f;
     bool automatic_mask = true;
+};
+
+// Preprocess (upstream 729a05d): what the network is shown is changed before
+// it runs and every change is taken back out of its answer
+// (windows/shaders/passes/runtime_prep.comp). Opt-in; the defaults below are
+// what enabled starts from (auto exposure, filmic curve), and each field has
+// a value that leaves the frame as the host handed it over (exposure off,
+// curve 0, contrast and saturation 1).
+// Needs a runtime built with RuntimeConfig::preprocess.
+struct Preprocess {
+    bool enabled = false;
+    // 0 off; 1 auto: a game engine's histogram auto exposure
+    // (runtime_prep.comp meter()), plus bias_ev; 2 fixed: bias_ev alone
+    int exposure = 1;
+    float bias_ev = 0.0f;        // -8..8
+    // 0 none, 1 neutral, 2 reinhard, 3 filmic, 4 gt, 5 aces, 6 agx
+    int curve = 3;
+    float contrast = 1.0f;       // about mid grey, 0.5..2
+    float saturation = 1.0f;     // 0.05..2
+    // Does any of it change anything? False records nothing.
+    bool active() const {
+        return enabled && (exposure == 1 || (exposure == 2 && bias_ev != 0.0f) || curve != 0 ||
+                           contrast != 1.0f || saturation != 1.0f);
+    }
+    bool operator==(const Preprocess& o) const {
+        return enabled == o.enabled && exposure == o.exposure && bias_ev == o.bias_ev && curve == o.curve &&
+               contrast == o.contrast && saturation == o.saturation;
+    }
+    bool operator!=(const Preprocess& o) const { return !(*this == o); }
 };
 
 // In-process interface shared by game adapters and the native menu.
@@ -49,6 +79,7 @@ struct Controls {
     // `used == false`, or a pass past the end of this, inherits pass 1 with the
     // tone zeroed. Empty is exactly the behaviour that shipped before.
     std::vector<PassControls> per_pass{};
+    Preprocess preprocess{};
 };
 
 struct HostDevice {
@@ -106,6 +137,11 @@ struct RuntimeConfig {
     // pass, so `colour` and `model_scale` have no effect. What a host that does
     // its own resolve afterwards (OptiScaler) must be given.
     bool native_compose = false;
+    // Able to run Controls::preprocess: a model-sized RGBA32F copy of the frame
+    // and three small kernels, made whether or not a frame asks for it. On the
+    // linear path the preprocess undoes the proxy's soft knee first, so its
+    // curve is the only one.
+    bool preprocess = false;
 };
 
 // A build on this thread stops before its next pipeline once *build_cancel is
@@ -343,6 +379,9 @@ public:
     // The same, smoothed over recent frames - what to put in a UI, because the
     // instantaneous number moves too much to read.
     float average_gpu_ms() const;
+    // The preprocess meter as the GPU last left it: {smoothed EV, this frame's
+    // target EV}, bias not included. NaN until it has metered.
+    std::pair<float, float> preprocess_meter() const;
 
 private:
     struct Impl;

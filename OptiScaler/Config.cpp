@@ -539,7 +539,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             AmdToneCurve.set_from_config(readInt("DlssNr", "AmdToneCurve"));
             AmdToneLift.set_from_config(readFloat("DlssNr", "AmdToneLift"));
             AmdUseGameExposure.set_from_config(readBool("DlssNr", "AmdUseGameExposure"));
-            AmdColourGrade.set_from_config(readInt("DlssNr", "AmdColourGrade"));
+            AmdStyle.set_from_config(readInt("DlssNr", "AmdStyle"));
             AmdSlots.set_from_config(readInt("DlssNr", "AmdSlots"));
             AmdNrScale.set_from_config(readFloat("DlssNr", "AmdModelScale"));
             AmdDynamicScale.set_from_config(readBool("DlssNr", "AmdDynamicScale"));
@@ -584,7 +584,14 @@ bool Config::Reload(std::filesystem::path iniPath)
             MochizukiWhitePoint.set_from_config(readFloat("DlssNr", "MochizukiWhitePoint"));
             MochizukiApplyModel.set_from_config(readBool("DlssNr", "MochizukiApplyModel"));
             MochizukiLinearInput.set_from_config(readUInt("DlssNr", "MochizukiLinearInput"));
+            MochizukiGameExposure.set_from_config(readBool("DlssNr", "MochizukiGameExposure"));
             MochizukiDynamicResolution.set_from_config(readString("DlssNr", "MochizukiDynamicResolution", true));
+            MochizukiPreprocess.set_from_config(readBool("DlssNr", "MochizukiPreprocess"));
+            MochizukiPreprocessExposure.set_from_config(readUInt("DlssNr", "MochizukiPreprocessExposure"));
+            MochizukiPreprocessBias.set_from_config(readFloat("DlssNr", "MochizukiPreprocessBias"));
+            MochizukiPreprocessCurve.set_from_config(readUInt("DlssNr", "MochizukiPreprocessCurve"));
+            MochizukiPreprocessContrast.set_from_config(readFloat("DlssNr", "MochizukiPreprocessContrast"));
+            MochizukiPreprocessSaturation.set_from_config(readFloat("DlssNr", "MochizukiPreprocessSaturation"));
             MochizukiPass2Style.set_from_config(readUInt("DlssNr", "MochizukiPass2Style"));
             MochizukiPass2Intensity.set_from_config(readFloat("DlssNr", "MochizukiPass2Intensity"));
             MochizukiPass2LocalTone.set_from_config(readFloat("DlssNr", "MochizukiPass2LocalTone"));
@@ -1701,7 +1708,7 @@ bool Config::SaveIni()
         ini.SetValue("DlssNr", "AmdToneLift", GetFloatValue(Instance()->AmdToneLift.value_for_config()).c_str());
         ini.SetValue("DlssNr", "AmdUseGameExposure",
                      GetBoolValue(Instance()->AmdUseGameExposure.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "AmdColourGrade", GetIntValue(Instance()->AmdColourGrade.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "AmdStyle", GetIntValue(Instance()->AmdStyle.value_for_config()).c_str());
         ini.SetValue("DlssNr", "AmdSlots", GetIntValue(Instance()->AmdSlots.value_for_config()).c_str());
         ini.SetValue("DlssNr", "AmdModelScale", GetFloatValue(Instance()->AmdNrScale.value_for_config()).c_str());
         ini.SetValue("DlssNr", "AmdDynamicScale", GetBoolValue(Instance()->AmdDynamicScale.value_for_config()).c_str());
@@ -1755,8 +1762,22 @@ bool Config::SaveIni()
                      GetBoolValue(Instance()->MochizukiApplyModel.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiLinearInput",
                      GetIntValue(Instance()->MochizukiLinearInput.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiGameExposure",
+                     GetBoolValue(Instance()->MochizukiGameExposure.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiDynamicResolution",
                      Instance()->MochizukiDynamicResolution.value_for_config().value_or("auto").c_str());
+        ini.SetValue("DlssNr", "MochizukiPreprocess",
+                     GetBoolValue(Instance()->MochizukiPreprocess.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiPreprocessExposure",
+                     GetIntValue(Instance()->MochizukiPreprocessExposure.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiPreprocessBias",
+                     GetFloatValue(Instance()->MochizukiPreprocessBias.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiPreprocessCurve",
+                     GetIntValue(Instance()->MochizukiPreprocessCurve.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiPreprocessContrast",
+                     GetFloatValue(Instance()->MochizukiPreprocessContrast.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiPreprocessSaturation",
+                     GetFloatValue(Instance()->MochizukiPreprocessSaturation.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiPass2Style",
                      GetIntValue(Instance()->MochizukiPass2Style.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiPass2Intensity",

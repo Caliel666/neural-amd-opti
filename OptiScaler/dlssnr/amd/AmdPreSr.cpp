@@ -839,7 +839,7 @@ struct Backend::Impl
         // 0.4.x reads these from dlssnr_on_amd.ini in DllMain, and only its own Present detour
         // reads them again, which the isolated bootstrap never installs. Pin the runtime defaults,
         // which reproduce 0.3.1: no style, Reinhard, no lift, the game's exposure when given. The
-        // tone curve, lift, exposure source and Quality then follow the menu on every frame.
+        // style, tone curve, lift, exposure source and Quality then follow the menu on every frame.
         if (L->style)
             At<int>(h, L->style) = 0;
         if (L->toneCurve)
@@ -1218,9 +1218,10 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
         const auto motionDesc = f.motion->GetDesc();
         if (resampleMotion && (f.motionWidth > motionDesc.Width || f.motionHeight > motionDesc.Height))
             throw std::runtime_error("Display motion extent exceeds its allocation");
-        if (resampleMotion && motionDesc.Format != DXGI_FORMAT_R16G16_FLOAT &&
-            motionDesc.Format != DXGI_FORMAT_R32G32_FLOAT && motionDesc.Format != DXGI_FORMAT_R16G16_SNORM &&
-            motionDesc.Format != DXGI_FORMAT_R16G16B16A16_FLOAT && motionDesc.Format != DXGI_FORMAT_R32G32B32A32_FLOAT)
+        const DXGI_FORMAT motionRead = ReadFormat(motionDesc.Format);
+        if (resampleMotion && motionRead != DXGI_FORMAT_R16G16_FLOAT && motionRead != DXGI_FORMAT_R32G32_FLOAT &&
+            motionRead != DXGI_FORMAT_R16G16_SNORM && motionRead != DXGI_FORMAT_R16G16B16A16_FLOAT &&
+            motionRead != DXGI_FORMAT_R32G32B32A32_FLOAT)
             throw std::runtime_error("Unsupported display motion format: " + Layout(f.motion));
         ID3D12Resource* exposureSource = nullptr;
         if (f.exposure)
@@ -1372,10 +1373,7 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
         auto depth = f.depth;
         const auto& look = cfg.look;
         const bool lookOn = look.enabled && (look.mix > 0 || look.tone > 0 || look.inspect != 0);
-        // NVIDIA's Model B and C colour grade. The appearance pass carries it, so it runs for the
-        // grade alone too.
-        const bool colourGrade = cfg.grade == 1 || cfg.grade == 2;
-        const bool applyLook = lookOn || colourGrade;
+        const bool applyLook = lookOn;
         auto createScratch = [&](ComPtr<ID3D12Resource>& resource, UINT sw, UINT sh, DXGI_FORMAT format)
         {
             if (resource && resource->GetDesc().Width == sw && resource->GetDesc().Height == sh)
@@ -1579,6 +1577,7 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
             cfg.modelScale != p->lastSettings.modelScale || !p->haveSettings || cfg.tone != p->lastSettings.tone ||
             cfg.structure != p->lastSettings.structure || cfg.skin != p->lastSettings.skin ||
             cfg.everyFrame != p->lastSettings.everyFrame || (L->scale && cfg.strength != p->lastSettings.strength) ||
+            (L->style && cfg.style != p->lastSettings.style) ||
             (L->toneCurve && cfg.toneCurve != p->lastSettings.toneCurve) ||
             (L->toneLift && cfg.toneLift != p->lastSettings.toneLift) ||
             (L->useGameExposure && cfg.gameExposure != p->lastSettings.gameExposure);
@@ -1630,6 +1629,8 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
                 At<float>(r, L->scale) = cfg.strength * 4.f / 128.f;
             if (L->quality)
                 At<uint8_t>(r, L->quality) = cfg.fast ? 1 : 0;
+            if (L->style)
+                At<int>(r, L->style) = int(cfg.style);
             if (L->toneCurve)
                 At<int>(r, L->toneCurve) = int(cfg.toneCurve);
             // Both reach the network through the job the runtime builds on each Record, as the tone curve does.
@@ -1863,7 +1864,7 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
                 float mix, material, shape, lighting, skin, softness, specular, rollOff;
                 float colour, shadow, halo, flat, tone, exposureEV, contrast, saturation;
                 float compression, preExposure;
-                UINT detectSkin, grade;
+                UINT detectSkin;
             } c { w,
                   h,
                   (std::min) (look.appearance, 3u),
@@ -1886,9 +1887,8 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
                   bounded(look.saturation, 0, 2, 1),
                   bounded(look.highlightCompression, 0, 1, 0),
                   std::isfinite(f.preExposure) && f.preExposure > 0 ? f.preExposure : 1,
-                  look.detectSkin,
-                  colourGrade ? cfg.grade : 0u };
-            static_assert(sizeof(Constants) == 24 * sizeof(UINT));
+                  look.detectSkin };
+            static_assert(sizeof(Constants) == 23 * sizeof(UINT));
             Barrier(cmd, p->lookColour.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                     D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             cmd->SetComputeRootSignature(p->root.Get());
@@ -1897,7 +1897,7 @@ ID3D12Resource* Backend::Record(ID3D12GraphicsCommandList* cmd, const Frame& inc
             auto table = p->heap->GetGPUDescriptorHandleForHeapStart();
             table.ptr += static_cast<SIZE_T>(slotBase + 8) * descriptorStride;
             cmd->SetComputeRootDescriptorTable(0, table);
-            cmd->SetComputeRoot32BitConstants(1, 24, &c, 0);
+            cmd->SetComputeRoot32BitConstants(1, 23, &c, 0);
             cmd->Dispatch((w + 7) / 8, (h + 7) / 8, 1);
             Barrier(cmd, p->lookColour.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);

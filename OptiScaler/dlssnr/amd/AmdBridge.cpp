@@ -624,6 +624,26 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
         return true;
     }
     auto haveFlags = params->Get(NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, &flags) == NVSDK_NGX_Result_Success;
+    // NGX applies the exposure texture to HDR input only. An SDR colour (no IsHDR, or an 8- or 10-bit UNORM one) is
+    // already exposed: Watch Dogs: Legion hands an R8G8B8A8 colour with an exposure that grows huge in the dark, and
+    // applied again it overflowed the network into a green frame.
+    if (f.exposure && f.colour)
+    {
+        switch (AmdPreSr::ReadFormat(f.colour->GetDesc().Format))
+        {
+        case DXGI_FORMAT_R8G8B8A8_UNORM:
+        case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+        case DXGI_FORMAT_B8G8R8A8_UNORM:
+        case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+        case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+        case DXGI_FORMAT_R10G10B10A2_UNORM:
+            f.exposure = nullptr;
+            break;
+        default:
+            if (haveFlags && !(flags & NVSDK_NGX_DLSS_Feature_Flags_IsHDR))
+                f.exposure = nullptr;
+        }
+    }
     if (haveFlags && !(flags & NVSDK_NGX_DLSS_Feature_Flags_MVLowRes) && f.motion)
     {
         params->Get(NVSDK_NGX_Parameter_OutWidth, &f.motionWidth);
@@ -791,10 +811,9 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
     s.spinDraw = Config::Instance()->AmdGraphicsWait.value_or_default() ? 1 : 0;
     // The pinned AMD binary explicitly disables the broad lighting/colour
     // channels. Its embedded UI warns that nonzero tone mostly darkens frames.
-    // An old INI's 0 (the former Auto, which the Setup.bat before 0.4.4 wrote into every game) reads as sRGB, the
-    // default, so those games get what a first install gets.
+    // An old INI's 0 (the former Auto, which converted nothing) reads as Linear, the default.
     const int encoding = cfg.AmdEncoding.value_or_default();
-    s.encoding = encoding == 0 ? 2 : std::clamp(encoding, 1, 3);
+    s.encoding = encoding == 0 ? 1 : std::clamp(encoding, 1, 3);
     // tone must be 0 whenever toneChannels is: 0.3.1 zeroed it itself, 0.4.x passes it through.
     s.toneChannels = cfg.AmdNeuralLightingStrength.value_or_default() > 0;
     s.tone = s.toneChannels ? std::clamp(cfg.AmdNeuralLightingStrength.value_or_default(), 0.f, 1.f) : 0.f;
@@ -811,7 +830,7 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
     s.toneCurve = UINT(std::clamp(cfg.AmdToneCurve.value_or_default(), 0, 1));
     s.toneLift = std::clamp(cfg.AmdToneLift.value_or_default(), 0.f, .25f);
     s.gameExposure = cfg.AmdUseGameExposure.value_or_default();
-    s.grade = UINT(std::clamp(cfg.AmdColourGrade.value_or_default(), 0, 2));
+    s.style = UINT(std::clamp(cfg.AmdStyle.value_or_default(), 0, 2));
     // Evaluate cut: Split proxy + SetBetween(EnqueueHip). Live only when SubmissionHooksWanted() (NrBackend=lmxxf
     // or mochizuki).
     DlssNr::Backend::LmxxfCut::OnEvaluateBeforeRecord(cmd);

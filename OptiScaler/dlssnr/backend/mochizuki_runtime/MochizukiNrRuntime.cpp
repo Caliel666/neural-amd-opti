@@ -114,6 +114,27 @@ std::wstring DllDirectory()
     return path;
 }
 
+// Where dlssnr-amd\ (shaders, model, prewarm) and the log are: beside the DLL, or else beside the game's exe. RE
+// Engine games load every DLL from a copy in _storage_\ and leave the folders behind.
+std::wstring DataDirectory()
+{
+    static const std::wstring dir = []
+    {
+        const std::wstring dll = DllDirectory();
+        if (GetFileAttributesW((dll + L"\\dlssnr-amd").c_str()) != INVALID_FILE_ATTRIBUTES)
+            return dll;
+        std::wstring exe(32768, L'\0');
+        const DWORD n = GetModuleFileNameW(nullptr, exe.data(), DWORD(exe.size()));
+        exe.resize(n < exe.size() ? n : 0);
+        const size_t slash = exe.find_last_of(L"\\/");
+        if (slash != std::wstring::npos &&
+            GetFileAttributesW((exe.substr(0, slash) + L"\\dlssnr-amd").c_str()) != INVALID_FILE_ATTRIBUTES)
+            return exe.substr(0, slash);
+        return dll;
+    }();
+    return dir;
+}
+
 // The runtime's folder as the core's RuntimeConfig::root, in UTF-8: with LC_CTYPE set to UTF-8 (UseUtf8Paths), the
 // core's narrow paths reach the file system unchanged, whatever the ANSI code page is.
 std::string RootUtf8(const std::wstring& dir)
@@ -218,11 +239,11 @@ void RememberUnsupported(LUID luid, const char* reason)
     nr::logf("[mochizuki] %s; not retried on this adapter", reason);
 }
 
-// The runtime's own lines and the network's, in mochizuki_nr.log beside the DLL.
+// The runtime's own lines and the network's, in mochizuki_nr.log beside dlssnr-amd\ (DataDirectory).
 void LogLine(const char* line)
 {
     static std::mutex mutex;
-    static const std::wstring path = DllDirectory() + L"\\mochizuki_nr.log";
+    static const std::wstring path = DataDirectory() + L"\\mochizuki_nr.log";
     std::lock_guard lock(mutex);
     FILE* f = _wfopen(path.c_str(), L"ab");
     if (!f)
@@ -439,9 +460,46 @@ Format ColourFormat(DXGI_FORMAT f)
     case DXGI_FORMAT_B8G8R8A8_UNORM:
     case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
     case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+    case DXGI_FORMAT_B8G8R8X8_UNORM:
+    case DXGI_FORMAT_B8G8R8X8_UNORM_SRGB:
+    case DXGI_FORMAT_B8G8R8X8_TYPELESS:
         return { VK_FORMAT_B8G8R8A8_UNORM, 4 };
+    // Upstream 743326d's further colour formats. The runtime blits them, so PrepareFrame takes them only where this GPU
+    // can (Blittable). R9G9B9E5 is RE Engine's upscaler colour (Resident Evil Requiem, Monster Hunter Wilds): three
+    // 9-bit mantissas sharing a 5-bit exponent, linear like R11G11B10.
+    case DXGI_FORMAT_R9G9B9E5_SHAREDEXP:
+        return { VK_FORMAT_E5B9G9R9_UFLOAT_PACK32, 4 };
+    case DXGI_FORMAT_R16G16B16A16_UNORM:
+        return { VK_FORMAT_R16G16B16A16_UNORM, 8 };
+    case DXGI_FORMAT_R16G16B16A16_SNORM:
+        return { VK_FORMAT_R16G16B16A16_SNORM, 8 };
+    case DXGI_FORMAT_R8G8B8A8_SNORM:
+        return { VK_FORMAT_R8G8B8A8_SNORM, 4 };
+    case DXGI_FORMAT_B5G6R5_UNORM:
+        return { VK_FORMAT_R5G6B5_UNORM_PACK16, 2 };
+    case DXGI_FORMAT_B5G5R5A1_UNORM:
+        return { VK_FORMAT_A1R5G5B5_UNORM_PACK16, 2 };
+    case DXGI_FORMAT_B4G4R4A4_UNORM:
+        return { VK_FORMAT_A4R4G4B4_UNORM_PACK16, 2 };
     default:
         return {};
+    }
+}
+
+// The formats the runtime takes by blit alone (upstream 743326d), which not every GPU can blit.
+bool NeedsBlitCheck(VkFormat f)
+{
+    switch (f)
+    {
+    case VK_FORMAT_E5B9G9R9_UFLOAT_PACK32:
+    case VK_FORMAT_R16G16B16A16_SNORM:
+    case VK_FORMAT_R8G8B8A8_SNORM:
+    case VK_FORMAT_R5G6B5_UNORM_PACK16:
+    case VK_FORMAT_A1R5G5B5_UNORM_PACK16:
+    case VK_FORMAT_A4R4G4B4_UNORM_PACK16:
+        return true;
+    default:
+        return false;
     }
 }
 
@@ -472,7 +530,7 @@ Format MotionFormat(DXGI_FORMAT f)
 bool IsLinear(VkFormat f)
 {
     return f == VK_FORMAT_R16G16B16A16_SFLOAT || f == VK_FORMAT_B10G11R11_UFLOAT_PACK32 ||
-           f == VK_FORMAT_R32G32B32A32_SFLOAT;
+           f == VK_FORMAT_R32G32B32A32_SFLOAT || f == VK_FORMAT_E5B9G9R9_UFLOAT_PACK32;
 }
 
 // A versioned struct (FrameInfo, the Mochizuki* ones) holds a field when its struct_size covers all of it: older
@@ -519,6 +577,13 @@ void DefaultControls(MochizukiNrControls& c)
     c.white_point = nr::RuntimeConfig {}.white_point;
     c.apply_model = model.apply_model;
     c.drs_mode = 0; // exact, as for a zeroed struct: a host must ask for dynamic resolution (its INI default is auto)
+    const nr::Preprocess prep;
+    c.preprocess = prep.enabled;
+    c.preprocess_exposure = uint32_t(prep.exposure);
+    c.preprocess_bias_ev = prep.bias_ev;
+    c.preprocess_curve = uint32_t(prep.curve);
+    c.preprocess_contrast = prep.contrast;
+    c.preprocess_saturation = prep.saturation;
     for (MochizukiNrPassControls& p : c.pass)
     {
         p.style = uint32_t(pass.style);
@@ -548,6 +613,13 @@ SessionControls Sanitise(const MochizukiNrControls& c)
     out.linearMode = c.linear_input <= 2 ? c.linear_input : 0;
     out.maxPasses = std::min(c.max_passes, kMaxPasses);
     out.drsMode = c.drs_mode <= 2 ? c.drs_mode : 0; // a mode this runtime does not know runs exact
+    nr::Preprocess& prep = m.preprocess;
+    prep.enabled = c.preprocess != 0;
+    prep.exposure = int(c.preprocess_exposure <= 2 ? c.preprocess_exposure : 1);
+    prep.bias_ev = San(c.preprocess_bias_ev, -8.f, 8.f, 0.f);
+    prep.curve = int(c.preprocess_curve <= 6 ? c.preprocess_curve : 3);
+    prep.contrast = San(c.preprocess_contrast, .5f, 2.f, 1.f);
+    prep.saturation = San(c.preprocess_saturation, .05f, 2.f, 1.f);
     // validate() does not look at these, and the core puts them straight into push constants.
     for (size_t k = std::size(c.pass); k-- > 0;)
     {
@@ -1197,6 +1269,7 @@ struct NetworkKey
     float scale = 1.f;
     uint32_t maxPasses = 1;
     bool linear = false;
+    bool prep = false; // RuntimeConfig::preprocess
     bool operator==(const NetworkKey&) const = default;
 };
 
@@ -1471,6 +1544,12 @@ struct Session
     std::atomic<uint32_t> infoModelWidth { 0 }, infoModelHeight { 0 }, infoFrameWidth { 0 }, infoFrameHeight { 0 },
         infoMaxPasses { 0 }, infoPasses { 1 }, motionRefused { 0 }, dispatches { 0 };
     std::atomic<float> infoBuildSeconds { 0 };
+    std::atomic<float> infoPrepEv { NAN };
+    std::atomic<float> infoWhite { 1.f };
+    // MochizukiNrSetExposure's last word: the game's exposure, 0 for none.
+    std::atomic<float> gameExposure { 0.f };
+    // Set by the first frame that asks for the preprocess: from then on every network is built able to run it.
+    bool prepWanted = false;
     // One bit a frame, newest lowest: its history was consumed. Written under submitMutex only.
     std::atomic<uint64_t> historyBits { 0 };
     std::atomic<uint32_t> historyCount { 0 };
@@ -2408,6 +2487,9 @@ struct Session
         vram.Open(device->GetAdapterLuid());
         nr::logf("[mochizuki] Vulkan device %s, queue family %u%s", vk.name.c_str(), vk.family,
                  vk.buildQueue != vk.queue ? ", a second queue for the network builds" : "");
+        if (DataDirectory() != DllDirectory())
+            nr::logf("[mochizuki] loaded from %s; dlssnr-amd is read from %s", RootUtf8(DllDirectory()).c_str(),
+                     RootUtf8(DataDirectory()).c_str());
     }
 
     // A build ended without a network. Its key is not built again, except after running out of memory (kOomRetryMs).
@@ -2619,13 +2701,14 @@ struct Session
         {
             const NetworkKey& key = buildKey;
             nr::RuntimeConfig config;
-            config.root = RootUtf8(DllDirectory());
+            config.root = RootUtf8(DataDirectory());
             config.width = key.width;
             config.height = key.height;
             config.colour_format = key.format;
             config.linear_input = key.linear;
             config.model_scale = key.scale;
             config.max_passes = key.maxPasses;
+            config.preprocess = key.prep;
             nr::TemporalConfig temporal;
             temporal.enable = true;
             nr::HostDevice host;
@@ -2716,7 +2799,7 @@ struct Session
             // The pipelines an earlier build recorded are compiled on several threads first, into the pipeline.cache
             // the core then loads; the capture records this build's for the next one, and Finish saves what the core
             // compiled after its own save (mz_interpose.h).
-            mzi::Capture pipelines(host.device, host.physical, DllDirectory());
+            mzi::Capture pipelines(host.device, host.physical, DataDirectory());
             pipelines.Prewarm(&abandon);
             if (abandon)
                 throw std::runtime_error("stopped: the session is being destroyed");
@@ -3265,6 +3348,11 @@ struct Session
         else
             dispatches.store(runtime->record(c, frame.colour, job.controls).network_dispatches,
                              std::memory_order_relaxed);
+        const nr::Preprocess& prep = job.controls.preprocess;
+        float prepEv = NAN;
+        if (prep.active() && prep.exposure == 1)
+            prepEv = runtime->preprocess_meter().first + prep.bias_ev;
+        infoPrepEv.store(prepEv, std::memory_order_relaxed);
         historyBits.store((historyBits.load(std::memory_order_relaxed) << 1) | uint64_t(consumed),
                           std::memory_order_relaxed);
         historyCount.store(std::min(historyCount.load(std::memory_order_relaxed) + 1, kHistorySamples),
@@ -3525,7 +3613,7 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
                 return Fail(LMXXF_NR_INVALID_ARGUMENT, "PrepareFrame: colour and its size are required");
             const D3D12_RESOURCE_DESC cd = colour->GetDesc();
             const Format cf = ColourFormat(cd.Format);
-            if (!cf.vk)
+            if (!cf.vk || (NeedsBlitCheck(cf.vk) && !s->Blittable(cf.vk)))
             {
                 char text[96];
                 std::snprintf(text, sizeof text, "colour format %u is not supported", unsigned(cd.Format));
@@ -3581,6 +3669,8 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
                 history = s->controls.history;
                 white = s->controls.white;
                 linearMode = s->controls.linearMode;
+                if (const float e = s->gameExposure.load(std::memory_order_relaxed); e > 0.f)
+                    white = std::clamp(white / e, 1e-4f, 1e4f);
                 maxPassesSetting = s->controls.maxPasses;
                 drsMode = s->controls.drsMode;
             }
@@ -3600,7 +3690,8 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
             }
             // Neither a network nor buffers that cannot be had now fail the session: the frame goes without NR, and
             // they are tried again as their holds say.
-            const NetworkKey key { g.width, g.height, cf.vk, scale, maxPasses, linear };
+            s->prepWanted = s->prepWanted || model.preprocess.active();
+            const NetworkKey key { g.width, g.height, cf.vk, scale, maxPasses, linear, s->prepWanted };
             std::string why;
             if (!s->EnsureNetwork(key, g, colour, why))
                 return Fail(LMXXF_NR_UNAVAILABLE, why.c_str());
@@ -3659,6 +3750,7 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
             next.controls.passes = int(served);
             next.history = history;
             next.white = white;
+            s->infoWhite.store(white, std::memory_order_relaxed);
             if (mf.vk)
             {
                 next.motion = motion;
@@ -3922,19 +4014,24 @@ int32_t GetLastError(char* buf, uint32_t chars)
 // MochizukiNrControls.h. Every Controls field is 4 bytes and 4-aligned and the struct ends at its last field, so the
 // whole fields a caller's struct holds are its first struct_size & ~3 bytes.
 static_assert(alignof(MochizukiNrControls) == 4 &&
-              sizeof(MochizukiNrControls) == offsetof(MochizukiNrControls, pass) + sizeof(MochizukiNrControls::pass) &&
-              offsetof(MochizukiNrControls, pass) == 72 && sizeof(MochizukiNrPassControls) == 32);
+              sizeof(MochizukiNrControls) == offsetof(MochizukiNrControls, preprocess_saturation) +
+                                                 sizeof(MochizukiNrControls::preprocess_saturation) &&
+              offsetof(MochizukiNrControls, pass) == 72 && offsetof(MochizukiNrControls, preprocess) == 136 &&
+              sizeof(MochizukiNrPassControls) == 32);
 // Info has no implicit padding (reserved0 fills the gap before frames), so its offsets do not depend on packing; its
 // sizeof does (tail padding after network_dispatches), which is why a filler reports the end of its last field.
 static_assert(offsetof(MochizukiNrInfo, reserved0) == 44 && offsetof(MochizukiNrInfo, frames) == 48 &&
-              offsetof(MochizukiNrInfo, last_error) == 64 && offsetof(MochizukiNrInfo, network_dispatches) == 320);
+              offsetof(MochizukiNrInfo, last_error) == 64 && offsetof(MochizukiNrInfo, network_dispatches) == 320 &&
+              offsetof(MochizukiNrInfo, preprocess_ev) == 324 && offsetof(MochizukiNrInfo, white_point) == 328);
 
 // The bytes GetInfo writes into a struct of `size` bytes: the whole fields that fit, never part of one, and never
 // Info's tail padding. A host that appends a field there (sizeof does not grow) then sees struct_size end before it.
 size_t InfoBytes(size_t size)
 {
     constexpr size_t ends[] = {
-        offsetof(MochizukiNrInfo, network_dispatches) + sizeof(MochizukiNrInfo::network_dispatches), // the last field
+        offsetof(MochizukiNrInfo, white_point) + sizeof(MochizukiNrInfo::white_point), // the last field
+        offsetof(MochizukiNrInfo, white_point),
+        offsetof(MochizukiNrInfo, preprocess_ev),
         offsetof(MochizukiNrInfo, network_dispatches),
         offsetof(MochizukiNrInfo, last_error),
         offsetof(MochizukiNrInfo, failed),
@@ -3993,6 +4090,8 @@ int32_t GetInfo(void* context, MochizukiNrInfo* out)
         info.history_consumed_pct = n ? uint32_t(std::popcount(s->historyBits & window)) * 100 / n : 0;
         info.failed = s->failed;
         info.network_dispatches = s->dispatches;
+        info.preprocess_ev = s->infoPrepEv;
+        info.white_point = s->infoWhite;
         {
             std::lock_guard lock(s->errorMutex);
             std::memcpy(info.last_error, s->lastError, sizeof info.last_error);
@@ -4064,6 +4163,22 @@ extern "C" __declspec(dllexport) int32_t MochizukiNrGetInfo(void* context, Mochi
 extern "C" __declspec(dllexport) int32_t MochizukiNrGetControlDefaults(MochizukiNrControls* controls)
 {
     return GetControlDefaults(controls);
+}
+
+extern "C" __declspec(dllexport) int32_t MochizukiNrSetExposure(void* context, float exposure)
+{
+    auto* s = static_cast<Session*>(context);
+    if (!s)
+        return Fail(LMXXF_NR_INVALID_ARGUMENT, "SetExposure: no session");
+    const float e = std::isfinite(exposure) && exposure > 0.f ? exposure : 0.f;
+    if ((e > 0.f) != (s->gameExposure.exchange(e, std::memory_order_relaxed) > 0.f))
+    {
+        if (e > 0.f)
+            nr::logf("[mochizuki] white point from the game's exposure (%.4f now)", double(e));
+        else
+            nr::logf("[mochizuki] the game's exposure is gone: the white point is the setting alone");
+    }
+    return LMXXF_NR_OK;
 }
 
 // ANY_QUEUE: a frame may come from any game queue (Session::Follow), so the host keeps the session on a queue change.

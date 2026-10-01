@@ -18,7 +18,7 @@ next launch) or `NrBackend` in `OptiScaler.ini`.
 | Weights | `dlssnr_on_amd_weights.bin` | `native-game-tiled-assets\` | `dlssnr-amd\dlssnr.bin`, made from your own `nvngx_dlssnr.dll` 310.8.0 |
 | GPUs | RDNA3 and RDNA4 with HIP 7 (0.6.0 adds RDNA2, with the HIP SDK 7.2 runtime) | RDNA4 (gfx1201 modules) | RDNA4 (Vulkan FP8) |
 | Where it runs | Before Super Resolution, or on the finished frame (the only choice for Ray Reconstruction titles) | Before Super Resolution, render resolution up to 1080p | Before Super Resolution, on a Vulkan device of its own beside the game's DirectX 12 |
-| Controls | Passes 1-3, NR slots, wait mode, encoding (sRGB default), NR resolution with dynamic scaling, effect strength, lighting and structure | Passes 1-3, temporal history and smoothing, detail and colour strength, debug view | Passes 1-3, NR resolution, dynamic resolution, temporal history, detail and colour strength, style, intensity, tone, structure, skin, highlight guard |
+| Controls | Passes 1-3, NR slots, wait mode, encoding (Linear default), style, NR resolution with dynamic scaling, effect strength, lighting and structure | Passes 1-3, temporal history and smoothing, detail and colour strength, debug view | Passes 1-3, NR resolution, dynamic resolution, temporal history, detail and colour strength, style, intensity, tone, structure, skin, highlight guard |
 
 No runtime's weights are included; all three are derived from NVIDIA's model.
 
@@ -34,8 +34,8 @@ without it they compile one after another (about 22 s in the test harness), and 
 writes it.
 
 **On danielblnc and lmxxf:** a neural pass meter (GPU milliseconds per frame and the fps the model
-alone could reach), a **Colour grade** option with NVIDIA's Model B (Natural) and Model C
-(Cinematic) grading, and a menu organised in tabs with status indicators.
+alone could reach) and a menu organised in tabs with status indicators. On danielblnc the **Style**
+option (Standard, Natural, Cinematic) is the network's own style input, as in his overlay.
 
 **FSR-RR.** AMD's FidelityFX denoiser as the Ray Reconstruction provider, with its own
 signal and responsivity controls. Set `Dx12Upscaler=fsr-rr` under `[Upscalers]`. The two denoising
@@ -83,9 +83,9 @@ All in `OptiScaler.ini`, section `[DlssNr]`, and in the **Neural** tab of the ov
 |---|---|
 | `NrBackend` | `daniel`, `lmxxf`, `mochizuki`, `off` or `auto` (danielblnc when both danielblnc and lmxxf are present; never mochizuki) |
 | `ApplyAfterRR` | Run on the finished frame instead of before Super Resolution (danielblnc; lmxxf and mochizuki always run before) |
-| `AmdEncoding` | 1 Linear, 2 sRGB (default), 3 Gamma 2.2 |
+| `AmdEncoding` | 1 Linear (default), 2 sRGB, 3 Gamma 2.2 |
 | `AmdEffectStrength` | Share of the network's effect, 0 to 1 (danielblnc 0.3.1 and later) |
-| `AmdColourGrade` | 0 none, 1 natural, 2 cinematic |
+| `AmdStyle` | danielblnc Style: 0 standard, 1 natural, 2 cinematic |
 | `AmdQuality` | "DLSS 5 mode": 0 fast (default, about 13% faster on RX 9000), 1 quality (NVIDIA's own arithmetic). danielblnc 0.4.2 and later |
 | `AmdToneCurve` | The display curve the network sees the frame through: 0 Reinhard (default), 1 ACES. danielblnc 0.4.0 and later |
 | `AmdSlots`, `AmdGraphicsWait` | Frames in flight and wait mode (danielblnc) |

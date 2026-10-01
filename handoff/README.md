@@ -69,9 +69,12 @@ Eleven GitHub releases, all built by `tools/PACKAGE_RELEASE.ps1`:
   INI's `AmdEncoding=0` read as sRGB, and the public 0.5.0 recommended (section 5, "0.4.6").
 - `v0.4.7-amd-nr`: danielblnc's 0.6.0 supporter build accepted (RDNA2) and the public 0.5.1 recommended
   (section 5, "0.4.7").
+- `v0.4.8-amd-nr`: danielblnc's colour as his own (Linear encoding, the network's Style), an Info drawer, the
+  game's exposure for mochizuki, mochizuki0323's Preprocess, history weight and colour formats, RE Engine's
+  `_storage_` and Watch Dogs: Legion fixed (section 5, "0.4.8").
 
-The build reports itself as `0.4.6-amd-nr`, and the packager writes
-`dist/OptiScaler-0.4.6-amd-nr.zip`.
+The build reports itself as `0.4.8-amd-nr`, and the packager writes
+`dist/OptiScaler-0.4.8-amd-nr.zip`.
 
 The [AMD-NR ReShade Installer](https://github.com/zmodelerlover/AMD-NR-ReShade-Installer) installs
 this build as its OptiScaler route. v0.4.0 knows only `v0.1.1-amd-nr`; v0.5.0 and later offer every
@@ -1136,6 +1139,47 @@ ResetOnEnable, SrgbApplyFix, UsePreExposure) keep the runtime's defaults. `amd_l
 to 0.6.0, the host contracts and installer exit tests pass, and `tools/test-amd-runtime-init.cmd` on an RX 9070 XT runs
 24 of 24 frames per wait mode with no timeout, 9.41 ms per frame in dispatch wait. Not tested in a game, and not on an
 RDNA2 card.
+
+### 0.4.8
+
+Released in `v0.4.8-amd-nr`, with mochizuki `0.4.8-amd-nr` (runtime and shaders) beside it in the installer's
+payload. Nothing below was tested on a GPU outside the games named; the mochizuki harnesses (`mz_bench`,
+`mz_timing`) were not run.
+
+**danielblnc's colour, as his own runtime gives it.** Compared on NTE against his overlay and TheAutomatic's fork
+(`arrumar_cor/`), two things made ours paler and the styles inert:
+- `AmdEncoding` defaulted to sRGB, which decodes the pre-upscale colour as sRGB before the network and encodes the
+  answer back: the network saw a darker frame and changed less. Default is Linear (1) now, as his runtime and
+  TheAutomatic hand it over; an INI's 0 also reads as Linear.
+- The network's Style input (`L->style`) was pinned to 0 at init and never written. "Colour grade" was our post-pass
+  imitation of NVIDIA's Model B/C. It is gone: `AmdStyle` (0 Standard, 1 Natural, 2 Cinematic) goes to the runtime on
+  every Record and restarts the history when it changes.
+
+**Info drawer.** The status lines under Experimental (runtime status, the backend's note, mochizuki's network figures)
+sit in a closed "Info" tree on all three runtimes. The frame-time graph and the Neural pass line stay where they were.
+
+**Exposure only for HDR input.** NGX applies the exposure texture to HDR colour only. Watch Dogs: Legion hands an
+R8G8B8A8 colour with an exposure that grows huge in the dark; applied again it overflowed the network into a green
+frame. AmdBridge drops the texture for a colour without `IsHDR` or in an 8- or 10-bit UNORM format, for every runtime.
+
+**Typeless motion below 100%.** The resampling path refused `R16G16_TYPELESS` vectors (Watch Dogs: Legion) and NR went
+off below 100% NR resolution. `ReadFormat` maps the two-channel typeless formats to FLOAT.
+
+**mochizuki.**
+- The game's exposure (`MochizukiGameExposure`, on): the backend copies the exposure texel into an 8-slot readback
+  ring on the frame's list and reads it seven frames later; `MochizukiNrSetExposure`, a new optional export, makes the
+  white point `MochizukiWhitePoint / exposure`. RE Engine's linear colour reached the network 6-7x too bright
+  (the Preprocess meter said -2.7 EV in Resident Evil Requiem) and the effect stayed in the shadows. Menu: top of the
+  mochizuki section; Info shows the white point in use.
+- `dlssnr-amd\` beside the exe when it is not beside the DLL (`DataDirectory`): RE Engine loads every DLL from a copy
+  in `_storage_\`, and the network failed at once there.
+- From upstream after v0.0.2.1 (`third_party/mochizuki/UPSTREAM.md`, entry 16): the post block's history weight times
+  the model's `blend_scale` 0.7397; R9G9B9E5, B8G8R8X8, 16-bit UNORM/SNORM, R8G8B8A8_SNORM and the 16-bit packed
+  colour formats (the blit-only ones where the GPU can blit them); the Preprocess (exposure, curve, contrast,
+  saturation before the network, taken back out of its answer; `MochizukiPreprocess*`, off, a menu drawer, the
+  metered EV in Info), new shader `runtime/runtime_prep.spv`.
+- Left for the next version: the in-place motion sampling and per-frame pre-block noise (d1185d2) and the Windows
+  network rebuilt for the AMD compiler (228d3a6, b1419b0): `handoff/mochizuki-upstream-2026-10-01.md`.
 
 ## 6. Diagnostics playbook
 

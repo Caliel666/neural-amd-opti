@@ -76,8 +76,8 @@ struct Settings
     // The runtime's ToneLift (0-0.25) and UseGameExposure (false = its own auto-exposure), 0.4.0 and later.
     float toneLift = 0;
     bool gameExposure = true;
-    // NVIDIA's colour grade for Model B (1, natural) or C (2, cinematic); 0 = none.
-    UINT grade = 0;
+    // The network's style input, danielblnc's Style: 0 Standard, 1 Natural, 2 Cinematic (0.3.3 and later).
+    UINT style = 0;
     LookSettings look;
     RtgiSettings rtgi;
 };
@@ -115,6 +115,11 @@ inline DXGI_FORMAT ReadFormat(DXGI_FORMAT f)
         return DXGI_FORMAT_R8G8B8A8_UNORM;
     case DXGI_FORMAT_R10G10B10A2_TYPELESS:
         return DXGI_FORMAT_R10G10B10A2_UNORM;
+    // Motion vectors: Watch Dogs: Legion hands R16G16_TYPELESS.
+    case DXGI_FORMAT_R16G16_TYPELESS:
+        return DXGI_FORMAT_R16G16_FLOAT;
+    case DXGI_FORMAT_R32G32_TYPELESS:
+        return DXGI_FORMAT_R32G32_FLOAT;
     default:
         return f;
     }

@@ -28,6 +28,7 @@ class LmxxfBackend final : public Host
     ULONGLONG nextSessionRetry = 0;
     bool sessionUnavailable = false;
     uint64_t frameId = 0; // Advanced only when a frame reaches PrepareFrame.
+    float GameExposure(ID3D12GraphicsCommandList* cmd, const AmdPreSr::Frame& frame);
     // Both strings are written by the render, submit and exit threads and copied by the menu.
     mutable std::mutex statusMutex;
     std::string status { "lmxxf: idle" };

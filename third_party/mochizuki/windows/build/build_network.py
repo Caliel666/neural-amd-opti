@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 
 R = Path(__file__).resolve().parents[2]
-RUNTIME = ['runtime_alpha', 'runtime_encode', 'runtime_encode_in', 'runtime_transfer', 'cascade_lograt', 'cascade_blur', 'cascade_feed']
+RUNTIME = ['runtime_alpha', 'runtime_encode', 'runtime_encode_in', 'runtime_transfer', 'runtime_prep', 'cascade_lograt', 'cascade_blur', 'cascade_feed']
 MOTION = ['motion_luma', 'motion_estimate']
 
 

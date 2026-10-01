@@ -351,10 +351,13 @@ void RenderMenu(Config* config, float menuResScale)
                              "Off\0What the model sees\0Model output alone\0Difference (x20)\0Tint\0"))
                 config->DlssNrDebugView = uint32_t(debugView);
 
-            ImGui::Spacing();
-            ImGui::TextWrapped("%s", DlssNr::AmdBridge::Status().c_str());
-            ImGui::TextWrapped("Runs before Super Resolution only, so a game driving Ray Reconstruction"
-                               " gets no NR. Built for a render resolution of 1080p or less.");
+            if (ImGui::TreeNode("Info"))
+            {
+                ImGui::TextWrapped("%s", DlssNr::AmdBridge::Status().c_str());
+                ImGui::TextWrapped("Runs before Super Resolution only, so a game driving Ray Reconstruction"
+                                   " gets no NR. Built for a render resolution of 1080p or less.");
+                ImGui::TreePop();
+            }
             return;
         }
 
@@ -406,6 +409,16 @@ void RenderMenu(Config* config, float menuResScale)
                 if (ImGui::SliderFloat(label, &value, lo, hi, "%.2f"))
                     option = value;
             };
+
+            ImGui::SeparatorText("Exposure");
+            bool gameExposure = config->MochizukiGameExposure.value_or_default();
+            if (ImGui::Checkbox("Game exposure", &gameExposure))
+                config->MochizukiGameExposure = gameExposure;
+            HelpMarker("Linear colour: shows the network the frame at the brightness the game shows"
+                       "\nit, from the exposure the game hands the upscaler, as danielblnc's runtime"
+                       "\ndoes. Without it a game whose light is on another scale (RE Engine) reaches"
+                       "\nthe network washed out or dark, and the effect stays in a few places."
+                       "\nNothing changes in a game that hands no exposure.");
 
             ImGui::SeparatorText("Temporal");
             // An INI without MochizukiTemporal follows LmxxfTemporal, as LmxxfBackend::Record does.
@@ -530,6 +543,39 @@ void RenderMenu(Config* config, float menuResScale)
                 ImGui::TreePop();
             }
 
+            if (ImGui::TreeNode("Preprocess"))
+            {
+                bool prep = config->MochizukiPreprocess.value_or_default();
+                if (ImGui::Checkbox("Enable##prep", &prep))
+                    config->MochizukiPreprocess = prep;
+                HelpMarker("Changes the picture the network is shown (exposure, display curve, contrast,"
+                           "\nsaturation) and takes every change back out of its answer, so it changes how"
+                           "\nthe network edits the frame, not the frame itself."
+                           "\n\nAuto exposure helps games that do not hand their exposure to the upscaler"
+                           "\n(a frame that turns green or grainy). The first time it is on the network is"
+                           "\nrebuilt once. mochizuki0323's Preprocess.");
+                ImGui::BeginDisabled(!prep);
+                int exposure = int(std::min(config->MochizukiPreprocessExposure.value_or_default(), 2u));
+                if (ImGui::Combo("Exposure##prep", &exposure, "Off\0Auto\0Fixed (bias only)\0"))
+                    config->MochizukiPreprocessExposure = uint32_t(exposure);
+                DeferredSlider("Exposure bias (EV)##prep", &config->MochizukiPreprocessBias, -8.0f, 8.0f, 0.0f);
+                int curve = int(std::min(config->MochizukiPreprocessCurve.value_or_default(), 6u));
+                if (ImGui::Combo("Curve##prep", &curve, "None\0Neutral\0Reinhard\0Filmic\0GT\0ACES\0AgX\0"))
+                    config->MochizukiPreprocessCurve = uint32_t(curve);
+                DeferredSlider("Contrast##prep", &config->MochizukiPreprocessContrast, 0.5f, 2.0f, 1.0f);
+                DeferredSlider("Saturation##prep", &config->MochizukiPreprocessSaturation, 0.05f, 2.0f, 1.0f);
+                ImGui::EndDisabled();
+                if (ImGui::SmallButton("Reset##prep"))
+                {
+                    config->MochizukiPreprocessExposure = 1u;
+                    config->MochizukiPreprocessBias = 0.0f;
+                    config->MochizukiPreprocessCurve = 3u;
+                    config->MochizukiPreprocessContrast = 1.0f;
+                    config->MochizukiPreprocessSaturation = 1.0f;
+                }
+                ImGui::TreePop();
+            }
+
             ImGui::SeparatorText("Advanced");
             int linear = int(std::min(config->MochizukiLinearInput.value_or_default(), 2u));
             if (ImGui::Combo("Linear input", &linear, "Auto (float formats)\0On\0Off\0"))
@@ -554,33 +600,42 @@ void RenderMenu(Config* config, float menuResScale)
             HelpMarker("Runs the network at its full cost but shows the frame as the game drew it, to"
                        "\nmeasure the cost or compare with and without the effect.");
 
-            ImGui::SeparatorText("Status");
-            ImGui::TextWrapped("%s", DlssNr::AmdBridge::Status().c_str());
-            if (const auto runtimeStatus = DlssNr::AmdBridge::RuntimeStatus(); !runtimeStatus.empty())
-                ImGui::TextWrapped("%s", runtimeStatus.c_str());
-            if (MochizukiNrInfo info {}; DlssNr::Backend::LmxxfBackend::MochizukiInfo(info))
+            if (ImGui::TreeNode("Info"))
             {
-                if (info.building)
-                    ImGui::TextDisabled("Building the network; frames pass through until it is ready.");
-                if (info.model_w)
-                    ImGui::Text("Network %ux%u for a %ux%u frame, %u pass%s", info.model_w, info.model_h, info.frame_w,
-                                info.frame_h, info.max_passes, info.max_passes == 1 ? "" : "es");
-                if (info.gpu_ms_median > 0)
-                    ImGui::Text("Network GPU time %.2f ms median, %.2f ms p95", info.gpu_ms_median, info.gpu_ms_p95);
-                if (info.build_seconds > 0)
-                    ImGui::Text("Last network build %.1f s", info.build_seconds);
-                if (temporal && info.frames)
-                    ImGui::Text("History used on %u%% of recent frames", info.history_consumed_pct);
-                if (info.motion_refused_dxgi)
-                    ImGui::TextColored(warning,
-                                       "The game's motion vectors (DXGI format %u) are not supported: running"
-                                       "\nwithout history.",
-                                       info.motion_refused_dxgi);
-                if (info.failed)
-                    ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "Failed: %s", info.last_error);
+                ImGui::TextWrapped("%s", DlssNr::AmdBridge::Status().c_str());
+                if (const auto runtimeStatus = DlssNr::AmdBridge::RuntimeStatus(); !runtimeStatus.empty())
+                    ImGui::TextWrapped("%s", runtimeStatus.c_str());
+                if (MochizukiNrInfo info {}; DlssNr::Backend::LmxxfBackend::MochizukiInfo(info))
+                {
+                    if (info.building)
+                        ImGui::TextDisabled("Building the network; frames pass through until it is ready.");
+                    if (info.model_w)
+                        ImGui::Text("Network %ux%u for a %ux%u frame, %u pass%s", info.model_w, info.model_h,
+                                    info.frame_w, info.frame_h, info.max_passes, info.max_passes == 1 ? "" : "es");
+                    if (info.gpu_ms_median > 0)
+                        ImGui::Text("Network GPU time %.2f ms median, %.2f ms p95", info.gpu_ms_median,
+                                    info.gpu_ms_p95);
+                    if (info.build_seconds > 0)
+                        ImGui::Text("Last network build %.1f s", info.build_seconds);
+                    if (temporal && info.frames)
+                        ImGui::Text("History used on %u%% of recent frames", info.history_consumed_pct);
+                    if (info.struct_size >= offsetof(MochizukiNrInfo, preprocess_ev) + sizeof info.preprocess_ev &&
+                        std::isfinite(info.preprocess_ev))
+                        ImGui::Text("Preprocess auto exposure %+.2f EV", info.preprocess_ev);
+                    if (info.struct_size >= offsetof(MochizukiNrInfo, white_point) + sizeof info.white_point)
+                        ImGui::Text("White point %.3f", info.white_point);
+                    if (info.motion_refused_dxgi)
+                        ImGui::TextColored(warning,
+                                           "The game's motion vectors (DXGI format %u) are not supported: running"
+                                           "\nwithout history.",
+                                           info.motion_refused_dxgi);
+                    if (info.failed)
+                        ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "Failed: %s", info.last_error);
+                }
+                ImGui::TextWrapped("Runs before Super Resolution only. The first start builds the network in about"
+                                   " half a minute; later starts take a second or two.");
+                ImGui::TreePop();
             }
-            ImGui::TextWrapped("Runs before Super Resolution only. The first start builds the network in about"
-                               " half a minute; later starts take a second or two.");
             return;
         }
 
@@ -873,14 +928,14 @@ void RenderMenu(Config* config, float menuResScale)
             neuralSlider("AMD character structure", config->DlssNrSkinStructure, 0, 2);
             RenoCompositionControls(config, false);
             ImGui::SeparatorText("Colour");
-            int grade = std::clamp(config->AmdColourGrade.value_or_default(), 0, 2);
-            if (ImGui::Combo("Colour grade", &grade, "None\0Natural\0Cinematic\0"))
-                config->AmdColourGrade = grade;
-            HelpMarker("The colour grade NVIDIA applies after the network in its Model B and C,"
-                       "\nat NVIDIA's default strength."
-                       "\n\nNatural (Model B): exposure -0.1 EV, softer contrast, 10% less saturation."
-                       "\nCinematic (Model C): 15% less saturation."
-                       "\n\nColour only: the network itself runs the same either way.");
+            ImGui::BeginDisabled(!hasToneCurve);
+            int style = std::clamp(config->AmdStyle.value_or_default(), 0, 2);
+            if (ImGui::Combo("Style", &style, "Standard\0Natural\0Cinematic\0"))
+                config->AmdStyle = style;
+            ImGui::EndDisabled();
+            HelpMarker("danielblnc's Style: the look the network is asked for, as in his own overlay."
+                       "\nChanging it restarts the model's history."
+                       "\n\nNeeds the danielblnc runtime 0.4.0 or later.");
             ImGui::BeginDisabled(!hasToneCurve);
             int curve = std::clamp(config->AmdToneCurve.value_or_default(), 0, 1);
             if (ImGui::Combo("Tone curve", &curve, "Reinhard (soft)\0ACES (filmic)\0"))
@@ -911,15 +966,15 @@ void RenderMenu(Config* config, float menuResScale)
                        "\n\nBoth are danielblnc's own controls and restart the model's history when"
                        "\nchanged. Needs the danielblnc runtime 0.4.0 or later.");
             // The stored value is 1 Linear, 2 sRGB, 3 Gamma 2.2, and the combo index is one below it.
-            // An old INI's 0 (the former Auto) shows as sRGB, which is what it runs as.
+            // An old INI's 0 (the former Auto) shows as Linear, which is what it runs as.
             const int stored = config->AmdEncoding.value_or_default();
-            int encoding = (stored == 0 ? 2 : std::clamp(stored, 1, 3)) - 1;
-            if (ImGui::Combo("Encoding", &encoding, "Linear\0sRGB (default)\0Gamma 2.2\0"))
+            int encoding = (stored == 0 ? 1 : std::clamp(stored, 1, 3)) - 1;
+            if (ImGui::Combo("Encoding", &encoding, "Linear (default)\0sRGB\0Gamma 2.2\0"))
                 config->AmdEncoding = encoding + 1;
-            HelpMarker("sRGB and Gamma 2.2 decode the frame to linear light before the model and"
-                       "\nencode its answer back afterwards. Linear hands it over unchanged."
-                       "\n\nsRGB is the default: the steadiest in testing, and the one that held"
-                       "\nhighlights best. Some games may look better with another.");
+            HelpMarker("Linear hands the frame over unchanged, as danielblnc's own runtime does."
+                       "\nsRGB and Gamma 2.2 decode it to linear light before the model and encode"
+                       "\nits answer back afterwards, which weakens the model's colour and lighting."
+                       "\nSome games may still look better with one of them.");
             if (ImGui::TreeNode("Appearance and tonemap"))
             {
                 bool lookEnabled = config->AmdLookEnabled.value_or_default();
@@ -989,11 +1044,11 @@ void RenderMenu(Config* config, float menuResScale)
                     config->AmdDynamicScale = false;
                     config->AmdDynamicTargetFps = 60;
                     config->AmdNeuralLighting = true;
-                    config->AmdEncoding = 2;
+                    config->AmdEncoding = 1;
                     config->AmdEffectStrength = 1.0f;
                     config->AmdToneLift = 0.0f;
                     config->AmdUseGameExposure = true;
-                    config->AmdColourGrade = 0;
+                    config->AmdStyle = 0;
                     config->AmdNeuralLightingStrength = .5f;
                     DlssNr::AmdBridge::InvalidateHistory();
                 }
@@ -1055,10 +1110,13 @@ void RenderMenu(Config* config, float menuResScale)
                 ImGui::TreePop();
             }
 
-            ImGui::Spacing();
-            ImGui::TextWrapped("%s", DlssNr::AmdBridge::Status().c_str());
-            ImGui::TextWrapped("AMD HIP backend. Each pass owns independent temporal history. More passes increase GPU "
-                               "time and memory. Restart the game after a backend failure.");
+            if (ImGui::TreeNode("Info"))
+            {
+                ImGui::TextWrapped("%s", DlssNr::AmdBridge::Status().c_str());
+                ImGui::TextWrapped("AMD HIP backend. Each pass owns independent temporal history. More passes increase "
+                                   "GPU time and memory. Restart the game after a backend failure.");
+                ImGui::TreePop();
+            }
             return;
         }
 

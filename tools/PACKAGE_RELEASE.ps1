@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   Stage and zip a complete user package (no NVIDIA / author proprietary files).
-  Default product: OptiScaler-0.4.7-amd-nr, the version in OptiScaler/resource.h.
+  Default product: OptiScaler-0.4.8-amd-nr, the version in OptiScaler/resource.h.
   The danielblnc runtime it drives is 0.5.1 (0.5.0, 0.4.3, 0.4.2, 0.4.1, 0.4.0, 0.3.1, 0.3.0 and the 0.6.0 supporter build
   still accepted), supplied by the user.
   The mochizuki runtime (MochizukiNrRuntime.dll and dlssnr-amd\) is not packaged: the AMD-NR
@@ -9,11 +9,11 @@
 
 .EXAMPLE
   .\PACKAGE_RELEASE.ps1
-  .\PACKAGE_RELEASE.ps1 -Version 0.4.7-amd-nr -DepsRoot 'C:\path\with\OptiScaler'
+  .\PACKAGE_RELEASE.ps1 -Version 0.4.8-amd-nr -DepsRoot 'C:\path\with\OptiScaler'
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = '0.4.7-amd-nr',
+    [string]$Version = '0.4.8-amd-nr',
     [string]$OutDir = 'dist',
     [string]$Name = '',
     [string]$OptiDll = '',
@@ -233,10 +233,23 @@ MochizukiMaxRatio=2
 MochizukiWhitePoint=1
 MochizukiApplyModel=true
 MochizukiLinearInput=0
+; mochizuki on linear colour: the white point from the game's exposure, as danielblnc's runtime does;
+; MochizukiWhitePoint then multiplies it. false: MochizukiWhitePoint alone.
+MochizukiGameExposure=true
 ; mochizuki dynamic resolution: exact rebuilds the network for every render resolution (a second or
 ; two without NR each time); auto keeps one network, built for the largest resolution seen, once the
 ; render resolution drops below the colour buffer; always does so from the first frame.
 MochizukiDynamicResolution=auto
+; mochizuki Preprocess: changes the picture the network is shown and takes it back out of its answer.
+; Off by default; turning it on rebuilds the network once. Exposure 0 off, 1 auto (for games that do
+; not hand their exposure over), 2 fixed (bias alone); bias -8..8 EV; curve 0 none, 1 neutral,
+; 2 reinhard, 3 filmic, 4 gt, 5 aces, 6 agx; contrast 0.5-2; saturation 0.05-2.
+MochizukiPreprocess=false
+MochizukiPreprocessExposure=1
+MochizukiPreprocessBias=0
+MochizukiPreprocessCurve=3
+MochizukiPreprocessContrast=1
+MochizukiPreprocessSaturation=1
 ; mochizuki passes 2 and 3: auto inherits pass 1, with local tone 0.
 MochizukiPass2Style=auto
 MochizukiPass2Intensity=auto
@@ -253,9 +266,9 @@ MochizukiPass3AutoMask=auto
 AmdModelScale=1
 AmdDynamicScale=false
 AmdDynamicTargetFps=60
-AmdEncoding=2
+AmdEncoding=1
 AmdEffectStrength=1.0
-AmdColourGrade=0
+AmdStyle=0
 AmdToneLift=0
 AmdUseGameExposure=true
 AmdEveryFrame=false

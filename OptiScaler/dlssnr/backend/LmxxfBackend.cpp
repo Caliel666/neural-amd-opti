@@ -22,6 +22,16 @@ struct LmxxfBackend::Api
     PFN_MochizukiNrSetControls setControls = nullptr;
     PFN_MochizukiNrGetInfo getInfo = nullptr;
     PFN_MochizukiNrGetControlDefaults getControlDefaults = nullptr;
+    PFN_MochizukiNrSetExposure setExposure = nullptr;
+    // The game's exposure texture, copied on each frame's list into one slot of a readback ring and read
+    // kExposureSlots - 1 frames later, long after the GPU wrote it. Render thread only.
+    static constexpr uint32_t kExposureSlots = 8;
+    static constexpr UINT64 kExposureSlotBytes = D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT;
+    ID3D12Resource* exposureRing = nullptr;
+    const uint8_t* exposureMapped = nullptr;
+    DXGI_FORMAT exposureFormat[kExposureSlots] {};
+    float exposureScale[kExposureSlots] {};
+    uint64_t exposureFrames = 0;
     // MOCHIZUKI_NR_FEATURE_ANY_QUEUE: the runtime follows whichever queue executes the list, so a queue change
     // needs no new session.
     bool anyQueue = false;
@@ -114,6 +124,12 @@ void FillMochizukiControls(const Config& cfg, MochizukiNrControls& c)
     // runtime's own default is exact, for hosts that do not ask.
     const std::string drs = cfg.MochizukiDynamicResolution.value_or_default();
     c.drs_mode = drs == "exact" ? 0u : drs == "always" ? 2u : 1u;
+    c.preprocess = cfg.MochizukiPreprocess.value_or_default() ? 1u : 0u;
+    c.preprocess_exposure = std::min(cfg.MochizukiPreprocessExposure.value_or_default(), 2u);
+    c.preprocess_bias_ev = MzSetting(cfg.MochizukiPreprocessBias.value_or_default(), -8.f, 8.f, 0.f);
+    c.preprocess_curve = std::min(cfg.MochizukiPreprocessCurve.value_or_default(), 6u);
+    c.preprocess_contrast = MzSetting(cfg.MochizukiPreprocessContrast.value_or_default(), .5f, 2.f, 1.f);
+    c.preprocess_saturation = MzSetting(cfg.MochizukiPreprocessSaturation.value_or_default(), .05f, 2.f, 1.f);
     const auto pass = [&c](MochizukiNrPassControls& p, const auto& style, const auto& intensity, const auto& tone,
                            const auto& structure, const auto& skin, const auto& mask)
     {
@@ -337,6 +353,7 @@ bool LmxxfBackend::EnsureRuntime()
         api->getFeatures = reinterpret_cast<PFN_MochizukiNrGetFeatures>(GetProcAddress(dll, "MochizukiNrGetFeatures"));
         api->setControls = reinterpret_cast<PFN_MochizukiNrSetControls>(GetProcAddress(dll, "MochizukiNrSetControls"));
         api->getInfo = reinterpret_cast<PFN_MochizukiNrGetInfo>(GetProcAddress(dll, "MochizukiNrGetInfo"));
+        api->setExposure = reinterpret_cast<PFN_MochizukiNrSetExposure>(GetProcAddress(dll, "MochizukiNrSetExposure"));
         api->getControlDefaults =
             reinterpret_cast<PFN_MochizukiNrGetControlDefaults>(GetProcAddress(dll, "MochizukiNrGetControlDefaults"));
         const uint32_t features = api->getFeatures ? api->getFeatures() : 0u;
@@ -572,6 +589,137 @@ ID3D12Resource* LmxxfBackend::FinishRecord(ID3D12GraphicsCommandList* recordCmd,
     return reinterpret_cast<ID3D12Resource*>(privateOutput);
 }
 
+namespace
+{
+float HalfToFloat(uint16_t h)
+{
+    const uint32_t sign = uint32_t(h >> 15) << 31, exp = (h >> 10) & 31, man = h & 1023;
+    uint32_t bits;
+    if (exp == 0)
+        return (sign ? -1.f : 1.f) * std::ldexp(float(man), -24);
+    if (exp == 31)
+        bits = sign | 0x7F800000u | (man << 13);
+    else
+        bits = sign | ((exp + 112) << 23) | (man << 13);
+    float f;
+    std::memcpy(&f, &bits, sizeof f);
+    return f;
+}
+
+// The exposure formats the danielblnc bridge takes.
+bool ExposureFormat(DXGI_FORMAT f)
+{
+    return f == DXGI_FORMAT_R32_FLOAT || f == DXGI_FORMAT_R32G32_FLOAT || f == DXGI_FORMAT_R32G32B32A32_FLOAT ||
+           f == DXGI_FORMAT_R16_FLOAT || f == DXGI_FORMAT_R16G16B16A16_FLOAT;
+}
+
+// The first channel of a texel in one of those formats, or NaN for any other.
+float ExposureTexel(const uint8_t* p, DXGI_FORMAT format)
+{
+    switch (format)
+    {
+    case DXGI_FORMAT_R32_FLOAT:
+    case DXGI_FORMAT_R32G32_FLOAT:
+    case DXGI_FORMAT_R32G32B32A32_FLOAT:
+    {
+        float f;
+        std::memcpy(&f, p, sizeof f);
+        return f;
+    }
+    case DXGI_FORMAT_R16_FLOAT:
+    case DXGI_FORMAT_R16G16B16A16_FLOAT:
+    {
+        uint16_t h;
+        std::memcpy(&h, p, sizeof h);
+        return HalfToFloat(h);
+    }
+    default:
+        return NAN;
+    }
+}
+} // namespace
+
+// The game's exposure as mochizuki takes it: what the frame's linear colour is multiplied by to be shown, the texel
+// times the exposure scale over the pre-exposure (as the danielblnc bridge hands it to its runtime). The texel is
+// read kExposureSlots - 1 frames late, which an auto exposure that eases over many frames does not notice. 0 when the
+// setting is off, the game hands no usable texture, or the ring is not full yet.
+float LmxxfBackend::GameExposure(ID3D12GraphicsCommandList* cmd, const AmdPreSr::Frame& frame)
+{
+    Api& a = *api;
+    if (!Config::Instance()->MochizukiGameExposure.value_or_default() || !frame.exposure)
+    {
+        a.exposureFrames = 0;
+        return 0.f;
+    }
+    const D3D12_RESOURCE_DESC ed = frame.exposure->GetDesc();
+    if (ed.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || ed.SampleDesc.Count != 1 || !ExposureFormat(ed.Format))
+    {
+        a.exposureFrames = 0;
+        return 0.f;
+    }
+    if (!a.exposureRing)
+    {
+        ID3D12Device* dev = nullptr;
+        if (FAILED(cmd->GetDevice(IID_PPV_ARGS(&dev))) || !dev)
+            return 0.f;
+        D3D12_HEAP_PROPERTIES hp {};
+        hp.Type = D3D12_HEAP_TYPE_READBACK;
+        D3D12_RESOURCE_DESC rd {};
+        rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        rd.Width = Api::kExposureSlots * Api::kExposureSlotBytes;
+        rd.Height = rd.DepthOrArraySize = rd.MipLevels = 1;
+        rd.SampleDesc.Count = 1;
+        rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        const HRESULT hr = dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST,
+                                                        nullptr, IID_PPV_ARGS(&a.exposureRing));
+        dev->Release();
+        void* mapped = nullptr;
+        if (FAILED(hr) || FAILED(a.exposureRing->Map(0, nullptr, &mapped)))
+        {
+            if (a.exposureRing)
+                a.exposureRing->Release();
+            a.exposureRing = nullptr;
+            return 0.f;
+        }
+        a.exposureMapped = static_cast<const uint8_t*>(mapped);
+    }
+    const uint32_t slot = uint32_t(a.exposureFrames % Api::kExposureSlots);
+    D3D12_TEXTURE_COPY_LOCATION src {}, dst {};
+    src.pResource = frame.exposure;
+    src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    dst.pResource = a.exposureRing;
+    dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    dst.PlacedFootprint.Offset = slot * Api::kExposureSlotBytes;
+    dst.PlacedFootprint.Footprint = { ed.Format, 1, 1, 1, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT };
+    const D3D12_BOX box { 0, 0, 0, 1, 1, 1 };
+    const bool move = frame.exposureState != D3D12_RESOURCE_STATE_COPY_SOURCE;
+    D3D12_RESOURCE_BARRIER b {};
+    b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b.Transition.pResource = frame.exposure;
+    b.Transition.Subresource = 0;
+    b.Transition.StateBefore = frame.exposureState;
+    b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    if (move)
+        cmd->ResourceBarrier(1, &b);
+    cmd->CopyTextureRegion(&dst, 0, 0, 0, &src, &box);
+    if (move)
+    {
+        std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
+        cmd->ResourceBarrier(1, &b);
+    }
+    const float pre = std::isfinite(frame.preExposure) && frame.preExposure > 0 ? frame.preExposure : 1.f;
+    const float scale = std::isfinite(frame.exposureScale) && frame.exposureScale > 0 ? frame.exposureScale : 1.f;
+    a.exposureFormat[slot] = ed.Format;
+    a.exposureScale[slot] = scale / pre;
+    if (++a.exposureFrames < Api::kExposureSlots)
+        return 0.f;
+    // The oldest slot: the one the next frame writes.
+    const uint32_t old = uint32_t(a.exposureFrames % Api::kExposureSlots);
+    const float e =
+        ExposureTexel(a.exposureMapped + old * Api::kExposureSlotBytes, a.exposureFormat[old]) * a.exposureScale[old];
+    return std::isfinite(e) && e > 0.f ? e : 0.f;
+}
+
 ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPreSr::Frame& frame,
                                      const AmdPreSr::Settings& settings)
 {
@@ -657,7 +805,11 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
         return nullptr;
     RefreshRuntimeStatus();
     if (!Lmxxf())
+    {
         SendControls();
+        if (api->setExposure)
+            api->setExposure(session, GameExposure(cmd, frame));
+    }
 
     D3D12_RESOURCE_DESC desc = frame.colour->GetDesc();
     LmxxfNrFrameInfo fi {};
@@ -1332,8 +1484,16 @@ bool LmxxfBackend::Shutdown()
         api->setControls = nullptr;
         api->getInfo = nullptr;
         api->getControlDefaults = nullptr;
+        api->setExposure = nullptr;
         api->anyQueue = false;
         api->controlsSentValid = false;
+        if (api->exposureRing)
+        {
+            api->exposureRing->Release();
+            api->exposureRing = nullptr;
+            api->exposureMapped = nullptr;
+        }
+        api->exposureFrames = 0;
     }
     SetStatus("lmxxf: shutdown");
     return true;

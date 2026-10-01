@@ -69,6 +69,15 @@ extern "C"
         uint32_t drs_mode;
         uint32_t reserved[3];
         MochizukiNrPassControls pass[2]; /* passes 2 and 3 */
+        /* Preprocess (mochizuki0323's 729a05d): the picture the network is shown is changed before it runs and every
+         * change is taken back out of its answer, so it changes how the network edits the frame. 0 (the default)
+         * records nothing; the first frame with it on rebuilds the network once, able to run it. */
+        uint32_t preprocess;
+        uint32_t preprocess_exposure; /* 0 off, 1 auto (default: histogram auto exposure), 2 fixed: bias alone */
+        float preprocess_bias_ev;     /* -8..8, default 0 */
+        uint32_t preprocess_curve;    /* 0 none, 1 neutral, 2 reinhard, 3 filmic (default), 4 gt, 5 aces, 6 agx */
+        float preprocess_contrast;    /* about mid grey, 0.5..2, default 1 */
+        float preprocess_saturation;  /* 0.05..2, default 1 */
     } MochizukiNrControls;
 
     /* What the session is doing, for a menu. Safe to ask from any thread, at any rate. */
@@ -89,7 +98,9 @@ extern "C"
         uint32_t failed;               /* 1: the session failed; last_error says why */
         char last_error[256];
         uint32_t network_dispatches; /* the network's dispatches in the last frame (all passes) */
-        /* The fields end at byte 324 (struct_size as the runtime fills it); sizeof is 328 (tail padding). */
+        float preprocess_ev;         /* the preprocess's auto exposure in EV, bias included; NaN when not metering */
+        float white_point; /* the white point the last frame used, the game's exposure applied (linear colour) */
+        /* The fields end at byte 332 (struct_size as the runtime fills it); sizeof is 336 (tail padding). */
     } MochizukiNrInfo;
 
     /* All but GetFeatures return an LmxxfNrStatus. SetControls takes effect on the next PrepareFrame; call it on the
@@ -98,6 +109,12 @@ extern "C"
     typedef int32_t (*PFN_MochizukiNrGetInfo)(void* context, MochizukiNrInfo* info);
     typedef int32_t (*PFN_MochizukiNrGetControlDefaults)(MochizukiNrControls* controls);
     typedef uint32_t (*PFN_MochizukiNrGetFeatures)(void);
+    /* The game's exposure for the frames that follow: what the frame's linear colour is multiplied by to be shown
+     * (the upscaler's exposure texture, times its scale, over the pre-exposure). The white point becomes
+     * MochizukiNrControls::white_point divided by it, so the network sees the frame at the brightness the game shows
+     * it. 0, or a value that is not finite and positive, goes back to white_point alone. Call it before PrepareFrame
+     * on the thread that calls it; it never fails the session. */
+    typedef int32_t (*PFN_MochizukiNrSetExposure)(void* context, float exposure);
 
 #ifdef _WIN32
 #ifdef MOCHIZUKI_NR_RUNTIME_EXPORTS

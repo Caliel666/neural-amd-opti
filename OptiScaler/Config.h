@@ -295,10 +295,10 @@ class Config
     CustomOptional<float> DlssNrLocalTone { 1.0f };
     CustomOptional<bool> AmdNeuralLighting { true };
     CustomOptional<float> AmdNeuralLightingStrength { .5f };
-    // 1 Linear, 2 sRGB, 3 Gamma 2.2. An old INI's 0 (the former Auto) reads as sRGB, the default.
-    // sRGB by default: in Cyberpunk 2077 it was the steadiest and held highlights best. The
-    // others stay selectable per game.
-    CustomOptional<int> AmdEncoding { 2 };
+    // 1 Linear, 2 sRGB, 3 Gamma 2.2. An old INI's 0 (the former Auto) reads as Linear, the default.
+    // Linear hands the network the frame as danielblnc's own runtime does; decoding it as sRGB first
+    // darkens what the network sees and leaves skin and hair paler than his.
+    CustomOptional<int> AmdEncoding { 1 };
     // danielblnc's one Effect strength, 0-2. Without the RenoDX composition it is the runtime's Scale as a fraction of
     // its 4/128 default (0.3.1 and later, the runtimes whose layout maps Scale); with it the runtime keeps its default
     // and this is the composition's intensity in place of RenoIntensity.
@@ -329,8 +329,8 @@ class Config
     // danielblnc 0.4.0 and later.
     CustomOptional<float> AmdToneLift { 0.0f };
     CustomOptional<bool> AmdUseGameExposure { true };
-    // NVIDIA's colour grade for Model B (1, natural) or C (2, cinematic); 0 = none.
-    CustomOptional<int> AmdColourGrade { 0 };
+    // danielblnc's Style, the network's style input: 0 Standard, 1 Natural, 2 Cinematic.
+    CustomOptional<int> AmdStyle { 0 };
     // 1-5 in the ini; the menu offers 2-5. Too few and a frame that finds every
     // buffer busy carries no NR at all, so this decides whether the mode works
     // rather than how fast it runs. See AmdPreSr.cpp for the measurements.
@@ -417,12 +417,25 @@ class Config
     CustomOptional<bool> MochizukiApplyModel { true };
     // Whether the colour is linear light: 0 auto (float formats are), 1 yes, 2 no.
     CustomOptional<uint32_t> MochizukiLinearInput { 0 };
+    // Linear colour: take the white point from the game's exposure (the upscaler's exposure texture), as danielblnc's
+    // runtime does; MochizukiWhitePoint then multiplies it. Without a texture, MochizukiWhitePoint alone.
+    CustomOptional<bool> MochizukiGameExposure { true };
     // Dynamic resolution. exact builds the network for the render resolution, so each change of it rebuilds the
     // network (a second or two without NR). auto, the default, does so until the render resolution drops below the
     // size of the game's colour buffer; from then on it keeps one network, built for the largest resolution seen, and
     // the frame moves inside it. always does that from the first frame, also when the game reallocates its buffers.
     // Anything else is auto.
     CustomOptional<std::string> MochizukiDynamicResolution { "auto" };
+    // Preprocess (mochizuki0323's): the picture the network is shown, changed before it runs and taken back out of its
+    // answer. Off by default; the first time it is on the network is rebuilt once. Exposure 0 off, 1 auto (a histogram
+    // auto exposure, for games that do not hand theirs over), 2 fixed (the bias alone); bias -8..8 EV; curve 0 none,
+    // 1 neutral, 2 reinhard, 3 filmic, 4 gt, 5 aces, 6 agx; contrast 0.5..2; saturation 0.05..2.
+    CustomOptional<bool> MochizukiPreprocess { false };
+    CustomOptional<uint32_t> MochizukiPreprocessExposure { 1 };
+    CustomOptional<float> MochizukiPreprocessBias { 0.0f };
+    CustomOptional<uint32_t> MochizukiPreprocessCurve { 3 };
+    CustomOptional<float> MochizukiPreprocessContrast { 1.0f };
+    CustomOptional<float> MochizukiPreprocessSaturation { 1.0f };
     // Passes 2 and 3. A pass with none of these set inherits pass 1 with local tone 0, since tone applied again on
     // every pass compounds; one with any of them set takes the others from pass 1 the same way.
     CustomOptional<uint32_t, NoDefault> MochizukiPass2Style;
