@@ -536,8 +536,9 @@ inline void NoteFrame(uint64_t index, uint64_t count, int64_t nowQpc)
 
 // Milliseconds of frame the game actually got to render, i.e. the measured
 // period with this burst's blocking taken back out. Zero until a burst has
-// been measured, which is the caller's signal to keep its own fallback.
-inline double RenderTimeMs() { return g_renderTimeNs > 0 ? g_renderTimeNs / 1000000.0 : 0.0; }
+// been measured, or while the hooks only forward (the last measure is stale then), which is the caller's signal to keep
+// its own fallback.
+inline double RenderTimeMs() { return g_renderTimeNs > 0 && !Bypassed() ? g_renderTimeNs / 1000000.0 : 0.0; }
 
 inline void NoteFedFrameTime(double ms) { g_fedFrameTimeMs = ms; }
 

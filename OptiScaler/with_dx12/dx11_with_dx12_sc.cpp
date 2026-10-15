@@ -424,30 +424,40 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
 
     // With NR off the optical flow still runs while XeFG is on: it is XeFG's only motion.
     const bool neural = Config::Instance()->DlssNrEnabled.value_or_default();
+    // Entered with NR and frame generation both off as well: EvaluateState below is what turns XeFG off (as on D3D12),
+    // and skipping it left XeFG generating, and the pacing hooks on, after Active was unticked.
     if (fgHookedPresenter && State::Instance().activeFgOutput == FGOutput::XeFG && !State::Instance().currentFeature &&
-        AmdPresentExperimental::IsTarget() &&
-        (neural ||
-         (Config::Instance()->FGEnabled.value_or_default() && State::Instance().activeFgInput == FGInput::Upscaler)) &&
-        DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Daniel)
+        AmdPresentExperimental::IsTarget() && DlssNr::Backend::PresentRuntimeSupported())
     {
-        auto settings = DlssNr::AmdBridge::SettingsFromConfig(*Config::Instance(),
-                                                              Config::Instance()->AmdNrScale.value_or_default());
-        settings.spinDraw = 0;
+        bool ready = false;
         AmdPresentExperimental::Guides guides;
-        // NR runs on the queue the frame generation swapchain was made with, after its wait for the copy above:
-        // XeFG takes the frame and the guides in that queue's order, so the frames it generates carry NR. The copy
-        // queue is not ordered with XeFG's work.
-        const bool ready = AmdPresentExperimental::Render(
-            _fgSwapChain, _fg->GetCommandQueue(), Util::DllPath().parent_path(), settings, &guides, neural, true);
-        static unsigned unavailableFrames = 0;
-        if (ready)
-            unavailableFrames = 0;
-        else if (++unavailableFrames == 1 || unavailableFrames % 120 == 0)
-            LOG_WARN("XeFG final-image guides unavailable: {}", AmdPresentExperimental::Status());
+        if (neural ||
+            (Config::Instance()->FGEnabled.value_or_default() && State::Instance().activeFgInput == FGInput::Upscaler))
+        {
+            auto settings = DlssNr::AmdBridge::SettingsFromConfig(*Config::Instance(),
+                                                                  Config::Instance()->AmdNrScale.value_or_default());
+            settings.spinDraw = 0;
+            // NR runs on the queue the frame generation swapchain was made with, after its wait for the copy above:
+            // XeFG takes the frame and the guides in that queue's order, so the frames it generates carry NR. The
+            // copy queue is not ordered with XeFG's work.
+            ready = AmdPresentExperimental::Render(_fgSwapChain, _fg->GetCommandQueue(), Util::DllPath().parent_path(),
+                                                   settings, &guides, neural, true);
+            static unsigned unavailableFrames = 0;
+            if (ready)
+                unavailableFrames = 0;
+            else if (++unavailableFrames == 1 || unavailableFrames % 120 == 0)
+                LOG_WARN("XeFG final-image guides unavailable: {}", AmdPresentExperimental::Status());
+        }
         if (_fg && State::Instance().activeFgInput == FGInput::Upscaler)
         {
             if (Config::Instance()->FGEnabled.value_or_default())
+            {
                 _fg->StartNewFrame();
+                // XeFG paces with this, as on the D3D9 route. The time between Presents holds XeFG's own wait and
+                // grows without end (Cities: Skylines held at 23 fps from 79).
+                if (_presentReturnedMs > 0)
+                    _fg->SetFrameTimeDelta(std::clamp(Util::MillisecondsNow() - _presentReturnedMs, 1.0, 100.0));
+            }
             if (!ready && _fg->IsActive())
                 _fg->Deactivate();
             FG_Constants constants {};
@@ -460,6 +470,9 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
                 _fg->EvaluateState(_dx12Device, constants);
             if (ready && _fg->IsActive() && !_fg->IsPaused())
             {
+                // As on D3D12: OptiScaler spaces XeFG's presents and the pacing hooks only forward. Their period, fed
+                // back as XeFG's frame time, held the game at it above 2X (Cities: Skylines, 68 fps to 18).
+                MenuOverlayDx::SpaceFrameGeneration();
                 _fg->SetCameraValues(0.1f, 1000.0f, 1.5707963f, float(guides.width) / float(guides.height));
                 _fg->SetMVScale(1.0f, 1.0f);
                 _fg->SetJitter(0.0f, 0.0f);
@@ -510,6 +523,7 @@ HRESULT STDMETHODCALLTYPE Dx11wDx12SC::Present(UINT SyncInterval, UINT Flags)
     }
 
     auto result = _fgSwapChain->Present(SyncInterval, Flags);
+    _presentReturnedMs = Util::MillisecondsNow();
 
     if (dx11HudfixPresent)
         Hudfix_Dx11::PresentEnd();

@@ -108,12 +108,39 @@ static bool CheckForFGStatus()
     return true;
 }
 
+bool FGHooks::IsSecondWindow(HWND hWnd)
+{
+    return State::Instance().currentFGSwapchain != nullptr && _hwnd != nullptr && hWnd != nullptr && hWnd != _hwnd &&
+           IsWindow(_hwnd) && IsWindowVisible(_hwnd);
+}
+
+bool FGHooks::RtssLoaded()
+{
+    // RTSS can be started or closed while the game runs, so look again every couple of seconds.
+    static std::atomic<ULONGLONG> checked = 0;
+    static std::atomic<bool> loaded = false;
+    const auto now = GetTickCount64();
+    if (now - checked > 2000)
+    {
+        checked = now;
+        loaded = GetModuleHandleW(L"RTSSHooks64.dll") != nullptr || GetModuleHandleW(L"RTSSHooks.dll") != nullptr;
+    }
+    return loaded;
+}
+
 HRESULT FGHooks::CreateSwapChain(IDXGIFactory* pFactory, IUnknown* pDevice, DXGI_SWAP_CHAIN_DESC* pDesc,
                                  IDXGISwapChain** ppSwapChain)
 {
     if (!CheckForFGStatus())
     {
         LOG_WARN("Can't init FG Feature or invalid FGOutput setting!");
+        return E_NOINTERFACE;
+    }
+
+    if (IsSecondWindow(pDesc->OutputWindow))
+    {
+        LOG_INFO("Swapchain for another window ({:X}) while the game's FG swapchain is up, created without FG",
+                 (size_t) pDesc->OutputWindow);
         return E_NOINTERFACE;
     }
 
@@ -225,6 +252,13 @@ HRESULT FGHooks::CreateSwapChainForHwnd(IDXGIFactory* pFactory, IUnknown* pDevic
     if (!CheckForFGStatus())
     {
         LOG_WARN("Can't init FG Feature or invalid FGOutput setting!");
+        return E_NOINTERFACE;
+    }
+
+    if (IsSecondWindow(hWnd))
+    {
+        LOG_INFO("Swapchain for another window ({:X}) while the game's FG swapchain is up, created without FG",
+                 (size_t) hWnd);
         return E_NOINTERFACE;
     }
 
@@ -1213,6 +1247,15 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
     }
 
     const bool fgFeatureActive = fg != nullptr && fg->IsActive() && !fg->IsPaused();
+
+    static bool rtssReported = false;
+    if (fgFeatureActive && !rtssReported && RtssLoaded())
+    {
+        rtssReported = true;
+        LOG_WARN("RTSS is hooked into the game while frame generation runs: it stalls frame generation's presents "
+                 "(stutter, lower base frame rate). Close RivaTuner Statistics Server, or turn its hooking off for "
+                 "this game");
+    }
 
     sl::FrameToken* localToken = nullptr;
     sl::Result tokenResult = sl::Result::eErrorReflexAPI;

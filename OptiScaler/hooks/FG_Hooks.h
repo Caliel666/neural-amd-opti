@@ -18,6 +18,15 @@ class FGHooks
     // Registers a real FG swapchain created through FGHooks::CreateSwapChain*().
     static void SetFGSwapchain(IDXGISwapChain* pSwapChain, HWND hWnd);
 
+    // A swapchain for another window while the game's FG swapchain is still up on a visible window: an editor or
+    // tool window (BeamNG's ImGui editor). FG stays on the game's window; a second FG context there crashes XeFG.
+    // A splash window the game hid or closed is not one, so the game's real window still gets FG.
+    static bool IsSecondWindow(HWND hWnd);
+
+    // RivaTuner Statistics Server hooked into the game. Its present hook held XeFG's Present 24-34 ms a frame
+    // (Cities: Skylines: 235 fps out with it closed, 88-138 and constant stutter with it open).
+    static bool RtssLoaded();
+
     // Registers a plain/external DX12 presenting swapchain used by DX11->DX12 interop fallback.
     // This must not mark State::currentFGSwapchain and must not install FG present hooks.
     static void SetDx12InteropPresentSC(IDXGISwapChain* pSwapChain, HWND hWnd);
