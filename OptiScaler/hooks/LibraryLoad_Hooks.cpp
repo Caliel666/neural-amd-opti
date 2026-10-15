@@ -73,10 +73,13 @@ HMODULE LibraryLoadHooks::LoadLibraryCheckW(std::wstring libName, LPCWSTR lpLibF
     {
         if (!State::Instance().ServeOriginal())
         {
-            // The OpenGL driver asks for opengl32 several times per present; once is enough in the log.
-            static std::atomic_bool openglLogged = false;
-            if (!normalizedPath.contains(L"opengl32") || !openglLogged.exchange(true))
+            // Once is enough in the log: the OpenGL driver asks for opengl32 several times per present, and Red Dead
+            // Redemption 2 for winmm 20,000 times a session, which pushed the start of the log out of the report.
+            static std::atomic_bool logged = false;
+            if (!logged.exchange(true))
                 LOG_INFO("{} call, returning this dll!", libNameA);
+            else
+                LOG_DEBUG("{} call, returning this dll!", libNameA);
 
             return dllModule;
         }
