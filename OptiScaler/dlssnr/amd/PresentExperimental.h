@@ -1,5 +1,7 @@
 #pragma once
 #include "AmdBridge.h"
+#include "../backend/LmxxfBackend.h"
+#include "../backend/Selector.h"
 #include <gpu_time/GpuTime_Dx12.h>
 #include "AmdPreSr.h"
 #include "ResidualStabilizer.h"
@@ -8,6 +10,7 @@
 #include <Logger.h>
 #include <wrl/client.h>
 #include <d3dcompiler.h>
+#include <d3d10.h>
 #include <d3d11_4.h>
 #include <dxgi1_4.h>
 #include <cstring>
@@ -94,6 +97,12 @@ struct Context
     bool sceneReadbackPending = false;
     UINT flowFrames = 0;
     AmdPreSr::Backend* backend = nullptr;
+    // mochizuki (NrBackend=mochizuki): its network runs on a Vulkan device between two lists of ours, the producer
+    // with the inputs and the consumer with the result (LmxxfBackend's own lists). The second list is made on first
+    // use.
+    std::unique_ptr<DlssNr::Backend::LmxxfBackend> mochizuki;
+    ComPtr<ID3D12CommandAllocator> allocator2;
+    ComPtr<ID3D12GraphicsCommandList> cmd2;
     std::unique_ptr<AmdPreSr::ResidualStabilizer> stabilizer;
     // GPU time of the model on this queue, as the upscaler path measures it: the record and the composed result.
     std::unique_ptr<GpuTime_Dx12> neuralTimer;
@@ -200,6 +209,8 @@ struct Context
         format = DXGI_FORMAT_UNKNOWN;
         if (backend)
             backend->InvalidateHistory();
+        if (mochizuki)
+            mochizuki->InvalidateHistory();
         if (stabilizer)
             stabilizer->Invalidate();
         stableLast = false;
@@ -560,13 +571,16 @@ struct Context
             status = "NR without upscaling: output size changed; waiting for swapchain reset";
             return false;
         }
-        if (neural && !backend && !runtimeLoaded)
+        if (neural && !backend && !mochizuki && !runtimeLoaded)
         {
-            // Its own runtime files: the upscaler path may load dlssnr_amd_pass1-3.dll in the same session.
-            backend = new AmdPreSr::Backend(device.Get(), queue.Get(), directory, L"dlssnr_amd_present");
+            if (DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Mochizuki)
+                mochizuki = std::make_unique<DlssNr::Backend::LmxxfBackend>(device.Get(), queue.Get(), directory,
+                                                                            L"MochizukiNrRuntime.dll", true);
+            else // Its own runtime files: the upscaler path may load dlssnr_amd_pass1-3.dll in the same session.
+                backend = new AmdPreSr::Backend(device.Get(), queue.Get(), directory, L"dlssnr_amd_present");
             runtimeLoaded = true;
         }
-        const bool record = neural && backend && !failed && !busy;
+        const bool record = neural && (backend || mochizuki) && !failed && !busy;
         Check(allocator->Reset());
         Check(cmd->Reset(allocator.Get(), nullptr));
         Transition(cmd.Get(), back, backState, D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -611,9 +625,12 @@ struct Context
         const bool sceneCut = ReadSceneCut();
         QueueSceneCut();
         // History that missed frames (scene cut, flow just valid, NR back on) starts over.
-        if (backend && (sceneCut || (flowValid && flowFrames == 7) || (neural && !lastNeural)))
+        if ((backend || mochizuki) && (sceneCut || (flowValid && flowFrames == 7) || (neural && !lastNeural)))
         {
-            backend->InvalidateHistory();
+            if (backend)
+                backend->InvalidateHistory();
+            else
+                mochizuki->InvalidateHistory();
             stabilizer->Invalidate();
         }
         lastNeural = neural;
@@ -632,13 +649,40 @@ struct Context
         settings.fixedSeed = true;
         // No RenoDX composition here, so Effect strength stays the runtime's own strength.
         settings.strength = std::clamp(Config::Instance()->AmdEffectStrength.value_or_default(), 0.f, 2.f);
-        const auto before = record ? backend->RecordedFrames() : 0;
+        const auto before = record && backend ? backend->RecordedFrames() : 0;
         if (record && !neuralTimer)
             neuralTimer = std::make_unique<GpuTime_Dx12>(device.Get());
         if (record)
             neuralTimer->Start(cmd.Get());
-        auto result = record ? backend->Record(cmd.Get(), f, settings) : nullptr;
-        const bool modified = result && backend->RecordedFrames() != before;
+        ID3D12Resource* result = nullptr;
+        // mochizuki: the inputs close this list, which becomes the producer, and everything after the network goes
+        // into the other one, which becomes `cmd` (Compose and the stabilizer record into `cmd`).
+        ComPtr<ID3D12GraphicsCommandList> producer;
+        if (record && mochizuki)
+        {
+            result = mochizuki->Record(cmd.Get(), f, settings);
+            if (result)
+            {
+                if (!cmd2)
+                {
+                    Check(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator2)));
+                    Check(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator2.Get(), nullptr,
+                                                    IID_PPV_ARGS(&cmd2)));
+                    Check(cmd2->Close());
+                }
+                Check(cmd->Close());
+                std::swap(cmd, cmd2);
+                std::swap(allocator, allocator2);
+                Check(allocator->Reset());
+                Check(cmd->Reset(allocator.Get(), nullptr));
+                producer = cmd2;
+                if (!mochizuki->RecordConsumer(cmd.Get()))
+                    result = nullptr;
+            }
+        }
+        else if (record)
+            result = backend->Record(cmd.Get(), f, settings);
+        const bool modified = result && (mochizuki || backend->RecordedFrames() != before);
         if (modified)
         {
             const auto now = GetTickCount64();
@@ -684,7 +728,10 @@ struct Context
         // Held only once GPU work reads it: a failure before this point leaves the game's buffer alone.
         if (!pipelined)
             heldBack = back;
-        queue->ExecuteCommandLists(1, lists);
+        if (producer)
+            mochizuki->SubmitOwnLists(queue.Get(), producer.Get(), cmd.Get());
+        else
+            queue->ExecuteCommandLists(1, lists);
         if (backend)
         {
             stallwatch::Gate gate(started.Get(), startSerial);
@@ -700,9 +747,10 @@ struct Context
                                    : "Optical Flow warming up") +
                      (realDepth ? ", real depth" : ", synthetic depth") + (sceneCut ? ", scene reset" : "") +
                      ", stabilized): " +
-                     (!neural   ? std::string("NR off, guides only")
-                      : backend ? backend->Status()
-                                : std::string("NR runs on the game's other D3D12 device; restart the game for NR"));
+                     (!neural     ? std::string("NR off, guides only")
+                      : mochizuki ? mochizuki->Status()
+                      : backend   ? backend->Status()
+                                  : std::string("NR runs on the game's other D3D12 device; restart the game for NR"));
         return modified && !stopped;
     }
     ComPtr<ID3D12DescriptorHeap> composeHeap;
@@ -1358,6 +1406,175 @@ inline bool RenderTexture11(ID3D11Texture2D* texture, ID3D11Device* device, cons
         if (bridge11)
             bridge11->stopped = true;
         return false;
+    }
+}
+// A D3D10 game's frame on a D3D11 device of OptiScaler's own on the same adapter, so the D3D11 bridge runs NR on it
+// and the menu draws over it: the back buffer goes to a texture the two devices share and comes back after. Begin
+// returns the D3D11 side of that texture, End puts it back in the back buffer. D3D10 has neither fences nor keyed
+// mutexes on a shared texture (measured: E_INVALIDARG for every format), so the CPU waits for each side's copy.
+struct Bridge10
+{
+    ComPtr<ID3D10Device> game;
+    ComPtr<ID3D11Device> device;
+    ComPtr<ID3D11DeviceContext> context;
+    ComPtr<ID3D10Texture2D> shared10, back;
+    ComPtr<ID3D11Texture2D> shared11;
+    ComPtr<ID3D10Query> done10;
+    ComPtr<ID3D11Query> done11;
+    UINT width = 0, height = 0;
+    DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+    LUID luid {};
+    bool stopped = false, reported = false;
+    static constexpr ULONGLONG Timeout = 4000;
+
+    void Wait10()
+    {
+        done10->End();
+        const ULONGLONG deadline = GetTickCount64() + Timeout;
+        HRESULT hr = S_FALSE;
+        while ((hr = done10->GetData(nullptr, 0, 0)) == S_FALSE && GetTickCount64() < deadline)
+            YieldProcessor();
+        if (hr != S_OK)
+            throw std::runtime_error("NR without upscaling: the D3D10 copy of the frame timed out");
+    }
+    void Wait11()
+    {
+        context->End(done11.Get());
+        const ULONGLONG deadline = GetTickCount64() + Timeout;
+        HRESULT hr = S_FALSE;
+        while ((hr = context->GetData(done11.Get(), nullptr, 0, 0)) == S_FALSE && GetTickCount64() < deadline)
+            YieldProcessor();
+        if (hr != S_OK)
+            throw std::runtime_error("NR without upscaling: NR's D3D11 work on the D3D10 frame timed out");
+    }
+    void ReleaseShared()
+    {
+        shared11.Reset();
+        shared10.Reset();
+        width = height = 0;
+        format = DXGI_FORMAT_UNKNOWN;
+    }
+    // A new game device keeps the D3D11 device when it is on the same adapter: the D3D11 bridge stays bound to it.
+    void Start(ID3D10Device* d)
+    {
+        ReleaseShared();
+        game = d;
+        done10.Reset();
+        D3D10_QUERY_DESC query10 { D3D10_QUERY_EVENT, 0 };
+        Check(game->CreateQuery(&query10, &done10));
+        ComPtr<IDXGIDevice> dxgi;
+        ComPtr<IDXGIAdapter> adapter;
+        DXGI_ADAPTER_DESC desc {};
+        Check(game.As(&dxgi));
+        Check(dxgi->GetAdapter(&adapter));
+        Check(adapter->GetDesc(&desc));
+        if (device && desc.AdapterLuid.LowPart == luid.LowPart && desc.AdapterLuid.HighPart == luid.HighPart)
+            return;
+        context.Reset();
+        device.Reset();
+        const D3D_FEATURE_LEVEL levels[] { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0 };
+        Check(D3D11CreateDevice(adapter.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                                levels, 2, D3D11_SDK_VERSION, &device, nullptr, &context));
+        D3D11_QUERY_DESC query11 { D3D11_QUERY_EVENT, 0 };
+        Check(device->CreateQuery(&query11, &done11));
+        luid = desc.AdapterLuid;
+        LOG_INFO("NR without upscaling: D3D10 frames cross to a D3D11 device of OptiScaler's own");
+    }
+    ID3D11Texture2D* Begin(IDXGISwapChain* sc, ID3D10Device* d)
+    {
+        if (stopped)
+            return nullptr;
+        if (game.Get() != d)
+            Start(d);
+        Check(sc->GetBuffer(0, IID_PPV_ARGS(&back)));
+        D3D10_TEXTURE2D_DESC desc {};
+        back->GetDesc(&desc);
+        // The shared copy takes the UNORM twin of an sRGB back buffer, as the D3D11 bridge does.
+        const DXGI_FORMAT twin = desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB   ? DXGI_FORMAT_R8G8B8A8_UNORM
+                                 : desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB ? DXGI_FORMAT_B8G8R8A8_UNORM
+                                                                                  : desc.Format;
+        if (desc.SampleDesc.Count != 1 || (twin != DXGI_FORMAT_R8G8B8A8_UNORM && twin != DXGI_FORMAT_B8G8R8A8_UNORM))
+        {
+            status = "NR without upscaling: D3D10 backbuffer format or MSAA unsupported";
+            if (!reported)
+                LOG_WARN("{} (format {}, samples {})", status, static_cast<UINT>(desc.Format), desc.SampleDesc.Count);
+            reported = true;
+            back.Reset();
+            return nullptr;
+        }
+        if (!shared10 || width != desc.Width || height != desc.Height || format != twin)
+        {
+            ReleaseShared();
+            D3D10_TEXTURE2D_DESC copy {};
+            copy.Width = desc.Width;
+            copy.Height = desc.Height;
+            copy.MipLevels = copy.ArraySize = copy.SampleDesc.Count = 1;
+            copy.Format = twin;
+            copy.Usage = D3D10_USAGE_DEFAULT;
+            copy.BindFlags = D3D10_BIND_RENDER_TARGET | D3D10_BIND_SHADER_RESOURCE;
+            copy.MiscFlags = D3D10_RESOURCE_MISC_SHARED;
+            Check(game->CreateTexture2D(&copy, nullptr, &shared10));
+            ComPtr<IDXGIResource> resource;
+            HANDLE handle = nullptr;
+            Check(shared10.As(&resource));
+            Check(resource->GetSharedHandle(&handle));
+            Check(device->OpenSharedResource(handle, IID_PPV_ARGS(&shared11)));
+            width = desc.Width;
+            height = desc.Height;
+            format = twin;
+        }
+        game->CopyResource(shared10.Get(), back.Get());
+        Wait10();
+        return shared11.Get();
+    }
+    void End()
+    {
+        if (!back)
+            return;
+        Wait11();
+        game->CopyResource(back.Get(), shared10.Get());
+        back.Reset();
+    }
+};
+inline Bridge10* bridge10 = nullptr;
+// The frame of a D3D10 swapchain on OptiScaler's D3D11 device, or null when it cannot cross (then End is not called).
+inline ID3D11Texture2D* Begin10(IDXGISwapChain* sc, ID3D10Device* device, ID3D11Device** device11)
+{
+    try
+    {
+        if (!bridge10)
+            bridge10 = new Bridge10;
+        auto texture = bridge10->Begin(sc, device);
+        *device11 = texture ? bridge10->device.Get() : nullptr;
+        return texture;
+    }
+    catch (const std::exception& e)
+    {
+        {
+            std::lock_guard g(mutex);
+            status = e.what();
+        }
+        LOG_ERROR("{}", e.what());
+        bridge10->stopped = true;
+        bridge10->back.Reset();
+        return nullptr;
+    }
+}
+inline void End10()
+{
+    try
+    {
+        bridge10->End();
+    }
+    catch (const std::exception& e)
+    {
+        {
+            std::lock_guard g(mutex);
+            status = e.what();
+        }
+        LOG_ERROR("{}", e.what());
+        bridge10->stopped = true;
+        bridge10->back.Reset();
     }
 }
 // Whether the last frame came out of the network, so a caller copying it elsewhere can skip unchanged frames.

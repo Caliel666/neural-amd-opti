@@ -4,6 +4,7 @@
 
 #include "D3D11_Hooks.h"
 #include "D3D12_Hooks.h"
+#include <d3d10.h>
 
 #include <Config.h>
 #include <hooks/GL_Hooks.h>
@@ -407,6 +408,18 @@ void DxgiFactoryHooks::HookToDLSSGFactory(IDXGIFactory* pFactory)
     DetourTransactionCommit();
 }
 
+// A D3D10 device answers for ID3D11Device too (D3D10 runs on the D3D11 core; a D3D11 device does not answer for
+// ID3D10Device), but it is no D3D11 game: neither the D3D11 hooks nor the D3D11 to D3D12 bridge take it. NR without
+// upscaling runs a D3D10 game through MenuOverlayDx's own D3D10 path.
+static bool IsD3D10(IUnknown* device)
+{
+    ID3D10Device* d3d10 = nullptr;
+    if (device->QueryInterface(IID_PPV_ARGS(&d3d10)) != S_OK)
+        return false;
+    d3d10->Release();
+    return true;
+}
+
 HRESULT DxgiFactoryHooks::CreateSwapChain(IDXGIFactory* realFactory, IUnknown* pDevice, DXGI_SWAP_CHAIN_DESC* pDesc,
                                           IDXGISwapChain** ppSwapChain)
 {
@@ -572,7 +585,7 @@ HRESULT DxgiFactoryHooks::CreateSwapChain(IDXGIFactory* realFactory, IUnknown* p
 
         ID3D11Device* device = nullptr;
 
-        if (pDevice->QueryInterface(IID_PPV_ARGS(&device)) == S_OK)
+        if (!IsD3D10(pDevice) && pDevice->QueryInterface(IID_PPV_ARGS(&device)) == S_OK)
         {
             D3D11Hooks::HookToDevice(device);
             State::Instance().currentD3D11Device = device;
@@ -975,7 +988,7 @@ HRESULT DxgiFactoryHooks::CreateSwapChainForHwnd(IDXGIFactory2* realFactory, IUn
 
         ID3D11Device* device = nullptr;
 
-        if (pDevice->QueryInterface(IID_PPV_ARGS(&device)) == S_OK)
+        if (!IsD3D10(pDevice) && pDevice->QueryInterface(IID_PPV_ARGS(&device)) == S_OK)
         {
             D3D11Hooks::HookToDevice(device);
             State::Instance().currentD3D11Device = device;
@@ -1528,7 +1541,7 @@ HRESULT DxgiFactoryHooks::DLSSGCreateSwapChain(IDXGIFactory* realFactory, IUnkno
 
         ID3D11Device* device = nullptr;
 
-        if (pDevice->QueryInterface(IID_PPV_ARGS(&device)) == S_OK)
+        if (!IsD3D10(pDevice) && pDevice->QueryInterface(IID_PPV_ARGS(&device)) == S_OK)
         {
             D3D11Hooks::HookToDevice(device);
             device->Release();
@@ -1843,7 +1856,7 @@ HRESULT DxgiFactoryHooks::DLSSGCreateSwapChainForHwnd(IDXGIFactory2* realFactory
 
         ID3D11Device* device = nullptr;
 
-        if (pDevice->QueryInterface(IID_PPV_ARGS(&device)) == S_OK)
+        if (!IsD3D10(pDevice) && pDevice->QueryInterface(IID_PPV_ARGS(&device)) == S_OK)
         {
             D3D11Hooks::HookToDevice(device);
 

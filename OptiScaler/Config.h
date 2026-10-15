@@ -396,6 +396,12 @@ class Config
     // The 1080 tier on 1920x1088 rows instead of 1152: about 4% faster, slightly lossy at the bottom. Rebuilds the
     // network when changed.
     CustomOptional<bool> LmxxfCompact1080 { false };
+    // Three passes: run two and extrapolate the third from them, about a third less time, close to a real third
+    // pass (upstream's multi-pass predict). On by default.
+    CustomOptional<bool> LmxxfPassEstimate { true };
+    // Two or three passes: skin-coloured areas go back toward pass 1's result, so faces do not take the extra passes.
+    // By colour (upstream's mask), so brown and orange surfaces are protected too.
+    CustomOptional<bool> LmxxfSkinProtect { false };
     // mochizuki's settings, the INI key being the member's name. Its tuning comes from these keys only, never from
     // the danielblnc, lmxxf or NVIDIA ones, so each runtime keeps its own, and every default is the network's own:
     // what it ran with before these keys existed. Passes, ModelScale and LinearInput rebuild the network (a second
@@ -428,6 +434,15 @@ class Config
     CustomOptional<float> MochizukiLocalStructure { 1.0f };
     CustomOptional<float> MochizukiSkinStructure { -1.0f };
     CustomOptional<bool> MochizukiAutoMask { true };
+    // The network as ACO's machine code (the Linux driver's compiler, made in advance) instead of AMD's Windows
+    // compiler: about a fifth faster, the same picture. On by default; its author tested it on AMD Software 26.9.2
+    // only. Takes effect when the game starts again; without the driver's pipeline binaries the driver compiles as
+    // before.
+    CustomOptional<bool> MochizukiAco { true };
+    // With ACO: the int4 mixed network, part of it in 4-bit integers. About a tenth faster than ACO alone; the
+    // picture is close to the default network's, not the same. A change rebuilds the network in a few seconds while
+    // the frames keep the current one, without a restart.
+    CustomOptional<bool> MochizukiInt4 { false };
     CustomOptional<float> MochizukiMaxRatio { 2.0f };
     // Linear colour only: the brightness the network treats as white, 0.01..100.
     CustomOptional<float> MochizukiWhitePoint { 1.0f };

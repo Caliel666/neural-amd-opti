@@ -21,5 +21,8 @@ void FrameGenerationPresent(bool returned);
 // Called before the swapchain frame generation presents to is locked: spaces XeFG's own presents while the final image
 // generates frames.
 void SpaceFrameGenerationPresent(UINT flags);
+// From the game's thread, on each frame final-image XeFG generates (D3D12 and D3D11 through D3D12): XeFG's presents are
+// spaced for the next quarter second and the pacing hooks only forward, unless XeFG\ExtraPacing=true.
+void SpaceFrameGeneration();
 void ApplyThemeStyle();
 } // namespace MenuOverlayDx

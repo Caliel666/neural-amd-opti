@@ -89,6 +89,7 @@ struct MochizukiFrameSettings
     float colour;
     float scale;
     uint32_t passes;
+    uint32_t flags; // LMXXF_NR_FRAME_FLAG_INT4
 };
 
 // From mochizuki's own keys only: never the danielblnc, lmxxf or NVIDIA ones, nor AmdNrScale with AmdDynamicScale's
@@ -100,6 +101,9 @@ MochizukiFrameSettings MochizukiFrame(const Config& cfg)
     s.colour = MzSetting(cfg.MochizukiColourStrength.value_or_default(), 0.f, 4.f, 0.f);
     s.scale = MzSetting(cfg.MochizukiModelScale.value_or_default(), .25f, 1.f, 1.f);
     s.passes = std::clamp(cfg.MochizukiPasses.value_or_default(), 1u, 3u);
+    // int4 mixed runs as ACO's machine code only: without ACO the runtime would build the default network anyway.
+    const bool int4 = cfg.MochizukiInt4.value_or_default() && cfg.MochizukiAco.value_or_default();
+    s.flags = int4 ? LMXXF_NR_FRAME_FLAG_INT4 : 0;
     return s;
 }
 
@@ -281,8 +285,8 @@ void LmxxfBackend::SendControls()
 }
 
 LmxxfBackend::LmxxfBackend(ID3D12Device* dev, ID3D12CommandQueue* q, const std::filesystem::path& dir,
-                           const wchar_t* runtime)
-    : device(dev), queue(q), directory(dir), runtimeFile(runtime)
+                           const wchar_t* runtime, bool ownLists)
+    : device(dev), queue(q), directory(dir), runtimeFile(runtime), ownLists(ownLists)
 {
     if (device)
         device->AddRef();
@@ -299,6 +303,9 @@ LmxxfBackend::LmxxfBackend(ID3D12Device* dev, ID3D12CommandQueue* q, const std::
         LOG_INFO("lmxxf FitLarge={} (DLSS5_FIT_LARGE; restart if changed mid-session)", fit);
     }
     SetStatus("lmxxf: constructed (session not ready)");
+    // A backend with its own lists never sees a game list recycled; the upscaler path's keeps the callback.
+    if (ownLists)
+        return;
     g_recycleTarget.store(this, std::memory_order_release);
     DlssNr::Submission::Hooks::g_onListRecycled.store(&LmxxfBackend::OnListRecycled, std::memory_order_release);
 }
@@ -513,8 +520,17 @@ bool LmxxfBackend::EnsureSession()
     info.queue = queue;
     info.assets_directory = modulesW.c_str();
     info.flags = LMXXF_NR_CREATE_FLAG_ZERO_OUTPUT_FALLBACK;
+    if (!Lmxxf() && Config::Instance()->MochizukiAco.value_or_default())
+        info.flags |= LMXXF_NR_CREATE_FLAG_ACO;
     void* ctx = nullptr;
-    const int32_t createRc = api->table.Create(&info, &ctx);
+    int32_t createRc = api->table.Create(&info, &ctx);
+    // A runtime from before ACO refuses the flag: it runs without it.
+    if (createRc == LMXXF_NR_INVALID_ARGUMENT && (info.flags & LMXXF_NR_CREATE_FLAG_ACO))
+    {
+        LOG_WARN("mochizuki: this MochizukiNrRuntime.dll has no ACO; MochizukiAco is ignored");
+        info.flags &= ~uint32_t(LMXXF_NR_CREATE_FLAG_ACO);
+        createRc = api->table.Create(&info, &ctx);
+    }
     if (createRc != LMXXF_NR_OK || !ctx)
     {
         char err[256] {};
@@ -587,6 +603,60 @@ ID3D12Resource* LmxxfBackend::FinishRecord(ID3D12GraphicsCommandList* recordCmd,
     }
     SetStatus("lmxxf: Record ok (pending EnqueueHip)");
     return reinterpret_cast<ID3D12Resource*>(privateOutput);
+}
+
+// Own lists (NR without upscaling): the producer list gets the inputs now, the consumer list the outputs later
+// (RecordConsumer), and SubmitOwnLists runs the network between them on the queue.
+ID3D12Resource* LmxxfBackend::RecordProducer(ID3D12GraphicsCommandList* producer, void* jobHandle, void* privateOutput)
+{
+    if (api->table.RecordInputs(session, jobHandle, producer) != LMXXF_NR_OK)
+    {
+        api->table.CancelUnsubmitted(session, jobHandle);
+        SetStatus("lmxxf: RecordInputs failed");
+        return nullptr;
+    }
+    std::lock_guard lock(jobMutex);
+    pendingJobInfo.job = jobHandle;
+    pendingJobInfo.cmd = producer;
+    SetStatus("lmxxf: running");
+    return reinterpret_cast<ID3D12Resource*>(privateOutput);
+}
+
+bool LmxxfBackend::RecordConsumer(ID3D12GraphicsCommandList* consumer)
+{
+    std::lock_guard lock(jobMutex);
+    if (!pendingJobInfo.job)
+        return false;
+    if (api->table.RecordOutputs(session, pendingJobInfo.job, consumer) == LMXXF_NR_OK)
+    {
+        pendingJobInfo.cmd = consumer;
+        return true;
+    }
+    api->table.CancelUnsubmitted(session, pendingJobInfo.job);
+    pendingJobInfo = {};
+    SetStatus("lmxxf: RecordOutputs failed");
+    return false;
+}
+
+void LmxxfBackend::SubmitOwnLists(ID3D12CommandQueue* q, ID3D12CommandList* producer, ID3D12CommandList* consumer)
+{
+    std::lock_guard lock(jobMutex);
+    q->ExecuteCommandLists(1, &producer);
+    if (pendingJobInfo.job)
+    {
+        // The network waits for the producer on this queue and the consumer waits for the network; a failed enqueue
+        // leaves the zeroed output (LMXXF_NR_CREATE_FLAG_ZERO_OUTPUT_FALLBACK), which the decoder turns into the frame.
+        if (api->table.EnqueueHip(session, pendingJobInfo.job, q) != LMXXF_NR_OK)
+        {
+            char err[256] {};
+            api->table.GetLastError(err, sizeof err);
+            SetStatus((std::string("lmxxf: EnqueueHip failed: ") + err).c_str());
+        }
+    }
+    q->ExecuteCommandLists(1, &consumer);
+    if (pendingJobInfo.job)
+        api->table.Retire(session, pendingJobInfo.job);
+    pendingJobInfo = {};
 }
 
 namespace
@@ -779,16 +849,18 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
     if (diagnostic != LmxxfProbe::Mode::Off)
         return RecordDiagnostic(cmd, frame);
     // Never substitute Color from an earlier Evaluate to work around an unsubmitted producer.
+    // With its own lists (UseOwnLists) the host submits the two halves itself: no game list to split.
     DlssNr::Submission::ILogicalCommandList* logical = nullptr;
-    if (FAILED(cmd->QueryInterface(__uuidof(DlssNr::Submission::ILogicalCommandList),
-                                   reinterpret_cast<void**>(&logical))) ||
-        !logical)
+    if (!ownLists && (FAILED(cmd->QueryInterface(__uuidof(DlssNr::Submission::ILogicalCommandList),
+                                                 reinterpret_cast<void**>(&logical))) ||
+                      !logical))
     {
         return declineFrame("lmxxf: same-frame boundary unavailable (original Color; NO NR)");
     }
-    const bool ineligible = logical->IsSplitIneligible();
-    const char* reason = logical->SplitRejectionReason();
-    logical->Release();
+    const bool ineligible = logical && logical->IsSplitIneligible();
+    const char* reason = logical ? logical->SplitRejectionReason() : nullptr;
+    if (logical)
+        logical->Release();
     if (ineligible)
     {
         char status[128] {};
@@ -835,6 +907,10 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
             fi.flags |= LMXXF_NR_FRAME_FLAG_VIT_REUSE;
         if (Config::Instance()->LmxxfCompact1080.value_or_default())
             fi.flags |= LMXXF_NR_FRAME_FLAG_COMPACT_1080;
+        if (Config::Instance()->LmxxfPassEstimate.value_or_default())
+            fi.flags |= LMXXF_NR_FRAME_FLAG_PASS3_ESTIMATE;
+        if (Config::Instance()->LmxxfSkinProtect.value_or_default())
+            fi.flags |= LMXXF_NR_FRAME_FLAG_SKIN_PROTECT;
     }
     else
     {
@@ -844,6 +920,7 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
         fi.color_strength = mz.colour;
         fi.model_scale = mz.scale;
         fi.passes = mz.passes;
+        fi.flags |= mz.flags;
     }
     // mochizuki has a switch of its own. An INI without MochizukiTemporal keeps what LmxxfTemporal gave it before.
     const bool temporalOn = (!Lmxxf() && Config::Instance()->MochizukiTemporal.has_value())
@@ -957,6 +1034,8 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
         }
     }
 
+    if (ownLists)
+        return RecordProducer(cmd, job.handle, job.private_output);
     ID3D12Resource* result = FinishRecord(cmd, job.handle, job.private_output);
     static uint64_t recordEvalCount = 0;
     const auto rEval = ++recordEvalCount;
@@ -1077,6 +1156,7 @@ ID3D12Resource* LmxxfBackend::RecordDiagnostic(ID3D12GraphicsCommandList* cmd, c
                     const MochizukiFrameSettings mz = MochizukiFrame(*Config::Instance());
                     fi.transfer_strength = mz.detail;
                     fi.color_strength = mz.colour;
+                    fi.flags |= mz.flags; // the same network as the frames around it
                 }
                 fi.model_scale = 1.0f;
 

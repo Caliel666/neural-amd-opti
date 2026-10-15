@@ -28,7 +28,7 @@ bool NrWanted()
 {
     const auto config = Config::Instance();
     return AmdPresentExperimental::IsTarget() && config->DlssNrEnabled.value_or_default() &&
-           DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Daniel;
+           DlssNr::Backend::PresentRuntimeSupported();
 }
 
 // Chosen at startup, as on D3D11: changing FGInput or FGOutput needs a restart. The menu can still turn final-image

@@ -127,6 +127,14 @@ struct FgWindow
             thread.detach();
         }
     }
+
+    // At process exit the thread is gone already and the loader lock is held, so it cannot be joined; a
+    // joinable std::thread destroyed calls abort (Detroit: Become Human closing).
+    ~FgWindow()
+    {
+        if (thread.joinable())
+            thread.detach();
+    }
 };
 
 // Logs the average time of one per-present step every 120 presents.
@@ -189,6 +197,13 @@ struct FgPresenter
     // XeFG's output over the last second, for the FPS overlay.
     unsigned outputFrames = 0;
     std::chrono::steady_clock::time_point outputStart {};
+
+    // As ~FgWindow: never Released before the process exits.
+    ~FgPresenter()
+    {
+        if (worker.joinable())
+            worker.detach();
+    }
 
     void Idle()
     {
@@ -1394,7 +1409,7 @@ bool Process(VkQueue queue, VkPresentInfoKHR& present)
         LOG_INFO("Vulkan final-image bridge: NR {}", neural ? "on" : wantFg ? "off, XeFG runs on its guides" : "off");
     }
     if ((!neural && !wantFg) || !config->DlssNrPresent.value_or_default() ||
-        DlssNr::Backend::ActiveKindFromConfig() != DlssNr::Backend::Kind::Daniel || present.swapchainCount != 1 ||
+        !DlssNr::Backend::PresentRuntimeSupported() || present.swapchainCount != 1 ||
         State::Instance().swapchainApi != API::Vulkan)
     {
         bridge.fgPending = false;

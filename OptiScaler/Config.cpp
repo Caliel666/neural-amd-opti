@@ -579,6 +579,8 @@ bool Config::Reload(std::filesystem::path iniPath)
             LmxxfStyle.set_from_config(readUInt("DlssNr", "LmxxfStyle"));
             LmxxfVitReuse.set_from_config(readBool("DlssNr", "LmxxfVitReuse"));
             LmxxfCompact1080.set_from_config(readBool("DlssNr", "LmxxfCompact1080"));
+            LmxxfPassEstimate.set_from_config(readBool("DlssNr", "LmxxfPassEstimate"));
+            LmxxfSkinProtect.set_from_config(readBool("DlssNr", "LmxxfSkinProtect"));
             MochizukiTemporal.set_from_config(readBool("DlssNr", "MochizukiTemporal"));
             MochizukiHistoryStrength.set_from_config(readFloat("DlssNr", "MochizukiHistoryStrength"));
             MochizukiStabilizerStrength.set_from_config(readFloat("DlssNr", "MochizukiStabilizerStrength"));
@@ -593,6 +595,8 @@ bool Config::Reload(std::filesystem::path iniPath)
             MochizukiLocalStructure.set_from_config(readFloat("DlssNr", "MochizukiLocalStructure"));
             MochizukiSkinStructure.set_from_config(readFloat("DlssNr", "MochizukiSkinStructure"));
             MochizukiAutoMask.set_from_config(readBool("DlssNr", "MochizukiAutoMask"));
+            MochizukiAco.set_from_config(readBool("DlssNr", "MochizukiAco"));
+            MochizukiInt4.set_from_config(readBool("DlssNr", "MochizukiInt4"));
             MochizukiMaxRatio.set_from_config(readFloat("DlssNr", "MochizukiMaxRatio"));
             MochizukiWhitePoint.set_from_config(readFloat("DlssNr", "MochizukiWhitePoint"));
             MochizukiApplyModel.set_from_config(readBool("DlssNr", "MochizukiApplyModel"));
@@ -1760,6 +1764,10 @@ bool Config::SaveIni()
         ini.SetValue("DlssNr", "LmxxfVitReuse", GetBoolValue(Instance()->LmxxfVitReuse.value_for_config()).c_str());
         ini.SetValue("DlssNr", "LmxxfCompact1080",
                      GetBoolValue(Instance()->LmxxfCompact1080.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "LmxxfPassEstimate",
+                     GetBoolValue(Instance()->LmxxfPassEstimate.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "LmxxfSkinProtect",
+                     GetBoolValue(Instance()->LmxxfSkinProtect.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiTemporal",
                      GetBoolValue(Instance()->MochizukiTemporal.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiHistoryStrength",
@@ -1786,6 +1794,8 @@ bool Config::SaveIni()
                      GetFloatValue(Instance()->MochizukiSkinStructure.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiAutoMask",
                      GetBoolValue(Instance()->MochizukiAutoMask.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiAco", GetBoolValue(Instance()->MochizukiAco.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiInt4", GetBoolValue(Instance()->MochizukiInt4.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiMaxRatio",
                      GetFloatValue(Instance()->MochizukiMaxRatio.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiWhitePoint",

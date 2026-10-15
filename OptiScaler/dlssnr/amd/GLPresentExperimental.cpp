@@ -438,7 +438,7 @@ bool Wanted()
     auto config = Config::Instance();
     const bool neural = config->DlssNrEnabled.value_or_default();
     const bool wanted = (neural || FgWanted()) && config->DlssNrPresent.value_or_default() && !route.stopped &&
-                        DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Daniel;
+                        DlssNr::Backend::PresentRuntimeSupported();
 
     static bool neuralBefore = true;
     if (config->DlssNrPresent.value_or_default() && neural != neuralBefore)

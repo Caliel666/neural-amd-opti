@@ -251,13 +251,14 @@ void RenderMenu(Config* config, float menuResScale)
                    "\nA classic D3D9 device copies each frame through system memory; D3D9Ex shares it with D3D12."
                    "\nOpenGL needs OptiScaler installed as opengl32.dll and shares the back buffer with D3D12."
                    "\nScene cuts reset history; the runtime noise seed is fixed on supported versions.");
-        if (const auto kind = DlssNr::Backend::ActiveKindFromConfig(); present && kind != DlssNr::Backend::Kind::Daniel)
+        if (const auto kind = DlssNr::Backend::ActiveKindFromConfig();
+            present && !DlssNr::Backend::PresentRuntimeSupported())
             ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f), "%s",
                                kind == DlssNr::Backend::Kind::Off
-                                   ? "NR without upscaling runs on the danielblnc runtime only. NrBackend is off,"
-                                     "\nso this session runs no NR."
-                                   : "NR without upscaling runs on the danielblnc runtime only. This session's runtime"
-                                     "\nruns inside an upscaler call, so a game without one gets no NR.");
+                                   ? "NR without upscaling runs on the danielblnc and mochizuki runtimes. NrBackend"
+                                     "\nis off, so this session runs no NR."
+                                   : "NR without upscaling runs on the danielblnc and mochizuki runtimes. lmxxf runs"
+                                     "\ninside an upscaler call, so a game without one gets no NR.");
         if (present && State::Instance().currentFeature != nullptr)
             ImGui::TextColored(
                 ImVec4(0.95f, 0.70f, 0.20f, 1.0f), "%s",
@@ -363,6 +364,21 @@ void RenderMenu(Config* config, float menuResScale)
                 config->DlssNrPasses = uint32_t(passes);
             HelpMarker("Runs the model again on its own output, for a stronger effect."
                        "\nEach pass adds the model's whole GPU time to every frame.");
+            ImGui::BeginDisabled(passes != 3);
+            bool estimate = config->LmxxfPassEstimate.value_or_default();
+            if (ImGui::Checkbox("Estimate pass 3", &estimate))
+                config->LmxxfPassEstimate = estimate;
+            ImGui::EndDisabled();
+            HelpMarker("With three passes, runs two and works out the third from the change between them:"
+                       "\nabout a third less GPU time, close to a real third pass.");
+            ImGui::BeginDisabled(passes < 2);
+            bool skin = config->LmxxfSkinProtect.value_or_default();
+            if (ImGui::Checkbox("Protect skin", &skin))
+                config->LmxxfSkinProtect = skin;
+            ImGui::EndDisabled();
+            HelpMarker("With two or three passes, skin-coloured areas keep the first pass's result, so faces"
+                       "\ndo not take the extra passes. It goes by colour, not by faces: brown and orange"
+                       "\nsurfaces such as earth, wood or warm shadows are protected too.");
             int style = int(std::min(config->LmxxfStyle.value_or_default(), 2u));
             if (ImGui::Combo("Style", &style, "Standard\0Natural\0Cinematic\0"))
                 config->LmxxfStyle = uint32_t(style);
@@ -425,6 +441,32 @@ void RenderMenu(Config* config, float menuResScale)
                                    "\n\nThe fps is 1000 divided by that time: how many frames per second the"
                                    "\nmodel alone could keep up with. The game runs slower than that, because"
                                    "\nthe rest of the frame takes time too.");
+            // A build takes from seconds to over a minute, and the frames go without NR (or on the previous network)
+            // meanwhile: say so where the cost will appear, so it does not look broken.
+            if (MochizukiNrInfo info {}; config->DlssNrEnabled.value_or_default() &&
+                                         DlssNr::Backend::LmxxfBackend::MochizukiInfo(info) && info.building)
+            {
+                const bool fields =
+                    info.struct_size >= offsetof(MochizukiNrInfo, build_total) + sizeof info.build_total;
+                const uint32_t stage = fields ? info.build_stage : 0;
+                // Planning and the weights are quick; the pipelines are most of a build.
+                float progress = stage <= 1 ? 0.02f : stage == 2 ? 0.05f : stage == 3 ? 0.10f : 0.98f;
+                if (stage == 4)
+                    progress = 0.12f + 0.85f * (info.build_total ? float(info.build_done) / info.build_total : 0.f);
+                ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f),
+                                   "Building the network: NR shows when it is ready. The first build in a"
+                                   "\ngame can take a minute; the next ones a few seconds.");
+                char label[48];
+                if (stage == 4 && info.build_total)
+                    std::snprintf(label, sizeof label, "pipelines %u / %u", info.build_done, info.build_total);
+                else
+                    std::snprintf(label, sizeof label, "%s",
+                                  stage == 2   ? "reading the weights"
+                                  : stage == 3 ? "uploading the weights"
+                                  : stage == 5 ? "finishing"
+                                               : "planning");
+                ImGui::ProgressBar(progress, ImVec2(-1.0f, 0.0f), label);
+            }
 
             // The runtime takes only the seam before Super Resolution. EvaluateAtSeam ignores ApplyAfterRR for it,
             // but the key is danielblnc's placement too, so it is only cleared on request.
@@ -552,6 +594,21 @@ void RenderMenu(Config* config, float menuResScale)
             if (ImGui::Checkbox("Auto skin mask", &mask))
                 config->MochizukiAutoMask = mask;
             HelpMarker("The model's own mask, which lets skin get its own structure strength.");
+            bool aco = config->MochizukiAco.value_or_default();
+            if (ImGui::Checkbox("ACO machine code (restart)", &aco))
+                config->MochizukiAco = aco;
+            HelpMarker("Runs the network as machine code made in advance by ACO, the Linux driver's compiler,"
+                       "\ninstead of compiling it with AMD's Windows one: about a fifth faster, the same picture."
+                       "\nTested by its author on AMD Software 26.9.2 only; if the game crashes or the picture is"
+                       "\nwrong, turn it off. Save Settings and start the game again to apply it.");
+            ImGui::BeginDisabled(!aco);
+            bool int4 = config->MochizukiInt4.value_or_default();
+            if (ImGui::Checkbox("int4 mixed network", &int4))
+                config->MochizukiInt4 = int4;
+            ImGui::EndDisabled();
+            HelpMarker("Runs part of the network in 4-bit integers: about a tenth faster than ACO alone, the"
+                       "\npicture close to the default network's but not the same. Needs ACO. Switching builds"
+                       "\nthe other network in a few seconds while the current one keeps running; no restart.");
 
             if (ImGui::TreeNode("Pass 2/3"))
             {

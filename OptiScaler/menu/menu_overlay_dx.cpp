@@ -25,6 +25,10 @@ static bool _dx12Device = false;
 static ID3D11Device* g_pd3dDevice = nullptr;
 static ID3D11DeviceContext* g_pd3dDeviceContext = nullptr;
 static ID3D11RenderTargetView* g_pd3dRenderTarget = nullptr;
+// A D3D10 game's frame on OptiScaler's own D3D11 device (AmdPresentExperimental::Bridge10): the menu draws there, on
+// the device the frame crossed to, instead of the swapchain's back buffer. _targetView is the texture the view is on.
+static ID3D11Texture2D* _dx10Target = nullptr;
+static ID3D11Texture2D* _targetView = nullptr;
 
 // for dx12
 static ID3D12Device* g_pd3dDeviceParam = nullptr;
@@ -54,9 +58,10 @@ static std::atomic<UINT64> _fgOutputPresents = 0;
 static std::atomic<double> _fgLongestGapMs = 0, _fgLastOutputMs = 0;
 // XeFG presents one frame of each burst from the game's thread, inside the game's Present, and the others from a thread
 // of its own right after it, so above 2X a whole burst reaches the screen within a millisecond or two. With final-image
-// NR on D3D12 those others are spread over the time the game spends outside frame generation's Present, on XeFG's
-// thread only, and the pacing hooks in XeFG (XeFGPacing.h) only forward meanwhile, unless XeFG\ExtraPacing=true asks
-// for them. A wait ends when the game's next frame reaches frame generation, so the game never waits for it.
+// NR on D3D12, or D3D11 through D3D12, those others are spread over the time the game spends outside frame generation's
+// Present, on XeFG's thread only, and the pacing hooks in XeFG (XeFGPacing.h) only forward meanwhile, unless
+// XeFG\ExtraPacing=true asks for them. A wait ends when the game's next frame reaches frame generation, so the game
+// never waits for it.
 static std::atomic<DWORD> _fgGameThread = 0;
 static std::atomic<double> _fgPeriodMs = 0, _fgReturnedMs = 0, _fgSpacingUntilMs = 0;
 static std::atomic<UINT64> _fgFrames = 0;
@@ -83,8 +88,7 @@ void MenuOverlayDx::SpaceFrameGenerationPresent(UINT flags)
     static std::atomic<UINT64> burstFrame = 0;
     const double now = Util::MillisecondsNow();
     const auto& state = State::Instance();
-    if ((flags & DXGI_PRESENT_TEST) || now > _fgSpacingUntilMs || state.currentFGSwapchain == nullptr ||
-        state.swapchainInteropApi != SwapchainInteropApi::None)
+    if ((flags & DXGI_PRESENT_TEST) || now > _fgSpacingUntilMs || state.currentFGSwapchain == nullptr)
         return;
     if (GetCurrentThreadId() == _fgGameThread)
     {
@@ -120,6 +124,16 @@ void MenuOverlayDx::SpaceFrameGenerationPresent(UINT flags)
             WaitForSingleObject(timer.handle, 100);
         else
             YieldProcessor();
+    }
+}
+
+void MenuOverlayDx::SpaceFrameGeneration()
+{
+    _fgGameThread = GetCurrentThreadId();
+    if (!Config::Instance()->FGXeFGExtraPacing.value_or(false))
+    {
+        _fgSpacingUntilMs = Util::MillisecondsNow() + 250;
+        XeFGPacing::BypassFor(0.25);
     }
 }
 
@@ -260,6 +274,13 @@ static void CleanupRenderTargetDx12(bool clearQueue)
 
 static void CreateRenderTargetDx11(IDXGISwapChain* pSwapChain)
 {
+    if (_dx10Target)
+    {
+        g_pd3dDevice->CreateRenderTargetView(_dx10Target, nullptr, &g_pd3dRenderTarget);
+        _targetView = _dx10Target;
+        return;
+    }
+
     ID3D11Texture2D* pBackBuffer = NULL;
     pSwapChain->GetBuffer(0, IID_PPV_ARGS(&pBackBuffer));
 
@@ -327,9 +348,10 @@ static void RenderImGui_DX11(IDXGISwapChain* pSwapChain)
 
     if (io.BackendRendererUserData == nullptr)
     {
-        if (pSwapChain->GetDevice(IID_PPV_ARGS(&g_pd3dDevice)) == S_OK)
+        if (_dx10Target ? g_pd3dDevice != nullptr : pSwapChain->GetDevice(IID_PPV_ARGS(&g_pd3dDevice)) == S_OK)
         {
-            g_pd3dDevice->Release();
+            if (!_dx10Target)
+                g_pd3dDevice->Release();
             g_pd3dDevice->GetImmediateContext(&g_pd3dDeviceContext);
             g_pd3dDeviceContext->Release();
             ImGui_ImplDX11_Init(g_pd3dDevice, g_pd3dDeviceContext);
@@ -338,6 +360,9 @@ static void RenderImGui_DX11(IDXGISwapChain* pSwapChain)
 
     if (_isInited)
     {
+        // The D3D10 bridge makes its shared texture again on a resize.
+        if (_dx10Target && _targetView != _dx10Target)
+            SAFE_RELEASE(g_pd3dRenderTarget);
         if (!g_pd3dRenderTarget)
             CreateRenderTargetDx11(pSwapChain);
 
@@ -632,6 +657,32 @@ void MenuOverlayDx::HoldForResize(bool hold) { _heldForResize = hold; }
 void MenuOverlayDx::Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
                             const DXGI_PRESENT_PARAMETERS* pPresentParameters, IUnknown* pDevice, HWND hWnd, bool isUWP)
 {
+    // D3D10: the frame crosses to OptiScaler's own D3D11 device, NR and the menu run there, and it comes back. Only
+    // with NR without upscaling on; otherwise OptiScaler leaves a D3D10 game's frames alone, as before.
+    Microsoft::WRL::ComPtr<ID3D10Device> device10;
+    if (!_dx10Target && pDevice && SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&device10))))
+    {
+        if (!AmdPresentExperimental::IsTarget() || (Flags & DXGI_PRESENT_TEST) || (hWnd && IsIconic(hWnd)))
+            return;
+        ID3D11Device* device11 = nullptr;
+        ID3D11Texture2D* frame = AmdPresentExperimental::Begin10(pSwapChain, device10.Get(), &device11);
+        if (!frame)
+            return;
+        if (Config::Instance()->DlssNrEnabled.value_or_default() && !State::Instance().currentFeature &&
+            DlssNr::Backend::PresentRuntimeSupported())
+        {
+            auto settings = DlssNr::AmdBridge::SettingsFromConfig(*Config::Instance(),
+                                                                  Config::Instance()->AmdNrScale.value_or_default());
+            settings.spinDraw = 0;
+            AmdPresentExperimental::RenderTexture11(frame, device11, Util::DllPath().parent_path(), settings);
+        }
+        _dx10Target = frame;
+        Present(pSwapChain, SyncInterval, Flags, pPresentParameters, device11, hWnd, isUWP);
+        _dx10Target = nullptr;
+        AmdPresentExperimental::End10();
+        return;
+    }
+
     // Through the D3D11 bridge, Dx11wDx12SC runs NR before XeFG; the swapchain XeFG presents to is not a second
     // target. On native D3D12 with a frame generation swapchain this is the swapchain frame generation presents
     // its output to; FinalImageFrameGen has already run NR on the game's frame. D3D9 runs NR in its own bridge.
@@ -645,7 +696,7 @@ void MenuOverlayDx::Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             _fgLongestGapMs = now - last;
         _fgOutputPresents++;
     }
-    if (AmdPresentExperimental::IsTarget() && Config::Instance()->DlssNrEnabled.value_or_default() &&
+    if (!_dx10Target && AmdPresentExperimental::IsTarget() && Config::Instance()->DlssNrEnabled.value_or_default() &&
         !State::Instance().currentFeature && !fgPresents &&
         State::Instance().swapchainInteropApi != SwapchainInteropApi::Dx9wDx12 &&
         !(State::Instance().activeFgOutput == FGOutput::XeFG && State::Instance().currentFGSwapchain == pSwapChain &&
@@ -654,8 +705,8 @@ void MenuOverlayDx::Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
           !FGHooks::IsDx12InteropPresentSC(pSwapChain)) &&
         (!State::Instance().currentFG || !State::Instance().currentFG->IsActive() ||
          State::Instance().currentFG->IsPaused()) &&
-        DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Daniel && !(Flags & DXGI_PRESENT_TEST) &&
-        pDevice && (!hWnd || !IsIconic(hWnd)))
+        DlssNr::Backend::PresentRuntimeSupported() && !(Flags & DXGI_PRESENT_TEST) && pDevice &&
+        (!hWnd || !IsIconic(hWnd)))
     {
         Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue;
         if (SUCCEEDED(pDevice->QueryInterface(IID_PPV_ARGS(&queue))))
@@ -800,7 +851,7 @@ void MenuOverlayDx::FinalImageFrameGen(IDXGISwapChain* fgSwapChain)
     // by the queue itself.
     if (!AmdPresentExperimental::IsTarget() || state.swapchainInteropApi != SwapchainInteropApi::None ||
         state.currentFeature || fg == nullptr || fg->GetCommandQueue() == nullptr ||
-        DlssNr::Backend::ActiveKindFromConfig() != DlssNr::Backend::Kind::Daniel)
+        !DlssNr::Backend::PresentRuntimeSupported())
         return;
 
     auto queue = fg->GetCommandQueue();
@@ -874,12 +925,7 @@ void MenuOverlayDx::FinalImageFrameGen(IDXGISwapChain* fgSwapChain)
 
     // XeFG generates: OptiScaler spaces its presents and the pacing hooks forward, until a quarter second after the
     // last such frame.
-    _fgGameThread = GetCurrentThreadId();
-    if (!config.FGXeFGExtraPacing.value_or(false))
-    {
-        _fgSpacingUntilMs = Util::MillisecondsNow() + 250;
-        XeFGPacing::BypassFor(0.25);
-    }
+    SpaceFrameGeneration();
 
     // Optical flow has no camera: an identity view, a nominal projection and pixel motion at output size.
     fg->SetCameraValues(0.1f, 1000.0f, 1.5707963f, float(guides.width) / float(guides.height));

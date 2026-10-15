@@ -68,6 +68,8 @@ class LmxxfBackend final : public Host
 
     bool EnsureRuntime();
     ID3D12Resource* FinishRecord(ID3D12GraphicsCommandList* recordCmd, void* jobHandle, void* privateOutput);
+    bool ownLists = false; // the constructor's: see RecordConsumer
+    ID3D12Resource* RecordProducer(ID3D12GraphicsCommandList* producer, void* jobHandle, void* privateOutput);
     bool EnsureSession();
     bool SessionStartFailed(const char* step, const char* err);
     void MigrateQueue(ID3D12CommandQueue* q);
@@ -84,7 +86,7 @@ class LmxxfBackend final : public Host
 
   public:
     LmxxfBackend(ID3D12Device* device, ID3D12CommandQueue* queue, const std::filesystem::path& directory,
-                 const wchar_t* runtime = L"LmxxfNrRuntime.dll");
+                 const wchar_t* runtime = L"LmxxfNrRuntime.dll", bool ownLists = false);
     ~LmxxfBackend() override;
     LmxxfBackend(const LmxxfBackend&) = delete;
     LmxxfBackend& operator=(const LmxxfBackend&) = delete;
@@ -103,5 +105,10 @@ class LmxxfBackend final : public Host
     // What mochizuki's MochizukiNrGetInfo said when the render thread last asked (at most every 500 ms, with the
     // runtime status), for the menu. False while no mochizuki session runs. Never waits on a frame being recorded.
     static bool MochizukiInfo(MochizukiNrInfo& out);
+    // NR without upscaling (constructed with ownLists): the host owns its command lists, so Record takes the producer
+    // list and records only the inputs; RecordConsumer adds the outputs to a second list, and SubmitOwnLists executes
+    // the producer, runs the network after it on the queue, then executes the consumer and retires the job.
+    bool RecordConsumer(ID3D12GraphicsCommandList* consumer);
+    void SubmitOwnLists(ID3D12CommandQueue* q, ID3D12CommandList* producer, ID3D12CommandList* consumer);
 };
 } // namespace DlssNr::Backend

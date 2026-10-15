@@ -47,4 +47,10 @@ bool SubmissionHooksWanted()
     const auto kind = ActiveKindFromConfig();
     return (LmxxfWired() && kind == Kind::Lmxxf) || kind == Kind::Mochizuki;
 }
+
+bool PresentRuntimeSupported()
+{
+    const auto kind = ActiveKindFromConfig();
+    return kind == Kind::Daniel || kind == Kind::Mochizuki;
+}
 } // namespace DlssNr::Backend

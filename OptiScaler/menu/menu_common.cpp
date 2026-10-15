@@ -1,4 +1,4 @@
-﻿#include "pch.h"
+#include "pch.h"
 #include "menu_common.h"
 #include <dlssnr/DlssNr_ExposureScan.h>
 
@@ -24,6 +24,7 @@
 
 #include <nvapi/fakenvapi.h>
 #include <hooks/Reflex_Hooks.h>
+#include <hooks/FG_Hooks.h>
 #include <hooks/Streamline_Hooks.h>
 #include <resource_tracking/ResTrack_dx12.h>
 
@@ -1480,8 +1481,7 @@ void MenuCommon::UpdateMenuInputMode(RenderMenuContext& ctx)
 static bool ChildWindowFinalImageFG(State& state, Config* config)
 {
     return (state.swapchainApi == API::Vulkan || state.swapchainApi == API::OpenGL) &&
-           config->DlssNrPresent.value_or_default() &&
-           DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Daniel &&
+           config->DlssNrPresent.value_or_default() && DlssNr::Backend::PresentRuntimeSupported() &&
            state.activeFgInput == FGInput::Upscaler && state.activeFgOutput == FGOutput::XeFG;
 }
 
@@ -5266,14 +5266,14 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
     // Vulkan and OpenGL games get XeFG only through final-image NR, in a D3D12 child window. With NR switched off
     // XeFG keeps running on the optical-flow guides, so the choice stays.
     const bool childWindowFgApi = state.swapchainApi == API::Vulkan || state.swapchainApi == API::OpenGL;
-    const bool childWindowFinalImageFg = childWindowFgApi && config->DlssNrPresent.value_or_default() &&
-                                         DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Daniel;
+    const bool childWindowFinalImageFg =
+        childWindowFgApi && config->DlssNrPresent.value_or_default() && DlssNr::Backend::PresentRuntimeSupported();
     inputOptions[optiFgIndex].set_disabled(
         childWindowFgApi && !childWindowFinalImageFg,
-        "XeFG on Vulkan and OpenGL requires NR without upscaling on the danielblnc runtime");
-    inputOptions[optiFgIndex].set_disabled(config->DlssNrPresent.value_or_default() &&
-                                               config->FGOutput.value_or_default() != FGOutput::XeFG,
-                                           "NR without upscaling has no upscaler motion/depth inputs for OptiFG");
+        "XeFG on Vulkan and OpenGL requires NR without upscaling on the danielblnc or mochizuki runtime");
+    // NR without upscaling feeds OptiFG to XeFG only; picking OptiFG switches the output to XeFG below.
+    const bool finalImageOptiFg =
+        config->DlssNrPresent.value_or_default() && config->FGInput.value_or_default() == FGInput::Upscaler;
 
     if (!inputOptions[optiFgIndex].disabled && state.activeFgOutput == FGOutput::FSRFG && !FfxApiProxy::IsFGReady() &&
         !ffxInitTried)
@@ -5359,6 +5359,17 @@ void MenuCommon::RenderFrameGenerationSelection(RenderMenuContext& ctx)
     outputOptions[xefgOutputIndex].set_disabled(
         childWindowFgApi && !childWindowFinalImageFg,
         "XeFG requires NR without upscaling on the danielblnc runtime on Vulkan and OpenGL");
+
+    if (finalImageOptiFg)
+    {
+        const std::string xefgOnly = "With NR without upscaling, OptiFG runs on XeFG only";
+        outputOptions[fsrfgOutputIndex].set_disabled(true, xefgOnly);
+        outputOptions[dlssgOutputIndex].set_disabled(true, xefgOnly);
+
+        if (config->FGOutput.value_or_default() != FGOutput::XeFG && !outputOptions[xefgOutputIndex].disabled)
+            config->FGOutput = FGOutput::XeFG;
+    }
+
     // Unsupported FG input selected
     const auto currentInputIndex = (uint32_t) state.activeFgInput;
     if (config->FGInput != FGInput::NoFG && inputOptions.size() > currentInputIndex &&
@@ -6468,6 +6479,19 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
                        "resolution to your display resolution\n"
                        "Might cause some instability issues.\n\n"
                        "NEEDS GAME RESTART TO BE ACTIVE!");
+
+        if (config->FGEnabled.value_or_default() && FGHooks::RtssLoaded())
+        {
+            // Two lines: the menu is as wide as its widest row.
+            const auto warn = toneMapColor(ImVec4(1.f, 0.8f, 0.f, 1.f));
+            ImGui::TextColored(warn, "RivaTuner (RTSS) is running: with frame generation it causes");
+            ImGui::TextColored(warn, "stutter and a lower base frame rate. Close it for the best results.");
+            ShowHelpMarker("RTSS hooks every present, including the ones frame generation makes,\n"
+                           "and holds them back. Close RivaTuner Statistics Server (and MSI\n"
+                           "Afterburner, which starts it), or turn off its hooking for this game.\n\n"
+                           "The FPS limit below also goes through RTSS and counts the generated\n"
+                           "frames: with frame generation on, cap the frame rate another way.");
+        }
 
         // Disable this for now
         // ImGui::SameLine(0.0f, 16.0f);

@@ -1063,9 +1063,11 @@ void ReportNeuralMs(float ms)
     static std::atomic<bool> logged { false };
     if (!logged.exchange(true))
         LOG_INFO("Final-image NR: first GPU time of the model, {:.2f} ms", ms);
-    // The final image runs danielblnc only; no upscaler backend named it.
+    // No upscaler backend named the final image's runtime: danielblnc or mochizuki.
     std::lock_guard guard(runtimeLabelMutex);
-    if (runtimeLabel.empty())
+    if (runtimeLabel.empty() && DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Mochizuki)
+        runtimeLabel = "mochizuki";
+    else if (runtimeLabel.empty())
     {
         const char* build = RuntimeName();
         runtimeLabel = build ? std::string("danielblnc ") + build : std::string("danielblnc");
@@ -1140,9 +1142,9 @@ std::string StandDownNote()
 
 std::string Status()
 {
-    // The final image's status only while it is the path that runs: danielblnc, no upscaler.
+    // The final image's status only while it is the path that runs: danielblnc or mochizuki, no upscaler.
     if (AmdPresentExperimental::IsTarget() && !State::Instance().currentFeature &&
-        DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Daniel)
+        DlssNr::Backend::PresentRuntimeSupported())
         return AmdPresentExperimental::Status();
     {
         std::lock_guard l(messageMutex);
