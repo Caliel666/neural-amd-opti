@@ -209,6 +209,9 @@ the input or output. This path starts interpolation only after Optical Flow has
 warmed up and the neural frame and guides are ready. It uses synthetic depth
 on the bridge, so disocclusions and the HUD may still show artifacts. XeFG
 requires its D3D12 proxy swapchain even though the game renders with D3D11.
+Close RivaTuner Statistics Server (RTSS) first: with it hooked into the game, XeFG's
+present stalls 25-35 ms a frame (Cities: Skylines at 3X: 235 fps out without it,
+88-138 with constant stutter with it).
 
 ### 64-bit D3D9 games (experimental)
 

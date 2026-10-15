@@ -17,7 +17,7 @@ next launch) or `NrBackend` in `OptiScaler.ini`.
 | Runtime | [DLSS-NR-on-AMD](https://github.com/danielblnc/DLSS-NR-on-AMD) 0.5.1 (recommended; public since 2026-10-01), 0.5.0, 0.4.3, 0.4.2, 0.4.1, 0.4.0, 0.3.1 or 0.3.0, or the 0.6.0 build danielblnc gives his supporters, as `dlssnr_amd_pass1-3.dll` | [lmxxf's open-source HIP port](https://github.com/lmxxf/dlss5-on-amd-9070xt-porting), `LmxxfNrRuntime.dll` built here | [mochizuki0323's Vulkan port](https://github.com/mochizuki0323/DLSSNR-AMD), `MochizukiNrRuntime.dll` built here, not in the package |
 | Weights | `dlssnr_on_amd_weights.bin` | `native-game-tiled-assets\` | `dlssnr-amd\dlssnr.bin`, made from your own `nvngx_dlssnr.dll` 310.8.0 |
 | GPUs | RDNA3 and RDNA4 with HIP 7 (0.6.0 adds RDNA2, with the HIP SDK 7.2 runtime) | RDNA4: RX 9070 series (`lmxxf-modules`) and RX 9060 series (`lmxxf-modules-gfx1200`) | RDNA4 (Vulkan FP8) |
-| Where it runs | Before Super Resolution, or on the finished frame (the only choice for Ray Reconstruction titles) | Before Super Resolution, render resolution up to 1080p | Before Super Resolution, on a Vulkan device of its own beside the game's DirectX 12 |
+| Where it runs | Before Super Resolution, or on the finished frame (the only choice for Ray Reconstruction titles) | Before Super Resolution, render resolution up to 1080p | Before Super Resolution, on a Vulkan device of its own beside the game's DirectX 12, or on the finished frame |
 | Controls | Passes 1-3, NR slots, wait mode, encoding (Linear default), style, NR resolution with dynamic scaling, effect strength, lighting and structure | Passes 1-3, style, temporal history and smoothing, detail and colour strength, reuse on still scenes, compact 1080 tier, debug view | Passes 1-3, NR resolution, dynamic resolution, temporal history, detail and colour strength, style, intensity, tone, structure, skin, highlight guard |
 
 No runtime's weights are included; all three are derived from NVIDIA's model.
@@ -46,6 +46,11 @@ AMD cards too. Intel only allows it with its own driver build, so `libxess_fg.dl
 `libxell.dll` are patched in memory; the files on disk stay as shipped. Set `FGOutput=xefg`, and
 `FGInput=dlssg` in games with DLSS frame generation. The **MFG** combo in the XeFG section follows
 the game's multiplier (**Auto**) or takes 2X to 8X. Above 4X, turn on VSync or cap the frame rate.
+Close RivaTuner Statistics Server (RTSS, also started by MSI Afterburner) while frame generation runs:
+its present hook holds XeFG back, which shows as stutter and a lower base frame rate (the menu warns
+when it is loaded), and OptiScaler's FPS limit goes through RTSS and counts the generated frames.
+Without FreeSync, if 2X stays at half the refresh rate, turn off "AMD Optimized" in the game's
+Adrenalin profile.
 When a game ships an older `libxell.dll` of its own (Cyberpunk 2077 does), XeFG is pointed at
 OptiScaler's copy.
 
@@ -93,11 +98,14 @@ All in `OptiScaler.ini`, section `[DlssNr]`, and in the **Neural** tab of the ov
 | `LmxxfFitLarge` | Let lmxxf take a render resolution above 1080p (can hitch; off by default) |
 | `LmxxfTemporal` | Each lmxxf pass reads its own result from the previous frame, moved by the game's motion vectors (on by default) |
 | `LmxxfSmoothStrength`, `LmxxfSmoothThreshold` | With temporal history, blend the result toward the previous frame's where they differ by less than the threshold (in 1/255): 0.8 and 10 by default, strength 0 is off |
+| `LmxxfPassEstimate`, `LmxxfSkinProtect` | With three lmxxf passes, run two and extrapolate the third from them (upstream's multi-pass predict): 1080p 30 to 21 ms, close to a real third pass; on by default. With two or three, skin-coloured areas keep pass 1's result so faces do not take the extra passes (it goes by colour: brown and orange surfaces are protected too); off by default |
 | `MochizukiTemporal`, `MochizukiHistoryStrength` | mochizuki's history from the previous frame, moved by the game's motion vectors, and how much of it is blended in (0 to 1). On and 1 by default; without the key, `LmxxfTemporal` decides |
 | `MochizukiDetailStrength`, `MochizukiColourStrength` | How much of the network's detail (0 to 2) and colour change (0 to 4) reaches the frame, exaggerated above 1. Detail 1 and colour 0 by default: colour 0 keeps the game's own colour at the network's brightness |
 | `MochizukiPasses`, `MochizukiModelScale` | Network runs per frame (1 to 3) and its resolution as a share of the render resolution (0.25 to 1, in steps of 0.05); 1 and 1 by default. A change rebuilds the network |
 | `MochizukiIntensity`, `MochizukiStyle`, `MochizukiLocalTone`, `MochizukiLocalStructure`, `MochizukiSkinStructure`, `MochizukiAutoMask` | mochizuki's model controls: intensity 0 to 2 (1), style 0 standard, 1 natural, 2 cinematic (0), local tone and structure 0 to 2 (1), skin structure -1 to 2 (-1 follows local structure), automatic skin mask (on) |
 | `MochizukiMaxRatio` | Highlight guard: the most the result may multiply or divide a pixel's brightness by, 1 to 8 (2) |
+| `MochizukiAco` | Run the network as machine code made in advance by ACO (the Linux driver's compiler), from `dlssnr-amd\aco\`, instead of compiling it with AMD's Windows compiler: about a fifth faster (RX 9070 XT 1080p 14 to 10.5 ms), the same picture. On by default; its author tested it on AMD Software 26.9.2 only. Takes effect when the game starts again; without the driver's pipeline binaries or that folder, the driver compiles as before |
+| `MochizukiInt4` | With ACO, the int4 mixed network: part of it in 4-bit integers, made from the model into `dlssnr-amd\dlssnr-int4.bin`, about a tenth faster again (1080p 10.1 to 9.2 ms), the picture close to the default network's but not the same (about 40 dB from it). Off by default. A change rebuilds the network in a few seconds while the frames keep the current one; no restart, and only one network stays in video memory |
 | `MochizukiWhitePoint`, `MochizukiLinearInput` | For linear colour, the brightness treated as white (0.01 to 100, 1); whether the colour is linear: 0 auto (float formats), 1 on, 2 off. A `LinearInput` change rebuilds the network |
 | `MochizukiApplyModel` | `false` runs the network at full cost but shows the original frame (on by default) |
 | `MochizukiDynamicResolution` | For games that change their render resolution as they run: `auto` (default) keeps one network, built for the largest resolution seen, once the render resolution drops below the colour buffer, and the frame moves inside it; `exact` rebuilds the network for every resolution (a second or two without NR each time); `always` is `auto` from the first frame, also across buffer reallocations |
