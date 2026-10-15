@@ -16,6 +16,20 @@ them. This folder holds a pair that brings the 64-bit OptiScaler to such a game 
   from the same `OptiScaler.ini`.
 - `dx9_wire.h` is the pipe between the two. The pipe I/O is the AMD NR ReShade add-on's x86 bridge
   transport (`reshade/core/x86bridge/bridge_io.h`).
+- `bridge.h` is what the game side of every 32-bit API shares: starting the host, the child window, the
+  input held back while the menu is open, and the bridge itself, over an `Api` that brings the device, its
+  window and adapter, and the copy of the back buffer. `proxy.cpp` is the D3D9 one.
+- `proxy_dxgi.cpp` builds a 32-bit `dxgi.dll` for D3D10 games (`exports\dxgi-x86`). `d3d10.dll` and
+  `d3d10_1.dll` make their swap chains through the `dxgi.dll` beside the game, so this one proxy covers
+  both: it hooks the factory's swap chain creation and the Present of swap chains on a D3D10 device, and
+  hands the back buffer (resolved first when multisampled) to the same host through a texture shared by
+  handle. Swap chains of other devices are presented natively.
+
+A game that asks for fullscreen (either API) stays windowed, since an exclusive fullscreen swap chain owns the
+display and the host's would never show: its window becomes a borderless one over its monitor, made on the
+window's own thread, and a DXGI game is told it is fullscreen (`ForceWindowed=0` in `[Dx9X86]` or `[DxgiX86]`
+opts out). While the menu is open, DirectInput 8 devices read as untouched as well (state zeroed, buffered data
+keeps only releases), for games that read the mouse there. `tools\test-dx10-x86.cmd` runs it end to end.
 
 While the host presents, the game's own Present is skipped: one presenter owns the picture for the
 whole session, whatever NR, frame generation or the menu do, so turning them on and off never hands
