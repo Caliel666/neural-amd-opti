@@ -26,7 +26,7 @@ struct PassControls {
 
 // [Preprocess] in dlssnr-amd.ini: what the network is shown is changed before
 // it runs and every change is taken back out of its answer
-// (linux/shaders/passes/runtime_prep.comp). Opt-in; the defaults below are what
+// (windows/shaders/passes/runtime_prep.comp). Opt-in; the defaults below are what
 // Enabled=1 starts from (auto exposure, filmic curve), and each field has
 // a value that leaves the frame as the host handed it over (exposure off,
 // curve 0, contrast and saturation 1).
@@ -54,6 +54,9 @@ struct Preprocess {
 };
 
 // In-process interface shared by game adapters and the native menu.
+// Controls::transfer
+constexpr int kEnlargeMatched = 0, kEnlargeEdgeAware = 1, kEnlargeClassic = 2;
+
 struct Controls {
     bool enabled = true;
     bool apply_model = true;
@@ -65,6 +68,16 @@ struct Controls {
     float detail_strength = 1.0f;
     float colour_strength = 1.0f;
     float max_ratio = 2.0f;
+    // Below 100% Model resolution, how the model's result is enlarged to the frame
+    // (runtime_transfer.comp), kEnlarge*: matched residual (the default), edge-aware
+    // lighting + colour, classic. Per frame; nothing is rebuilt.
+    int transfer = 0;
+    // Classic's scaler: 0 bilinear, 1 Catmull-Rom, 2 Lanczos3, 3 FSR 1 EASU.
+    int classic_scaler = 1;
+    // Edge-aware: the enlargement weighted by the full-resolution proxy (else plain
+    // bilinear), and the weight's range in stops. Not user settings.
+    bool transfer_guided = true;
+    float transfer_sigma = 0.25f;
     // How many times the network runs on the frame, 1..RuntimeConfig::max_passes.
     // Pass k+1 takes pass k's output as its colour, with the same motion and
     // depth, and its own history; the transfer pass runs once at the end
@@ -81,6 +94,10 @@ struct Controls {
     // tone zeroed. Empty is exactly the behaviour that shipped before.
     std::vector<PassControls> per_pass{};
     Preprocess preprocess{};
+    // A frame without motion vectors (Runtime::record): the pre block's noise seed moves every frame, as the DLL's
+    // counter does whatever the motion vectors. Off (the default): the seed stays 0 - without a history to average
+    // the noise, a moving seed shimmers on a still picture.
+    bool noise_every_frame = false;
 };
 
 struct HostDevice {
@@ -97,8 +114,9 @@ struct HostDevice {
     // submits only. Empty: the caller serialises the whole construction.
     std::function<void()> queue_lock, queue_unlock;
     // bufferDeviceAddress is enabled on `device` (vkd3d-proton's always; DXVK's and a Vulkan
-    // game's when the device watch added the network's features). The graph then reads the
-    // activation arena through a buffer_reference where that is faster (Windows network only).
+    // game's when the device watch added the network's features; the bridge's own device). The graph
+    // then reads the activation arena through a buffer_reference where that is faster (Windows
+    // network only).
     bool buffer_device_address = false;
 };
 
@@ -125,6 +143,11 @@ struct RuntimeConfig {
     // the cost tracks scale^2 while the game's own resolution is untouched.
     // The "Model Resolution" of the NVIDIA-side mods.
     float model_scale = 1.0f;
+#if NR_INT4
+    // The int4 mixed network: -1 = as DLSSNR_INT4 / dlssnr-amd.ini [Int4Mixed] Enabled say (start), 0 = the original
+    // network, 1 = int4 mixed when installed and the device has VK_KHR_pipeline_binary ([Int4Mixed] Hotkey switches).
+    int int4_mixed = -1;
+#endif
     // The most passes Controls::passes may ask for; each one above the first
     // costs a history image at the model extent.
     uint32_t max_passes = 1;
@@ -312,6 +335,10 @@ struct EngineFrame {
     // its own history, latch and parity exactly as it would with NVIDIA's DLL,
     // where a feature IS the object that owns them.
     uint64_t feature = 0;
+    // where the answer goes when it is not `colour` itself (same format and
+    // extent, one pass, the model applied). `colour` is then only read, and the
+    // host's seed copy of the colour into the target is not needed.
+    ColourFrame target;
 };
 
 struct EngineResult {
@@ -319,6 +346,12 @@ struct EngineResult {
     bool history_consumed{};
     const char* motion_provider = "engine";
 };
+
+// Diagnostics, off by default: every ~600 recordings of an engine frame, read back what the
+// network is handed (colour, the game's motion vectors, depth) and what it hands back, score it
+// on a background thread and log the result; the first `pictures` captures also as PNGs in
+// `folder`. See nr_input_check.hpp.
+void set_input_check(bool on, const std::string& folder, int pictures = 4);
 
 class Runtime {
 public:
@@ -339,6 +372,9 @@ public:
     // caller resources; neither overload acquires game guides or supplies temporal
     // history, depth/motion integration or a Present hook by itself.
     RecordResult record(VkCommandBuffer, const ColourFrame&, const Controls&);
+    // The same, for a frame the caller has a Reset flag for (DLSSNR.Reset): with Controls::noise_every_frame the
+    // seed starts again from 0 on it, as the DLL's counter does.
+    RecordResult record(VkCommandBuffer, const ColourFrame&, const Controls&, bool reset);
     ControlMaskResult record(VkCommandBuffer, const ColourFrame&, const Controls&, const ControlMaskFrame*);
     // Named rather than overloaded: `record(cmd, frame, controls, nullptr)` must
     // keep meaning what it already means to every existing caller.
@@ -349,12 +385,23 @@ public:
     // Requires a runtime built with TemporalConfig::enable, whose extent matches
     // the render resolution rather than the display one.
     EngineResult record_engine(VkCommandBuffer, const EngineFrame&, const Controls&);
+    // whether record_engine can take EngineFrame::target with these controls
+    // (the model applied, one pass). A host asks before it skips its own seed copy.
+    bool takes_target(const Controls&) const;
     // Drop a feature's temporal state (EngineFrame::feature). The images are not
     // freed here: the caller's last use of them may still be executing and this
     // is called from a render thread, so they are retired and destroyed a fixed
     // number of later recordings on, which is the same reasoning as OptiScaler's
     // own 32-evaluate parking of a retired feature. Never blocks.
     void release_feature(uint64_t feature);
+    // A recording of this runtime was never executed (the host dropped it): no feature's temporal
+    // state can be trusted. Each feature's next frame runs as its first (no history, seed 0). Call
+    // between recordings.
+    void drop_history();
+
+    // Every feature's next frame runs as a new feature's (no history read, the noise seed from 0), as after a
+    // Reset. For a network that served nothing for a while and is taken up again (Session::select_runtime).
+    void forget_history();
     // How many features currently hold temporal state, for the log.
     uint32_t live_features() const;
 
@@ -371,6 +418,10 @@ public:
     // The extent the network actually runs at (RuntimeConfig::model_scale applied).
     uint32_t model_width() const;
     uint32_t model_height() const;
+#if NR_INT4
+    // Whether this runtime runs the int4 mixed network (asked for and everything it needs present).
+    bool int4_mixed() const;
+#endif
     // Change the post block's history strength (TemporalConfig::history_strength)
     // between frames. Takes effect on the next recording; no-op without a
     // temporal path.
@@ -394,6 +445,9 @@ public:
     // The same, smoothed over recent frames - what to put in a UI, because the
     // instantaneous number moves too much to read.
     float average_gpu_ms() const;
+    // The network's share of average_gpu_ms (every pass's dispatches), the same average; the rest is
+    // the work around it (input, composition, copies). Zero until the first result is back.
+    float average_network_ms() const;
     // The preprocess meter as the GPU last left it: {smoothed EV, this frame's
     // target EV}, bias not included. For the log; NaN until it has metered.
     std::pair<float, float> preprocess_meter() const;

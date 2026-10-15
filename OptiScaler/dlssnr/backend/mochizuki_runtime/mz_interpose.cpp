@@ -92,7 +92,8 @@ struct Module
 };
 
 // Everything vkCreateComputePipelines is given. What this cannot describe (another pNext than the required subgroup
-// size, specialization constants, immutable samplers, a derivative pipeline) is refused when it is recorded.
+// size and robustness turned off, specialization constants, immutable samplers, a derivative pipeline) is refused when
+// it is recorded.
 struct Pipeline
 {
     Module module;
@@ -101,6 +102,9 @@ struct Pipeline
     VkShaderStageFlagBits stage = VK_SHADER_STAGE_COMPUTE_BIT;
     VkPipelineShaderStageCreateFlags stageFlags = 0;
     uint32_t subgroup = 0; // VkPipelineShaderStageRequiredSubgroupSizeCreateInfo's; 0 without one
+    // A VkPipelineRobustnessCreateInfoEXT with every access DISABLED (upstream 0.0.5 on, where the driver has the
+    // extension).
+    bool unrobust = false;
     Layout layout;
 };
 
@@ -123,8 +127,8 @@ uint64_t Hash(const void* data, size_t n)
 }
 
 // The pipeline as one line of the manifest, which is also its identity (Capture's deduplication):
-// m=<hash>:<bytes> e=<entry> f=<flags> st=<stage> sf=<stage flags> sg=<subgroup> lf=<layout flags>, then one
-// set=<flags>[:<binding>.<type>.<count>.<stages>]... per set layout and one pc=<stages>.<offset>.<size> per push
+// m=<hash>:<bytes> e=<entry> f=<flags> st=<stage> sf=<stage flags> sg=<subgroup> rb=<unrobust> lf=<layout flags>, then
+// one set=<flags>[:<binding>.<type>.<count>.<stages>]... per set layout and one pc=<stages>.<offset>.<size> per push
 // constant range. Flags in hex, the rest in decimal.
 std::string Describe(const Pipeline& p)
 {
@@ -133,8 +137,8 @@ std::string Describe(const Pipeline& p)
                   static_cast<unsigned long long>(p.module.bytes));
     std::string out = one;
     out += p.entry;
-    std::snprintf(one, sizeof one, " f=%x st=%x sf=%x sg=%u lf=%x", unsigned(p.flags), unsigned(p.stage),
-                  unsigned(p.stageFlags), p.subgroup, unsigned(p.layout.flags));
+    std::snprintf(one, sizeof one, " f=%x st=%x sf=%x sg=%u rb=%u lf=%x", unsigned(p.flags), unsigned(p.stage),
+                  unsigned(p.stageFlags), p.subgroup, unsigned(p.unrobust), unsigned(p.layout.flags));
     out += one;
     for (const SetLayoutInfo& set : p.layout.sets)
     {
@@ -177,7 +181,7 @@ bool Parse(const std::string& text, Pipeline& p)
             break;
         at = space + 1;
     }
-    if (tokens.size() < 7)
+    if (tokens.size() < 8)
         return false;
     int used = 0;
     auto whole = [&used](const std::string& t) { return used == int(t.size()); };
@@ -188,16 +192,13 @@ bool Parse(const std::string& text, Pipeline& p)
     if (tokens[1].compare(0, 2, "e=") || !Identifier(tokens[1].c_str() + 2))
         return false;
     p.entry = tokens[1].substr(2);
-    unsigned flags = 0, stage = 0, stageFlags = 0, subgroup = 0, layoutFlags = 0;
+    unsigned flags = 0, stage = 0, stageFlags = 0, subgroup = 0, unrobust = 0, layoutFlags = 0;
     const struct
     {
         const char* format;
         unsigned* value;
-    } fields[] = { { "f=%x%n", &flags },
-                   { "st=%x%n", &stage },
-                   { "sf=%x%n", &stageFlags },
-                   { "sg=%u%n", &subgroup },
-                   { "lf=%x%n", &layoutFlags } };
+    } fields[] = { { "f=%x%n", &flags },     { "st=%x%n", &stage },    { "sf=%x%n", &stageFlags },
+                   { "sg=%u%n", &subgroup }, { "rb=%u%n", &unrobust }, { "lf=%x%n", &layoutFlags } };
     for (size_t i = 0; i < std::size(fields); ++i)
     {
         used = 0;
@@ -208,9 +209,10 @@ bool Parse(const std::string& text, Pipeline& p)
     p.stage = VkShaderStageFlagBits(stage);
     p.stageFlags = stageFlags;
     p.subgroup = subgroup;
+    p.unrobust = unrobust != 0;
     p.layout = {};
     p.layout.flags = layoutFlags;
-    size_t i = 7;
+    size_t i = 8;
     for (; i < tokens.size() && !tokens[i].compare(0, 4, "set="); ++i)
     {
         const char* c = tokens[i].c_str() + 4;
@@ -375,7 +377,7 @@ std::string Hex(const uint8_t* bytes, size_t n)
 
 // ---- the manifest (dlssnr-amd\prewarm\manifest.txt) ----
 //
-//   mochizuki-prewarm 1
+//   mochizuki-prewarm 2
 //   shaders <Folder hash> <files>
 //   cache-uuid <the pipelineCacheUUID of the device that recorded it>
 //   pipelines <n>
@@ -384,7 +386,7 @@ std::string Hex(const uint8_t* bytes, size_t n)
 //
 // It describes layouts and names files; it holds nothing a driver made. The cache UUID is only a note: another
 // driver compiles the same create infos.
-constexpr const char* kManifestVersion = "mochizuki-prewarm 1";
+constexpr const char* kManifestVersion = "mochizuki-prewarm 2";
 
 struct Manifest
 {
@@ -613,7 +615,12 @@ VkResult Compile(VkDevice device, VkPipelineCache cache, const Pipeline& p, cons
             VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO
         };
         required.requiredSubgroupSize = p.subgroup;
+        VkPipelineRobustnessCreateInfoEXT robustness { VK_STRUCTURE_TYPE_PIPELINE_ROBUSTNESS_CREATE_INFO_EXT };
+        robustness.storageBuffers = robustness.uniformBuffers = robustness.vertexInputs =
+            VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DISABLED_EXT;
+        robustness.images = VK_PIPELINE_ROBUSTNESS_IMAGE_BEHAVIOR_DISABLED_EXT;
         VkComputePipelineCreateInfo cpi { VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
+        cpi.pNext = p.unrobust ? &robustness : nullptr;
         cpi.flags = p.flags;
         cpi.stage = { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO };
         cpi.stage.pNext = p.subgroup ? &required : nullptr;
@@ -835,9 +842,21 @@ extern "C" VKAPI_ATTR VkResult VKAPI_CALL mzi_vkCreateComputePipelines(VkDevice 
                     }
                     const auto module = s.modules.find(Key(ci.stage.module));
                     const auto layout = s.layouts.find(Key(ci.layout));
-                    if (ci.pNext)
-                        s.Refuse("a compute pipeline with a pNext chain");
-                    else if (ci.stage.pSpecializationInfo)
+                    for (auto* next = static_cast<const VkBaseInStructure*>(ci.pNext); next; next = next->pNext)
+                    {
+                        const auto* r = reinterpret_cast<const VkPipelineRobustnessCreateInfoEXT*>(next);
+                        if (next->sType == VK_STRUCTURE_TYPE_PIPELINE_ROBUSTNESS_CREATE_INFO_EXT && !p.unrobust &&
+                            r->storageBuffers == VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DISABLED_EXT &&
+                            r->uniformBuffers == VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DISABLED_EXT &&
+                            r->vertexInputs == VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DISABLED_EXT &&
+                            r->images == VK_PIPELINE_ROBUSTNESS_IMAGE_BEHAVIOR_DISABLED_EXT)
+                            p.unrobust = true;
+                        else
+                            s.Refuse("a compute pipeline with another pNext than robustness turned off");
+                    }
+                    if (!s.refused.empty())
+                        return;
+                    if (ci.stage.pSpecializationInfo)
                         s.Refuse("specialization constants");
                     else if (ci.flags & VK_PIPELINE_CREATE_DERIVATIVE_BIT)
                         s.Refuse("a derivative pipeline");

@@ -29,10 +29,9 @@
 // (NR_NO_RESIDUAL).
 //
 // Accumulation is FP32 and that is deliberate. NVIDIA accumulates the MMA in
-// f16; RDNA4 has no f16-accumulate FP8 WMMA, so there is no choice to make, and
-// the network was trained in FP32 with fake-quant STE - our reduction is closer
-// to training-time semantics than the shipped one. The FP32 accumulator here
-// matches a *double* host reference exactly at all 524,288 outputs.
+// f16; RDNA4 has no f16-accumulate FP8 WMMA, so there is no choice to make. The
+// FP32 accumulator here matches a *double* host reference exactly at all 524,288
+// outputs.
 //
 // Layouts. Activations are this project's canonical raster NHWC (decision 1),
 // not NVIDIA's 4x4-pixel "tinlayout" - the harness converts at the boundary
@@ -469,6 +468,7 @@ layout(set = 0, binding = 7, std430) NR_COH readonly buffer ActU32V { uint act_u
 layout(set = 0, binding = 3, std430) readonly buffer WgtU32V { uint wgt_u32v[]; };
 #endif
 
+#define NR_TC_WBIND 3   // NR_TCHAIN reads its records from the weight buffer
 #include "nr_chain.glsl"
 #include "occ_pad.glsl"
 layout(push_constant) uniform Push {
@@ -498,6 +498,7 @@ layout(push_constant) uniform Push {
     uint remap;       // workgroup order, 0 = launch order (see mg0 below)
 #endif
     NR_CHAIN_FIELDS
+    NR_TCHAIN_FIELDS
 } pc;
 #ifndef NR_RBDA
 #define NR_RBDA 0
@@ -555,13 +556,10 @@ shared float lds_e[NR_WAVES * 256];
 #else
 #define NR_EPI_DEBUG(i)
 #endif
-// Two epilogues, and the difference is the same argument as FP32 accumulation.
-// NR_EPILOGUE_NVIDIA is the model as measured off the shipping kernel:
-// f16(acc), then f16(g*r), then f16 of the sum. Both inner roundings are
-// artefacts of NVIDIA's f16 accumulator, not of the network. Measured: the f32
-// form agrees with their own output on 98.62% of bytes against their rounding's
-// 98.57%, so the faithful reading of the trained graph is also the one that
-// matches them more often.
+// Two epilogues. NR_EPILOGUE_NVIDIA is the model as measured off the shipping
+// kernel: f16(acc), then f16(g*r), then f16 of the sum. The other carries f32 to
+// the single e4m3 narrowing. Measured: the f32 form agrees with their own output
+// on 98.62% of bytes against their rounding's 98.57%.
 //
 // Spelled out rather than left to the compiler: written as two statements the
 // f16 form contracted into v_fmac_f16 and quietly became the f32 form for the
@@ -1488,6 +1486,7 @@ void nr_finish_qkv_pair(NR_FRAG_ACC a, NR_FRAG_ACC b, uint tok0, uint ch0, uint 
 void main() {
     NR_PROF_BEGIN()
     nr_chain_wait()
+    NR_TC_PROLOGUE
 #if NR_COHERENT_ACT
     // Keep every activation view both read and written; see coherent_act.glsl.
     if (NR_COH_NEVER) {
@@ -1524,6 +1523,7 @@ void main() {
     const uint ng0 = gl_WorkGroupID.y * uint(NR_NTILE);
 #endif
     const uint nchunk = pc.K / uint(NR_KCHUNK);
+    nr_tchain_wait(mg0 / 16u, NR_MTILE / 16)   // NR_TCHAIN: the M tile's token tiles
 
 #if defined(NR_A_DIRECT) || defined(NR_B_DIRECT)
     uint abase_g[NR_MFRAG];
@@ -1618,5 +1618,6 @@ void main() {
 #endif
     NR_OCC_USE(pc.K == 0u, act_f32[0] = 0.0)
     nr_chain_signal()
+    nr_tchain_signal_wave((mg0 + mloc) / 16u, NR_MFRAG)
     NR_PROF_END(pc.o_off)
 }

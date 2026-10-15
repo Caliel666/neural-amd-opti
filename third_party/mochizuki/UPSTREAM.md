@@ -3,8 +3,9 @@
 The Vulkan network behind `MochizukiNrRuntime.dll` (`NrBackend=mochizuki`).
 
 - Source: https://github.com/mochizuki0323/DLSSNR-AMD
-- Pinned commit: `82560c4b` (2026-10-01, after v0.0.2.4): `windows/` as upstream has it, apart from the local patches
-  below
+- Pinned commit: `8a70f7f4` (2026-10-14, tag v0.0.5-win-preview): `windows/` as upstream has it, apart from the local
+  patches below; plus upstream's hotfix `f35f00f` (2026-10-15, `nr_pal_binary.hpp`: ACO accepts gfx1200, the RX 9060
+  series, as well as gfx1201)
 - `linux/package/model-tools/` is still from `791b046` (v0.0.1); the model it makes has not changed
 - Licence: MIT, `LICENSE` beside this file
 
@@ -19,6 +20,12 @@ Only what the runtime build reads, at the upstream paths:
 | `windows/build/build_network.py`, `unroll_glsl.py`, `quad_quant_glsl.py` | GLSL to SPIR-V, the upstream way |
 | `windows/build/arch/rdna4.sh` | the constants host and shaders share; `tools/build-mochizuki-runtime.cmd` repeats them |
 | `linux/package/model-tools/` | makes `dlssnr.bin` from a user's `nvngx_dlssnr.dll` 310.8.0 |
+
+Since v0.0.5 `windows/src/core/` also holds upstream's RenoDX stage (`nr_renodx.*`, `renodx/`), int4 mixed
+(`nr_ini_int4.hpp`, `NR_INT4`) and ACO pipeline binaries (`nr_pipeline_binary.hpp`, `nr_pal_binary.hpp`). The runtime
+build compiles none of the first two (`NR_INT4` is unset, `nr_renodx.cpp` is not built; OptiScaler has its own RenoDX
+composition), and the ACO path is off: the host never configures its folder and `NR_ACO_DIR` is unset, so the driver
+builds every pipeline.
 
 Upstream's `windows/src/pe/` (its own NGX and ReShade hosts, which need the game to run on vkd3d-proton),
 `windows/package/` and `windows/vulkan-loader/` are not used. `OptiScaler/dlssnr/backend/mochizuki_runtime/
@@ -40,6 +47,22 @@ MochizukiNrRuntime.cpp` hosts the runtime instead, on a Vulkan device of its own
      without (164 s the first time ever, before the AMD driver had any of it). With the prewarm list: 49 s and 6.1 s.
    - Network time, three interleaved runs each (runtime's own GPU time): 1080p 8.48-8.52 ms with them,
      8.51-8.70 ms without; 1440p 14.95-15.01 and 14.91-15.15 ms. Within the noise.
+3. `windows/src/core/nr_runtime.cpp`: `NR_GRAPH_ARGS` (diagnostic), more graph options after the runtime's own.
+
+### Sync to v0.0.5 (2026-10-14)
+
+Upstream took in both driver 32.0.32015 fixes of 2026-10-04 (the unrolled `ffwd3_t`, `attn` and `vit_attn`, and
+`vit_attn`'s padding tile, now killed after the load rather than chosen before it), so they are no longer local.
+`NR_TCHAIN_TILES=1` joined `rdna4.sh` and the build script. Every pipeline now carries a
+`VkPipelineRobustnessCreateInfoEXT` with robust access off where the driver has the extension; the prewarm
+(`mz_interpose.cpp`) records and replays it, and its manifest is version 2 (a version 1 list is refused and made again).
+
+The runtime's own GPU time, RX 9070 XT, driver 32.0.32015, against the 0.5.1 release (same harness, pan of 8 px a
+frame): 1080p 13.9 / 13.9 ms, 2 / 3 passes 28.0 / 27.4 and 41.6 / 40.3, 1707x961 11.6 / 11.4, 1280x720 7.9 / 7.6,
+3840x2160 51.7 / 50.9. Output byte-identical at 1080p (1, 2 and 3 passes, R10G10B10A2), 1707x961, 1280x720,
+1129x635, 4K and without motion vectors; 53-56 dB from it with an RGBA32F frame and with the preprocess on.
+Not taken: upstream's new `Controls` (enlargement below 100% model scale, `noise_every_frame`) and
+`forget_history`/`drop_history`, which the host does not call yet.
 
 Host side (not in this tree): `MochizukiNrRuntime.cpp` enables `bufferDeviceAddress` when the driver offers it and
 sets `HostDevice::buffer_device_address`; marks its colour and motion images `SAMPLED`
@@ -75,6 +98,47 @@ The output is 49-56 dB from the previous build at 1080p and above (upstream's pe
 above). A pan with exact motion vectors at 1707x961 and 1280x720 is about ten times steadier frame to frame than
 before (mean |out_n - shift(out_n-1)| 0.0007 against 0.0102 and 0.0075), the motion-vector work of d1185d2.
 
+## ACO (OptiScaler's `MochizukiAco`)
+
+Upstream's [Network] ACO Mode: the network as machine code made in advance with Mesa's ACO, loaded through
+`VK_KHR_pipeline_binary` instead of compiled by the AMD driver. Vendored for it: `linux/build/build_network.py`,
+`linux/shaders/rdna4/` and `linux/shaders/passes/` (the Linux network, which the records were made from), and
+`windows/data/aco/records/` and `shell-aliases.txt` (58 records; int4's are not taken). The build script writes
+`dlssnr-amd/aco/` beside the shaders: `shaders/` built from the Linux sources, `records/`, `shell-aliases.txt`.
+Each record is named by the FNV-1a hash of its SPIR-V, so the Linux network must build byte for byte as upstream's
+(glslang 16.5.0): all 58 match.
+
+The host (`MochizukiNrRuntime.cpp`) takes `LMXXF_NR_CREATE_FLAG_ACO`: once a process, before its Vulkan device,
+`nr::binary::configure` with the bundle, the shell folders (`aco/shell`, our `shaders`, `shaders/temporal`) and
+`dlssnr-amd/aco-cache/` for the imports; the device gets pipeline binaries and maintenance5 through
+`nr::binary::Features` when the driver offers them, else the core falls back to the driver's compiler. Our
+`NR_EDGE_BODIES=0` shaders serve only as templates for the code's container, so the patch stays. The native prewarm
+list is skipped with ACO on (the imports are cached instead).
+
+Measured with the harness (RX 9070 XT, AMD Software 26.9.2, pan 8 px a frame), the runtime's own GPU time, driver
+compiler / ACO: 1080p 13.9 / 10.5 ms, 2 passes 27.4 / 20.2, 1707x961 11.4 / 8.9, 1280x720 7.6 / 6.0, 3840x2160
+50.9 / 38.5. Picture 54-57 dB from the driver-compiled one. First start 22.5 s (the imports), then 1.5 s.
+
+## int4 mixed (OptiScaler's `MochizukiInt4`)
+
+Upstream's second network, part of it in 4-bit integers, built only as ACO's machine code. Vendored for it:
+`linux/data/int4/rdna4/` (the quantisation tables `vit/` and `swin/`, `settings.txt`, the weights' hash),
+`linux/shaders/rdna4/pipelines-int4.json`, `windows/data/aco/int4/` (71 records and their aliases) and
+`windows/src/tools/nr_int4_weights.cpp`. The core is compiled with `NR_INT4=1` (every unit: `RuntimeConfig` holds
+`int4_mixed` under it). The build writes `dlssnr-amd/aco/int4/` (the Linux int4 network and its records, the aliases
+merged into `aco/shell-aliases.txt`) and `dlssnr-amd/int4/` (the tables, settings and the same SPIR-V); with
+`MZ_MODEL` set to a `dlssnr.bin` it also runs `dlssnr-int4-weights.exe` and writes `dlssnr-amd/dlssnr-int4.bin`
+(53 MB, 8 s), checked against `dlssnr-int4.sha256`: the model the payload pins gives upstream's hash exactly. All 71
+records match the SPIR-V built here.
+
+The host asks for it a frame at a time (`LMXXF_NR_FRAME_FLAG_INT4`, part of the network key): a change rebuilds the
+network while the frames keep the current one where VRAM allows, then frees it; one network stays resident (no
+upstream KeepBoth). Without ACO or the files the core logs why and builds the default network.
+
+Harness (as above, ACO on), default / int4: 1080p 10.1 / 9.2 ms, 1280x720 5.9 / 5.2, 3840x2160 38.5 / 34.9. The
+picture is 39-41 dB from the default network's, 0.6-0.8% darker on average. A switch in a running session: the int4
+network ready in 4.5 s, the frames on the old one meanwhile. First int4 build 23 s (the imports), then 4.7 s.
+
 ## Build
 
 `tools\build-mochizuki-runtime.cmd [out]` from an MSVC developer prompt, with the Vulkan SDK 1.4.357 or newer
@@ -82,9 +146,10 @@ before (mean |out_n - shift(out_n-1)| 0.0007 against 0.0102 and 0.0075), the mot
 `toolchain\` here, and writes `MochizukiNrRuntime.dll` and `dlssnr-amd\shaders\` to `out`
 (default `exports\mochizuki-runtime`).
 
-The shader folder has 48 network, 4 temporal and 8 runtime pipelines and a `noise_field` pass. The prewarm list
-(`dlssnr-amd\prewarm\manifest.txt`) must be made again whenever the shaders change: run the runtime once at 720p,
-1080p, 1440p and 3840x2160 (the larger ones add `ffwd3w`) and take the list it writes.
+The shader folder has 54 network, 5 temporal and 11 runtime pipelines (v0.0.5; `runtime\FidelityFX-FSR1-LICENSE.txt`
+beside the FSR 1 EASU in `runtime_upscale`). The prewarm list (`dlssnr-amd\prewarm\manifest.txt`) must be made again
+whenever the shaders change: run the runtime once at 720p, 1080p, 1440p and 3840x2160 (the larger ones add `ffwd3w`)
+and take the list it writes.
 
 ## The model
 

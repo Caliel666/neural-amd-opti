@@ -44,6 +44,7 @@
 
 #include "mz_interpose.h"
 #include "nr_log.hpp"
+#include "nr_pipeline_binary.hpp"
 #include "nr_runtime.hpp"
 
 #include <algorithm>
@@ -826,9 +827,14 @@ struct Vulkan
         di.pQueueCreateInfos = &qi;
         di.enabledExtensionCount = uint32_t(enabled.size());
         di.ppEnabledExtensionNames = enabled.data();
+        // ACO's network (ConfigureAco): pipeline binaries and maintenance5 on this device, when the driver has them.
+        nr::binary::Features binaryFeatures;
+        binaryFeatures.prepare(physical, di, enabled);
         VkDevice createdDevice {};
         VkCheck(vkCreateDevice(physical, &di, nullptr, &createdDevice), "vkCreateDevice");
         device = createdDevice;
+        if (binaryFeatures.active)
+            nr::binary::mark(device);
         probe.Report(device, physical);
         vkGetDeviceQueue(device, family, 0, &queue);
         buildQueue = queue;
@@ -857,7 +863,10 @@ struct Vulkan
     void Destroy()
     {
         if (device)
+        {
+            nr::binary::forget(device);
             vkDestroyDevice(device, nullptr);
+        }
         if (instance)
             vkDestroyInstance(instance, nullptr);
         device = {};
@@ -1279,6 +1288,7 @@ struct NetworkKey
     uint32_t maxPasses = 1;
     bool linear = false;
     bool prep = false; // RuntimeConfig::preprocess
+    bool int4 = false; // RuntimeConfig::int4_mixed (LMXXF_NR_FRAME_FLAG_INT4)
     bool operator==(const NetworkKey&) const = default;
 };
 
@@ -1487,6 +1497,7 @@ struct Session
     // Set before the first build starts and before every submit. Until then no GPU queue has seen anything of this
     // session, so it can always be freed.
     std::atomic<bool> gpuUsed { false };
+    bool aco = false;                // Create's LMXXF_NR_CREATE_FLAG_ACO (ConfigureAco)
     bool zeroOutputFallback = false; // Create's LMXXF_NR_CREATE_FLAG_ZERO_OUTPUT_FALLBACK: frames pass through
     TestHooks hooks;
     std::atomic<uint32_t> errors { 0 }; // failed calls and passed-through frames, for the log's rate limit
@@ -2472,8 +2483,48 @@ struct Session
         UseBuffers(b);
     }
 
+    // ACO's network, as upstream's [Network] ACO Mode: dlssnr-amd\aco\ holds the Linux network's SPIR-V (shaders\)
+    // and ACO's machine code for each pipeline (records\); the driver compiles our own shaders only as templates for
+    // the code's container, and the imports are kept in dlssnr-amd\aco-cache\. Once a process, before the first
+    // Vulkan device: the core reads it then. Without the folder it stays off and the driver compiles the network.
+    static void ConfigureAco()
+    {
+        static std::once_flag once;
+        std::call_once(once,
+                       []
+                       {
+                           const std::string data = RootUtf8(DataDirectory()) + "\\dlssnr-amd";
+                           const std::string bundle = data + "\\aco";
+                           if (GetFileAttributesA((bundle + "\\records").c_str()) == INVALID_FILE_ATTRIBUTES ||
+                               GetFileAttributesA((bundle + "\\shaders").c_str()) == INVALID_FILE_ATTRIBUTES)
+                           {
+                               nr::logf("[mochizuki] ACO asked for, but %s has no records\\ and shaders\\: the "
+                                        "driver compiles the network",
+                                        bundle.c_str());
+                               return;
+                           }
+                           // "<bundle name> <native name>" a line: a kernel our shaders name otherwise.
+                           std::map<std::string, std::string> aliases;
+                           if (FILE* f = std::fopen((bundle + "\\shell-aliases.txt").c_str(), "r"))
+                           {
+                               char a[128], b[128];
+                               while (std::fscanf(f, "%127s %127s", a, b) == 2)
+                                   aliases[a] = b;
+                               std::fclose(f);
+                           }
+                           const std::string cache = data + "\\aco-cache";
+                           CreateDirectoryA(cache.c_str(), nullptr);
+                           std::vector<std::string> shells { bundle + "\\shell", data + "\\shaders",
+                                                             data + "\\shaders\\temporal" };
+                           nr::binary::configure(bundle, std::move(shells), cache, std::move(aliases));
+                           nr::logf("[mochizuki] ACO: the network runs ACO's machine code from %s", bundle.c_str());
+                       });
+    }
+
     void Start()
     {
+        if (aco)
+            ConfigureAco();
         vk.Create(device->GetAdapterLuid(), hooks);
         toVk.Create(device, vk, "toVk");
         fromVk.Create(device, vk, "fromVk");
@@ -2718,6 +2769,7 @@ struct Session
             config.model_scale = key.scale;
             config.max_passes = key.maxPasses;
             config.preprocess = key.prep;
+            config.int4_mixed = key.int4 ? 1 : 0;
             // The linear path's frame is a proxy made with the soft knee, which the preprocess undoes first.
             config.preprocess_unknee = key.linear;
             nr::TemporalConfig temporal;
@@ -2732,8 +2784,8 @@ struct Session
             char options[64] = {};
             if (key.scale != 1.f || key.maxPasses > 1)
                 std::snprintf(options, sizeof options, ", model scale %.2f, up to %u passes", key.scale, key.maxPasses);
-            nr::logf("[mochizuki] building the network at %ux%u, VkFormat %d%s%s%s", key.width, key.height,
-                     int(key.format), config.linear_input ? ", linear colour" : "", options,
+            nr::logf("[mochizuki] building the%s network at %ux%u, VkFormat %d%s%s%s", key.int4 ? " int4 mixed" : "",
+                     key.width, key.height, int(key.format), config.linear_input ? ", linear colour" : "", options,
                      keep ? "; the frames keep the current one meanwhile" : "");
             UseUtf8Paths();
             {
@@ -2741,6 +2793,10 @@ struct Session
                 building = true;
             }
             started = true;
+            // The core moves the stage on from 2 and leaves it at 5 after a build: this one starts at planning.
+            nr::g_build_pipes_done = 0;
+            nr::g_build_pipes_total = 0;
+            nr::g_build_stage = 1;
             infoBuilding = true;
             gpuUsed = true;
             // The builder takes `old` over only once its thread exists: a failed start must not free it here.
@@ -2844,7 +2900,9 @@ struct Session
                          "closed during it); this one logs every pipeline it compiles");
                 pipelines.Verbose();
             }
-            pipelines.Prewarm(&abandon);
+            // ACO's network imports its pipelines (dlssnr-amd\aco-cache keeps them): the native list is not for it.
+            if (nr::binary::directory().empty() || !nr::binary::enabled(host.device))
+                pipelines.Prewarm(&abandon);
             if (abandon)
                 throw std::runtime_error("stopped: the session is being destroyed");
             {
@@ -3567,12 +3625,13 @@ int32_t Create(const LmxxfNrCreateInfo* info, void** context)
         return Fail(LMXXF_NR_INVALID_ARGUMENT, "Create: struct_size mismatch");
     if (!info->device || !info->queue)
         return Fail(LMXXF_NR_INVALID_ARGUMENT, "Create: device and queue required");
-    if (info->flags & ~uint32_t(LMXXF_NR_CREATE_FLAG_ZERO_OUTPUT_FALLBACK))
+    if (info->flags & ~uint32_t(LMXXF_NR_CREATE_FLAG_ZERO_OUTPUT_FALLBACK | LMXXF_NR_CREATE_FLAG_ACO))
         return Fail(LMXXF_NR_INVALID_ARGUMENT, "Create: unknown flags");
     auto* s = new (std::nothrow) Session;
     if (!s)
         return Fail(LMXXF_NR_FAILED, "Create: out of memory");
     s->zeroOutputFallback = (info->flags & LMXXF_NR_CREATE_FLAG_ZERO_OUTPUT_FALLBACK) != 0;
+    s->aco = (info->flags & LMXXF_NR_CREATE_FLAG_ACO) != 0;
     s->hooks = Hooks();
     static_cast<IUnknown*>(info->device)->QueryInterface(IID_PPV_ARGS(&s->device));
     static_cast<IUnknown*>(info->queue)->QueryInterface(IID_PPV_ARGS(&s->queue));
@@ -3737,7 +3796,8 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
             // Neither a network nor buffers that cannot be had now fail the session: the frame goes without NR, and
             // they are tried again as their holds say.
             s->prepWanted = s->prepWanted || model.preprocess.active();
-            const NetworkKey key { g.width, g.height, cf.vk, scale, maxPasses, linear, s->prepWanted };
+            const bool int4 = (info->flags & LMXXF_NR_FRAME_FLAG_INT4) != 0;
+            const NetworkKey key { g.width, g.height, cf.vk, scale, maxPasses, linear, s->prepWanted, int4 };
             std::string why;
             if (!s->EnsureNetwork(key, g, colour, why))
                 return Fail(LMXXF_NR_UNAVAILABLE, why.c_str());
@@ -4068,14 +4128,17 @@ static_assert(alignof(MochizukiNrControls) == 4 &&
 // sizeof does (tail padding after network_dispatches), which is why a filler reports the end of its last field.
 static_assert(offsetof(MochizukiNrInfo, reserved0) == 44 && offsetof(MochizukiNrInfo, frames) == 48 &&
               offsetof(MochizukiNrInfo, last_error) == 64 && offsetof(MochizukiNrInfo, network_dispatches) == 320 &&
-              offsetof(MochizukiNrInfo, preprocess_ev) == 324 && offsetof(MochizukiNrInfo, white_point) == 328);
+              offsetof(MochizukiNrInfo, preprocess_ev) == 324 && offsetof(MochizukiNrInfo, white_point) == 328 &&
+              offsetof(MochizukiNrInfo, build_stage) == 332 && offsetof(MochizukiNrInfo, build_total) == 340);
 
 // The bytes GetInfo writes into a struct of `size` bytes: the whole fields that fit, never part of one, and never
 // Info's tail padding. A host that appends a field there (sizeof does not grow) then sees struct_size end before it.
 size_t InfoBytes(size_t size)
 {
     constexpr size_t ends[] = {
-        offsetof(MochizukiNrInfo, white_point) + sizeof(MochizukiNrInfo::white_point), // the last field
+        offsetof(MochizukiNrInfo, build_total) + sizeof(MochizukiNrInfo::build_total), // the last field
+        offsetof(MochizukiNrInfo, build_stage),
+        offsetof(MochizukiNrInfo, white_point) + sizeof(MochizukiNrInfo::white_point),
         offsetof(MochizukiNrInfo, white_point),
         offsetof(MochizukiNrInfo, preprocess_ev),
         offsetof(MochizukiNrInfo, network_dispatches),
@@ -4138,6 +4201,13 @@ int32_t GetInfo(void* context, MochizukiNrInfo* out)
         info.network_dispatches = s->dispatches;
         info.preprocess_ev = s->infoPrepEv;
         info.white_point = s->infoWhite;
+        // The core's own build progress (nr_log.hpp: builds run one at a time), while this session builds.
+        if (info.building)
+        {
+            info.build_stage = uint32_t(nr::g_build_stage.load());
+            info.build_done = nr::g_build_pipes_done.load();
+            info.build_total = nr::g_build_pipes_total.load();
+        }
         {
             std::lock_guard lock(s->errorMutex);
             std::memcpy(info.last_error, s->lastError, sizeof info.last_error);

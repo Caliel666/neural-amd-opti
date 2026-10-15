@@ -100,7 +100,11 @@ extern "C"
         uint32_t network_dispatches; /* the network's dispatches in the last frame (all passes) */
         float preprocess_ev;         /* the preprocess's auto exposure in EV, bias included; NaN when not metering */
         float white_point; /* the white point the last frame used, the game's exposure applied (linear colour) */
-        /* The fields end at byte 332 (struct_size as the runtime fills it); sizeof is 336 (tail padding). */
+        /* While building: 1 planning, 2 reading the weights, 3 uploading them, 4 making the pipelines (build_done of
+           build_total), 5 finishing; 0 otherwise. */
+        uint32_t build_stage;
+        uint32_t build_done, build_total;
+        /* The fields end at byte 344 (struct_size as the runtime fills it), which is also sizeof. */
     } MochizukiNrInfo;
 
     /* All but GetFeatures return an LmxxfNrStatus. SetControls takes effect on the next PrepareFrame; call it on the
