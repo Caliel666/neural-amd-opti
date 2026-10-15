@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   Stage and zip a complete user package (no NVIDIA / author proprietary files).
-  Default product: OptiScaler-0.5.1-amd-nr, the version in OptiScaler/resource.h.
+  Default product: OptiScaler-0.5.2-amd-nr, the version in OptiScaler/resource.h.
   The danielblnc runtime it drives is 0.5.1 (0.5.0, 0.4.3, 0.4.2, 0.4.1, 0.4.0, 0.3.1, 0.3.0 and the 0.6.0 supporter build
   still accepted), supplied by the user.
   The mochizuki runtime (MochizukiNrRuntime.dll and dlssnr-amd\) is not packaged: the AMD-NR
@@ -9,11 +9,11 @@
 
 .EXAMPLE
   .\PACKAGE_RELEASE.ps1
-  .\PACKAGE_RELEASE.ps1 -Version 0.5.1-amd-nr -DepsRoot 'C:\path\with\OptiScaler'
+  .\PACKAGE_RELEASE.ps1 -Version 0.5.2-amd-nr -DepsRoot 'C:\path\with\OptiScaler'
 #>
 [CmdletBinding()]
 param(
-    [string]$Version = '0.5.1-amd-nr',
+    [string]$Version = '0.5.2-amd-nr',
     [string]$OutDir = 'dist',
     [string]$Name = '',
     [string]$OptiDll = '',
@@ -190,9 +190,9 @@ $ini = [regex]::Replace($ini, '(?ms)^\[DlssNr\].*?(?=^\[|\z)', @"
 ; Unsafe dirty insert stays off (AmdGraphicsUnsafe=0).
 Enabled=false
 RunBeforeSR=true
-; danielblnc on the final D3D9, D3D11, D3D12, Vulkan or OpenGL image of a game without an upscaler, HUD
-; included. Off by default; Vulkan needs it on before the game starts. 32-bit D3D9 games need the separate
-; x86 d3d9.dll package (tools\dx9-x86).
+; danielblnc or mochizuki on the final D3D9, D3D10, D3D11, D3D12, Vulkan or OpenGL image of a game without an
+; upscaler, HUD included. Off by default; Vulkan needs it on before the game starts. A 32-bit D3D9 or D3D10 game
+; runs this from OptiScaler64\, beside x86\d3d9.dll or x86\dxgi.dll (the installer puts them in place).
 PresentWithoutUpscaler=false
 ; NR runtime: daniel (dlssnr_amd_pass1-3.dll and dlssnr_on_amd_weights.bin), lmxxf
 ; (LmxxfNrRuntime.dll, lmxxf-modules\, shaders\ and native-game-tiled-assets\) or mochizuki
@@ -217,6 +217,11 @@ LmxxfStyle=1
 LmxxfVitReuse=false
 ; lmxxf: run the 1080 tier on 1088 rows instead of 1152, about 4% faster, slightly lossy at the bottom.
 LmxxfCompact1080=false
+; lmxxf, three passes: run two and work out the third from them, about a third less time, close to a
+; real third pass. Skin protection (two or three passes): skin-coloured areas keep pass 1's result
+; (by colour, so brown and orange surfaces too).
+LmxxfPassEstimate=true
+LmxxfSkinProtect=false
 ; mochizuki's tuning comes only from its own keys below, never the danielblnc, lmxxf or NVIDIA ones;
 ; every default is the network's own, except MochizukiColourStrength=0: the game's own colour at the
 ; network's brightness (1 applies the network's colour change in full). MochizukiPasses (1-3),
@@ -241,6 +246,12 @@ MochizukiLocalTone=1
 MochizukiLocalStructure=1
 MochizukiSkinStructure=-1
 MochizukiAutoMask=true
+; mochizuki ACO: the network as machine code made in advance by ACO (the Linux driver's compiler) from
+; dlssnr-amd\aco\, about a fifth faster, the same picture; tested by its author on AMD Software 26.9.2.
+; A change takes effect when the game starts again. Int4: with ACO, the int4 mixed network, about a tenth
+; faster again, the picture close to the default network's but not the same; switches without a restart.
+MochizukiAco=true
+MochizukiInt4=false
 MochizukiMaxRatio=2
 MochizukiWhitePoint=1
 MochizukiApplyModel=true
@@ -399,6 +410,19 @@ Copy-Item -Path (Join-Path $root 'third_party/lmxxf/modules-gfx1200') -Destinati
 New-Item -ItemType Directory -Path (Join-Path $stage 'shaders') -Force | Out-Null
 Get-ChildItem -LiteralPath (Join-Path $root 'third_party/lmxxf/shaders') -Filter '*.hlsl' -File |
     Copy-Item -Destination (Join-Path $stage 'shaders') -Force
+
+# The 32-bit proxies and their 64-bit host (tools\build-dx9-x86.cmd): a 32-bit D3D9 or D3D10 game gets d3d9.dll or
+# dxgi.dll beside it, and everything else here in OptiScaler64\ with OptiScalerDx9Host.exe, which runs OptiScaler.
+$x86Dir = Join-Path $stage 'x86'
+New-Item -ItemType Directory -Force -Path $x86Dir | Out-Null
+foreach ($pair in @(@('exports/dx9-x86/d3d9.dll', 'd3d9.dll'), @('exports/dxgi-x86/dxgi.dll', 'dxgi.dll'),
+        @('exports/dx9-x86/OptiScaler64/OptiScalerDx9Host.exe', 'OptiScalerDx9Host.exe'))) {
+    $from = Join-Path $root $pair[0]
+    if (!(Test-Path -LiteralPath $from -PathType Leaf)) {
+        throw "Missing $from. Build it with tools\build-dx9-x86.cmd."
+    }
+    Copy-Item -LiteralPath $from -Destination (Join-Path $x86Dir $pair[1]) -Force
+}
 
 # Installer + README.
 $readme = Join-Path $root 'README.md'
