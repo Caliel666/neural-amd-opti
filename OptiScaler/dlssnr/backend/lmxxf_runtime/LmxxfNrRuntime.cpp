@@ -399,6 +399,7 @@ struct Job
     float color_strength = 1.0f;
     uint32_t debug_view = 0;
     uint32_t passes = 1;
+    bool passEstimate = false, skinProtect = false; // LMXXF_NR_FRAME_FLAG_PASS3_ESTIMATE, _SKIN_PROTECT
     bool codec_passthrough = false;
     bool temporal = false;
     UINT histories = 0; // bit k: pass k+1 was given a history this frame
@@ -1163,7 +1164,8 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
             const uint32_t allowedFlags = LMXXF_NR_FRAME_FLAG_STRENGTH | LMXXF_NR_FRAME_FLAG_DEBUG_VIEW |
                                           LMXXF_NR_FRAME_FLAG_CODEC_PASSTHROUGH | LMXXF_NR_FRAME_FLAG_TEMPORAL |
                                           LMXXF_NR_FRAME_FLAG_SMOOTH_RESIDUAL | LMXXF_NR_FRAME_FLAG_STYLE |
-                                          LMXXF_NR_FRAME_FLAG_VIT_REUSE | LMXXF_NR_FRAME_FLAG_COMPACT_1080;
+                                          LMXXF_NR_FRAME_FLAG_VIT_REUSE | LMXXF_NR_FRAME_FLAG_COMPACT_1080 |
+                                          LMXXF_NR_FRAME_FLAG_PASS3_ESTIMATE | LMXXF_NR_FRAME_FLAG_SKIN_PROTECT;
             if ((info->flags & ~allowedFlags) != 0)
                 return Fail(LMXXF_NR_INVALID_ARGUMENT, "PrepareFrame: unknown flags");
             if (session->shaderDir.empty())
@@ -1424,6 +1426,8 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
             session->job.color_strength = color_strength;
             session->job.debug_view = debug_view;
             session->job.passes = passes;
+            session->job.passEstimate = (info->flags & LMXXF_NR_FRAME_FLAG_PASS3_ESTIMATE) != 0;
+            session->job.skinProtect = (info->flags & LMXXF_NR_FRAME_FLAG_SKIN_PROTECT) != 0;
             session->job.codec_passthrough = (info->flags & LMXXF_NR_FRAME_FLAG_CODEC_PASSTHROUGH) != 0;
             session->colorFormat = cfmt;
             session->job.seed = 1;
@@ -1643,6 +1647,7 @@ int32_t EnqueueHip(void* context, void* job, void* command_queue)
             QueueContract(session, targetQueue);
             try
             {
+                session->bridge->SetPassOptions(j->passEstimate, j->skinProtect);
                 session->bridge->EnqueueAfterProducer(targetQueue, j->seed, (j->histories & 1u) != 0, j->passes);
                 if (j->state == LMXXF_NR_JOB_PRODUCER_SUBMITTED)
                     j->state = LMXXF_NR_JOB_NR_COMPLETE;
@@ -1769,14 +1774,7 @@ int32_t RecordOutputs(void* context, void* job, void* command_list)
                 D3D12_TEXTURE_COPY_LOCATION srcLoc {};
                 srcLoc.pResource = src;
                 srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-                const auto& geo = session->decode->Geometry();
-                const DXGI_FORMAT fmt = NativeViewFormat(dst->GetDesc().Format);
-                const bool bytes4 = NativeIsRgba8Unorm(fmt) || NativeIsR11G11B10(fmt);
-                srcLoc.PlacedFootprint.Footprint.Format = fmt;
-                srcLoc.PlacedFootprint.Footprint.Width = geo.width;
-                srcLoc.PlacedFootprint.Footprint.Height = geo.height;
-                srcLoc.PlacedFootprint.Footprint.Depth = 1;
-                srcLoc.PlacedFootprint.Footprint.RowPitch = geo.RowPitch(bytes4 ? 4u : 8u);
+                srcLoc.PlacedFootprint.Footprint = session->decode->BufferFootprint();
                 list->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
                 std::swap(barriers[0].Transition.StateBefore, barriers[0].Transition.StateAfter);
                 std::swap(barriers[1].Transition.StateBefore, barriers[1].Transition.StateAfter);

@@ -1,7 +1,7 @@
 # lmxxf runtime source pin
 
 - Upstream: https://github.com/lmxxf/dlss5-on-amd-9070xt-porting
-- Commit: `523723fdb3fa5b322beb1cc9dcfd3f8183eaf334` (tag 0.41, synced 2026-10-05)
+- Commit: `3a1be68c35dbac7d7edeb2073723e82076bb1a39` (0.42 and after, synced 2026-10-14)
 - License: MIT, Copyright (c) 2026 Kien (`LICENSE`)
 - `hip_api.h` also carries the AMD HIP runtime API MIT notice from ROCm 7.1.1
 
@@ -90,8 +90,9 @@ Synced from `-UpstreamRef` (default `origin/main`) via `git archive`. Intent: au
    - Queue mismatch recovery drains both the original session queue and the target producer queue before HIP zeroing. The Runtime retains the consumer queue and drains it before frame reuse or destruction.
 6. **Merged with upstream 0.39 (2026-10-01)**: upstream's bridge now carries TheAutomatic's recovery (items 1-5) itself, plus `DLSS5_HIP_INPUT_POLL`, `direct_input` and `PdlActive`. Ours is upstream's with item 7 merged back in (three-way merge against our pre-multipass header); the input poll stays off unless that variable is set.
 7. **Extra passes**:
-   - `EnqueueAfterProducer` takes a pass count (`LmxxfNrFrameInfo::passes`, 1 to 3). Every pass but the last runs the network and then copies its RGB output rows into the RGBA input with `hipMemcpy2DAsync`, which keeps the input's alpha. The function is resolved from the loaded HIP runtime, so `hip_api.h` stays as upstream has it.
+   - `EnqueueAfterProducer` takes a pass count (`LmxxfNrFrameInfo::passes`, 1 to 3). Every pass but the last runs the network and then copies its RGB output rows into the RGBA input with `hipMemcpy2DAsync`, which keeps the input's alpha. The copy goes in chunks of 2^19 rows, as upstream's `MultiPassFeed` does: on Windows the call silently stops at 2^20 rows, which left every pixel past the first 2^20 on pass 1's input. The function is resolved from the loaded HIP runtime, so `hip_api.h` stays as upstream has it.
    - `RecordPassInputCopy` gives each pass its own history buffer (`pass_history`, created on first use), and in that mode every pass but the last also copies its output into `pass_output` for `PassOutput`, which the runtime turns into the next frame's history. `RecordOutputReadable` makes those outputs readable along with the last one.
+   - `SetPassOptions` (frame flags `PASS3_ESTIMATE`, `SKIN_PROTECT`): upstream's `DLSS5_MULTI_PASS_PREDICT` and `_SKIN_PROTECT` on these passes, with its own kernels (`multi-pass-predict.hsaco`, `multi-pass-skin.hsaco`, loaded on first use). With three passes the estimate runs two and extrapolates the third; skin blends the result back toward pass 1's. Without temporal history both are byte-identical to upstream's `DLSS5_MULTI_PASS=3`; 1080p three passes 30.1 -> 21.1 ms, skin +0.3 ms.
 
 ### Patch D: `src/native_temporal_feed.h`
 Upstream includes `native_split.h` (the D3D12 network body) without using it. The sync script drops the include after every copy.
@@ -115,6 +116,25 @@ Upstream includes `native_split.h` (the D3D12 network body) without using it. Th
   1920x1080 other than 1600x900 and 1920x1080 themselves (those equal their tiers, and Compact 1080 keeps working), off
   above 1080p. The 720 tier's 1280x768 has no padding token in the ViT grid; Style had almost no effect there (42 dB
   between Styles, against 22-25 dB at 900/1080) and now matches the other sizes (22 dB at 1344x768).
+
+### Sync to 0.42 (2026-10-14)
+- Bridge: three-way merge again (base 0.41, theirs 3a1be68c). Upstream's HIP passthrough, `RequireHistory`, never-history
+  sessions, direct history and its new events came in; our extra passes stay (`Enqueue` takes the pass count and the
+  passthrough flag), and a recording lease's temporal flag is our `histories` bit 0.
+- `Development/HIP/submit_pulse.h`, `submit_pulse_hip.h`, `src/native_experimental_history.h` and
+  `src/native_fast_history_policy.h` joined the sync list (the network and `native_hip_network.h` include them).
+- Runtime (`LmxxfNrRuntime.cpp`): the decoder's output now covers the whole colour texture, so the consumer copy takes
+  `BufferFootprint()` from it. Upstream's `DLSS5_TEMPORAL_MODE` 1-3 (its fast history and low-frequency temporal,
+  off by default there) are not ported: the runtime keeps its own temporal history.
+- Modules: 40 per architecture (new: `c32-wave1-fast-norm900`, `swin-persistent-fast`), all built here with the
+  driver's COMGR, the `llvm23` rows included; `hip/SHA256SUMS` holds the local hashes for both.
+- Measured with the e2e harness (RX 9070 XT, driver 32.0.32015, against the 0.5.1 release): one pass is byte-identical
+  at 1920x1080, 1600x900, 1280x720 (1344x720 network) and 1707x960; 1080p frame 10.45 -> 9.85 ms (median of 190
+  frames, four interleaved runs). Two and three passes changed from 0.41 (the old bridge on the 0.42 network gives the
+  0.42 result, so it is the network's). 0.42's three passes are byte-identical to upstream's own `DLSS5_MULTI_PASS=3`
+  with `DLSS5_MULTI_PASS_PREDICT=0`, and as fast (29.0 ms at 1080p). Upstream's default (predict on) runs two passes and
+  estimates the third (`mp_predict`): 19.9 ms, 35.4 dB from the real third pass.
+- gfx1200 modules built but not run here (no RX 9060).
 
 ## Shipping modules (`.hsaco`)
 

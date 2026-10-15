@@ -77,8 +77,8 @@ DEV float c5c_serial_norm(f8 lo,f8 hi){
 }
 // Keep C512 attention's own clamp/F/byte semantics (not the C256 bounded reciprocal).
 DEV float c5c_clamp(float a,float lo,float hi){float b=a>lo?a:lo;return b<hi?b:hi;}
-DEV uint c5c_fp8(float x){return uint(__builtin_amdgcn_cvt_pk_fp8_f32(__builtin_fminf(__builtin_fmaxf(x,-448.f),448.f),0.f,0,false))&255u;}
-DEV float c5c_F(float x){uint a=bits(x)&0x7fffffffu;float c=__builtin_fminf(__builtin_fmaxf(x,-448.f),448.f);float r=__builtin_amdgcn_cvt_f32_fp8(__builtin_amdgcn_cvt_pk_fp8_f32(c,0.f,0,false),0);return a==0?0.f:r;}
+DEV uint c5c_fp8(float x){return uint(__builtin_amdgcn_cvt_pk_fp8_f32(__builtin_amdgcn_fmed3f(x,-448.f,448.f),0.f,0,false))&255u;}
+DEV float c5c_F(float x){float c=__builtin_amdgcn_fmed3f(x+0.f,-448.f,448.f);return __builtin_amdgcn_cvt_f32_fp8(__builtin_amdgcn_cvt_pk_fp8_f32(c,0.f,0,false),0);}
 DEV float c5c_inv(float x){
 #if C512_COMPACT_RCP
  float r=__builtin_amdgcn_rcpf(x);r=__builtin_fmaf(r,__builtin_fmaf(-x,r,1.f),r);return __builtin_fmaf(r,__builtin_fmaf(-x,r,1.f),r);
@@ -92,7 +92,7 @@ DEV uint c5c_q8mz(float a,float b){
 DEV void c5c_bits(i2&v,uint e,uint b){v[e/4]=int(uint(v[e/4])|((b&255u)<<(8*(e%4))));}
 DEV i2 c5c_load(const unsigned char*p,uint row,uint col){i2 a;__builtin_memcpy(&a,p+row*32+col,8);return a;}
 
-template<bool DebugNorm>
+template<bool DebugNorm,bool W16=false>
 DEV void c5c_body(const unsigned char*in8,const float*w,unsigned char*out,uint validwidth,uint validheight,uint width,uint height,uint sx,uint sy){
  constexpr uint C=512,NW=C512_COMPACT_WAVES,QT=4/NW;
  uint tid=__builtin_amdgcn_workitem_id_x(),lane=tid&31u,row=lane&15u,half=lane>>4,wave=tid/32;
@@ -132,26 +132,55 @@ DEV void c5c_body(const unsigned char*in8,const float*w,unsigned char*out,uint v
   // ring. The 32 K steps are fully unrolled; every fragment address is one of 2+6 base pointers plus a compile-time
   // offset (immediate). Out-of-window A rows load from p=0 (a valid tile) and are zeroed by select, so no branch splits
   // the loop; the select sits at the consuming step so it does not force an early wait. Same fragments, same WMMA order per accumulator -> bit-identical.
-  constexpr uint D=C512_COMPACT_QKV_DEEP;
-  const unsigned char*bp[6];
-  _Pragma("unroll") for(uint j=0;j<6;j++){uint n0=(j/2)*C+head*32+(j%2)*16+row;bp[j]=wb+(n0/16)*16*512+(half*16+n0%16)*8;}
-  i2 a[D][QT],b[D][6];
-  auto ld=[&](uint s){const uint gs=s/2,h=s%2,k=s%D;
-   _Pragma("unroll") for(uint t=0;t<QT;t++)__builtin_memcpy(&a[k][t],ap[t]+gs*512+h*16,8);
-   _Pragma("unroll") for(uint j=0;j<6;j++)__builtin_memcpy(&b[k][j],bp[j]+gs*512+h*256,8);};
-  _Pragma("unroll") for(uint s=0;s<D;s++)ld(s);
-  _Pragma("unroll") for(uint s=0;s<32;s++){
-   const uint k=s%D;i2 ca[QT],cb[6];
-   _Pragma("unroll") for(uint t=0;t<QT;t++)ca[t]=av[t]?a[k][t]:i2{};
-   _Pragma("unroll") for(uint j=0;j<6;j++)cb[j]=b[k][j];
-   if(s+D<32)ld(s+D);
+  if constexpr(W16){
+   constexpr uint D=C512_COMPACT_QKV_DEEP;
+   typedef int w16_i4 __attribute__((ext_vector_type(4)));
+   const unsigned char*bp[6];
+   _Pragma("unroll") for(uint j=0;j<6;j++){uint n0=(j/2)*C+head*32+(j%2)*16+row;bp[j]=wb+(n0/16)*16*512+(half*16+n0%16)*16;}
+   i2 a[D][QT];w16_i4 b[2][6];
+   auto lda=[&](uint s){const uint gs=s/2,h=s%2,k=s%D;
+    _Pragma("unroll") for(uint t=0;t<QT;t++)__builtin_memcpy(&a[k][t],ap[t]+gs*512+h*16,8);};
+   auto ldb_half=[&](uint gs,uint hi){const uint kb=gs&1u;
+    _Pragma("unroll") for(uint j=0;j<3;j++)__builtin_memcpy(&b[kb][hi*3+j],bp[hi*3+j]+gs*512,16);};
+   _Pragma("unroll") for(uint s=0;s<D;s++)lda(s);
+   ldb_half(0,0);ldb_half(0,1);ldb_half(1,0);
+   _Pragma("unroll") for(uint s=0;s<32;s++){
+    const uint gs=s/2,h=s%2,k=s%D,kb=gs&1u;i2 ca[QT],cb[6];
+    _Pragma("unroll") for(uint t=0;t<QT;t++)ca[t]=av[t]?a[k][t]:i2{};
+    _Pragma("unroll") for(uint j=0;j<6;j++)cb[j]=h?i2{b[kb][j][2],b[kb][j][3]}:i2{b[kb][j][0],b[kb][j][1]};
+    if(s+D<32)lda(s+D);
+    if(!h){if(gs+1<16)ldb_half(gs+1,1);}
+    else{if(gs+2<16)ldb_half(gs+2,0);}
 #if C512_COMPACT_QKV_SCHED
-   __builtin_amdgcn_sched_barrier(0);
+    __builtin_amdgcn_sched_barrier(0);
 #endif
-   _Pragma("unroll") for(uint j=0;j<6;j++)_Pragma("unroll") for(uint t=0;t<QT;t++)accq[t][j]=__builtin_amdgcn_wmma_f32_16x16x16_fp8_fp8_w32_gfx12(cb[j],ca[t],accq[t][j]);
+    _Pragma("unroll") for(uint j=0;j<6;j++)_Pragma("unroll") for(uint t=0;t<QT;t++)accq[t][j]=__builtin_amdgcn_wmma_f32_16x16x16_fp8_fp8_w32_gfx12(cb[j],ca[t],accq[t][j]);
 #if C512_COMPACT_QKV_SCHED
-   __builtin_amdgcn_sched_barrier(0);
+    __builtin_amdgcn_sched_barrier(0);
 #endif
+   }
+  }else{
+   constexpr uint D=C512_COMPACT_QKV_DEEP;
+   const unsigned char*bp[6];
+   _Pragma("unroll") for(uint j=0;j<6;j++){uint n0=(j/2)*C+head*32+(j%2)*16+row;bp[j]=wb+(n0/16)*16*512+(half*16+n0%16)*8;}
+   i2 a[D][QT],b[D][6];
+   auto ld=[&](uint s){const uint gs=s/2,h=s%2,k=s%D;
+    _Pragma("unroll") for(uint t=0;t<QT;t++)__builtin_memcpy(&a[k][t],ap[t]+gs*512+h*16,8);
+    _Pragma("unroll") for(uint j=0;j<6;j++)__builtin_memcpy(&b[k][j],bp[j]+gs*512+h*256,8);};
+   _Pragma("unroll") for(uint s=0;s<D;s++)ld(s);
+   _Pragma("unroll") for(uint s=0;s<32;s++){
+    const uint k=s%D;i2 ca[QT],cb[6];
+    _Pragma("unroll") for(uint t=0;t<QT;t++)ca[t]=av[t]?a[k][t]:i2{};
+    _Pragma("unroll") for(uint j=0;j<6;j++)cb[j]=b[k][j];
+    if(s+D<32)ld(s+D);
+#if C512_COMPACT_QKV_SCHED
+    __builtin_amdgcn_sched_barrier(0);
+#endif
+    _Pragma("unroll") for(uint j=0;j<6;j++)_Pragma("unroll") for(uint t=0;t<QT;t++)accq[t][j]=__builtin_amdgcn_wmma_f32_16x16x16_fp8_fp8_w32_gfx12(cb[j],ca[t],accq[t][j]);
+#if C512_COMPACT_QKV_SCHED
+    __builtin_amdgcn_sched_barrier(0);
+#endif
+   }
   }
 #else
 #if C512_COMPACT_QKV_UNROLL
@@ -275,5 +304,7 @@ DEV void c5c_body(const unsigned char*in8,const float*w,unsigned char*out,uint v
  }
 }
 KERNEL __attribute__((amdgpu_flat_work_group_size(C512_COMPACT_WAVES*32,C512_COMPACT_WAVES*32)))
-void c512_qkv_attention_compact(const unsigned char*in8,const float*w,unsigned char*out,uint validwidth,uint validheight,uint workwidth,uint workheight,uint sx,uint sy){c5c_body<false>(in8,w,out,validwidth,validheight,workwidth,workheight,sx,sy);}
+void c512_qkv_attention_compact(const unsigned char*in8,const float*w,unsigned char*out,uint validwidth,uint validheight,uint workwidth,uint workheight,uint sx,uint sy){c5c_body<false,false>(in8,w,out,validwidth,validheight,workwidth,workheight,sx,sy);}
+KERNEL __attribute__((amdgpu_flat_work_group_size(C512_COMPACT_WAVES*32,C512_COMPACT_WAVES*32)))
+void c512_qkv_attention_compact_w16(const unsigned char*in8,const float*w,unsigned char*out,uint validwidth,uint validheight,uint workwidth,uint workheight,uint sx,uint sy){c5c_body<false,true>(in8,w,out,validwidth,validheight,workwidth,workheight,sx,sy);}
 #endif

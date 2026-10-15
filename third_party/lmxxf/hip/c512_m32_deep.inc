@@ -274,6 +274,74 @@ KERNEL __attribute__((amdgpu_flat_work_group_size(64,64))) void split_ffn_one_w2
  for(uint ob=0;ob<4;ob++)for(uint e=0;e<8;e++){uint rr=first+gr()*8+e,c=g*64+ob*16+rc();float v=F(c512_hq(r[ob][e]));out8[((rr/16)*16+c/32)*512+(rr%16)*32+c%32]=static_cast<unsigned char>(__builtin_amdgcn_cvt_pk_fp8_f32(v,0.f,0,false));}
 #endif
 }
+template<bool TVEC,bool ByteIn=false> DEV void c512_ffn_one_w2f8_w16_body(const float*in,const float*w,unsigned char*out8,uint tokens){
+ const uint tid=__builtin_amdgcn_workitem_id_x(),wave=tid/32,first=bid()/8*32+wave*16,g=bid()%8;
+ __attribute__((shared)) unsigned char t8[TVEC?2048:1];
+ if(first<tokens){
+  typedef int w16_i4 __attribute__((ext_vector_type(4)));
+  const unsigned char*wm=reinterpret_cast<const unsigned char*>(w);
+  const unsigned char*we=wm+262144*4+g*16384;
+  const unsigned char*wc=wm+393216*4+g*16384;
+  f8 m[4]{};
+  const float*ar=in+(first+rc())*512+gr()*8;
+  const unsigned char*ar8=reinterpret_cast<const unsigned char*>(in)+(first+rc())*512+gr()*8;
+  _Pragma("clang loop unroll_count(2)") for(uint gs=0;gs<16;gs++){
+   i2 a0,a1;
+   if constexpr(ByteIn){__builtin_memcpy(&a0,ar8+gs*32,8);__builtin_memcpy(&a1,ar8+gs*32+16,8);}
+   else{float fa0[8],fa1[8];__builtin_memcpy(fa0,ar+gs*32,32);__builtin_memcpy(fa1,ar+gs*32+16,32);a0=c5d_pack8f(fa0);a1=c5d_pack8f(fa1);}
+   _Pragma("unroll") for(uint j=0;j<4;j++){
+    w16_i4 bw;__builtin_memcpy(&bw,wm+((g*4+j)*16+gs)*512+(gr()*16+rc())*16,16);
+    i2 b0={bw[0],bw[1]},b1={bw[2],bw[3]};
+    m[j]=__builtin_amdgcn_wmma_f32_16x16x16_fp8_fp8_w32_gfx12(b0,a0,m[j]);
+    m[j]=__builtin_amdgcn_wmma_f32_16x16x16_fp8_fp8_w32_gfx12(b1,a1,m[j]);}}
+  i2 x8[4];
+#if C512_DIRECT_PACK&1
+  for(uint j=0;j<4;j++){float xv[8];for(uint e=0;e<8;e++)xv[e]=fp8_add0(c512_hq(m[j][e]));x8[j]=c5d_pack8f(xv);}
+#else
+  for(uint j=0;j<4;j++){float xv[8];for(uint e=0;e<8;e++)xv[e]=F(c512_hq(m[j][e]));x8[j]=c5d_pack8f(xv);}
+#endif
+  f8 r[4]{};
+  for(uint h2=0;h2<8;h2++){
+   w16_i4 cbw[4];
+   _Pragma("unroll") for(uint ob=0;ob<4;ob++)__builtin_memcpy(&cbw[ob],wc+(ob*8+h2)*512+(gr()*16+rc())*16,16);
+   _Pragma("unroll") for(uint hp=0;hp<2;hp++){
+    const uint hb=h2*2+hp;
+    f8 ex{};
+    _Pragma("unroll") for(uint ks2=0;ks2<2;ks2++){
+     w16_i4 ebw;__builtin_memcpy(&ebw,we+(hb*2+ks2)*512+(gr()*16+rc())*16,16);
+     i2 eb0={ebw[0],ebw[1]},eb1={ebw[2],ebw[3]};
+     ex=__builtin_amdgcn_wmma_f32_16x16x16_fp8_fp8_w32_gfx12(eb0,x8[ks2*2],ex);
+     ex=__builtin_amdgcn_wmma_f32_16x16x16_fp8_fp8_w32_gfx12(eb1,x8[ks2*2+1],ex);}
+    i2 a{};for(uint e=0;e<8;e++){float v=Hrtz(ex[e]),gate=clampf(v,-4.f,4.f),poly=__builtin_fmaf(gate,__builtin_fmaf(absf(gate),-.055908203125f,.447265625f),.89453125f);a[e/4]=int(uint(a[e/4])|(uint(byte_F(v*poly))<<(8*(e%4))));}
+    _Pragma("unroll") for(uint ob=0;ob<4;ob++){
+     i2 cb=hp?i2{cbw[ob][2],cbw[ob][3]}:i2{cbw[ob][0],cbw[ob][1]};
+     r[ob]=__builtin_amdgcn_wmma_f32_16x16x16_fp8_fp8_w32_gfx12(a,cb,r[ob]);}}}
+  if constexpr(TVEC){
+   for(uint ob=0;ob<4;ob++)for(uint e=0;e<8;e++){
+    uint rl=gr()*8+e,cl=ob*16+rc();
+#if C512_DIRECT_PACK&2
+    unsigned char b8=byte_F(c512_hq(r[ob][e]));
+#else
+    float v=F(c512_hq(r[ob][e]));
+    unsigned char b8=static_cast<unsigned char>(__builtin_amdgcn_cvt_pk_fp8_f32(v,0.f,0,false));
+#endif
+    t8[wave*1024+(cl/32)*512+rl*32+cl%32]=b8;}
+   WG_FENCE(3);__builtin_amdgcn_wave_barrier();WG_FENCE(2);
+   uint l=tid&31u;
+   for(uint h=0;h<2;h++){w16_i4 q;__builtin_memcpy(&q,__builtin_assume_aligned(t8+wave*1024+h*512+l*16,16),16);__builtin_memcpy(__builtin_assume_aligned(out8+size_t(first+g*2+h)*512+l*16,16),&q,16);}
+  }else{
+#if C512_DIRECT_PACK&2
+   for(uint ob=0;ob<4;ob++)for(uint e=0;e<8;e++){uint rr=first+gr()*8+e,c=g*64+ob*16+rc();out8[((rr/16)*16+c/32)*512+(rr%16)*32+c%32]=byte_F(c512_hq(r[ob][e]));}
+#else
+   for(uint ob=0;ob<4;ob++)for(uint e=0;e<8;e++){uint rr=first+gr()*8+e,c=g*64+ob*16+rc();float v=F(c512_hq(r[ob][e]));out8[((rr/16)*16+c/32)*512+(rr%16)*32+c%32]=static_cast<unsigned char>(__builtin_amdgcn_cvt_pk_fp8_f32(v,0.f,0,false));}
+#endif
+  }
+ }
+}
+KERNEL __attribute__((amdgpu_flat_work_group_size(64,64))) void split_ffn_one_w2f8_w16(const float*in,const float*w,unsigned char*out8,uint tokens){c512_ffn_one_w2f8_w16_body<false>(in,w,out8,tokens);}
+KERNEL __attribute__((amdgpu_flat_work_group_size(64,64))) void split_ffn_one_w2f8_w16_tvec(const float*in,const float*w,unsigned char*out8,uint tokens){c512_ffn_one_w2f8_w16_body<true>(in,w,out8,tokens);}
+KERNEL __attribute__((amdgpu_flat_work_group_size(64,64))) void split_ffn_one_w2f8_w16_bin(const float*in,const float*w,unsigned char*out8,uint tokens){c512_ffn_one_w2f8_w16_body<false,true>(in,w,out8,tokens);}
+KERNEL __attribute__((amdgpu_flat_work_group_size(64,64))) void split_ffn_one_w2f8_w16_tvec_bin(const float*in,const float*w,unsigned char*out8,uint tokens){c512_ffn_one_w2f8_w16_body<true,true>(in,w,out8,tokens);}
 #endif
 #ifndef C512_FFN_PROJ_FUSE
 #define C512_FFN_PROJ_FUSE 0 /* 2026-10-02 ideas-yami-ikaruga: 1 = export split_ffn_proj_fused (needs C512_FFN_F8W): split_ffn_one_w2f8 and

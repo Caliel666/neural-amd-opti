@@ -18,7 +18,7 @@
 #define VIT_QKV_TAIL_VEC 0 /* 1: vit_stream_qkv_frag_hin_w5 byte tail transposed through the wave's LDS norm tile, one 16-byte store per lane; bytes unchanged (results/deep-tail-20260930) */
 #endif
 #if HIP_VIT_STREAM_KERNELS
-template<uint TM,uint TN,bool ByteAv,bool HalfSkip,bool ByteSkip=false>
+template<uint TM,uint TN,bool ByteAv,bool HalfSkip,bool ByteSkip=false,uint ScaleOffset=1048576,bool W16=false,bool ByteOut=false>
 DEV void vit_stream_project_tiles(const float*in,const float*w,const float*skip,float*out,uint tokens,const uint*reuse_gate){if(reuse_gate&&reuse_gate[0])return;
  constexpr uint IN=1024,OUT=1024;
  uint first=bid()/(OUT/(16*TN))*(16*TM),row=bid()%(OUT/(16*TN))*(16*TN);if(first>=tokens)return;
@@ -27,23 +27,43 @@ DEV void vit_stream_project_tiles(const float*in,const float*w,const float*skip,
  for(uint t=0;t<TM;t++)live+=first+t*16<tokens;
  const unsigned char*wf=reinterpret_cast<const unsigned char*>(w);
  f8 total[TM][TN]{};
- for(uint p=0;p<4;p++){f8 a[TM][TN]{};
-  if(!p)
+ if constexpr(W16){
 #pragma unroll
-  for(uint t=0;t<TM;t++)for(uint j=0;j<TN;j++)if(t<live)for(uint e=0;e<8;e++)a[t][j][e]=VIT_FAST_H((ByteSkip?__builtin_amdgcn_cvt_f32_fp8(int(reinterpret_cast<const unsigned char*>(skip)[(first+t*16+gr()*8+e)*OUT+row+j*16+rc()]),0):(HalfSkip?float(reinterpret_cast<const _Float16*>(skip)[(first+t*16+gr()*8+e)*OUT+row+j*16+rc()]):skip[(first+t*16+gr()*8+e)*OUT+row+j*16+rc()]))*w[IN*OUT+row+j*16+rc()]);
-  for(uint k=p*(IN/4);k<(p+1)*(IN/4);k+=16){i2 x[TM];
+  for(uint t=0;t<TM;t++)for(uint j=0;j<TN;j++)if(t<live)for(uint e=0;e<8;e++)total[t][j][e]=VIT_FAST_H((ByteSkip?__builtin_amdgcn_cvt_f32_fp8(int(reinterpret_cast<const unsigned char*>(skip)[(first+t*16+gr()*8+e)*OUT+row+j*16+rc()]),0):(HalfSkip?float(reinterpret_cast<const _Float16*>(skip)[(first+t*16+gr()*8+e)*OUT+row+j*16+rc()]):skip[(first+t*16+gr()*8+e)*OUT+row+j*16+rc()]))*w[ScaleOffset+row+j*16+rc()]);
+  _Pragma("clang loop unroll(disable)")
+  for(uint p=0;p<4;p++){f8 a[TM][TN]{};
+   _Pragma("unroll 2")
+   for(uint k=p*(IN/4);k<(p+1)*(IN/4);k+=32){i2 x0[TM],x1[TM];
 #pragma unroll
-   for(uint t=0;t<TM;t++){x[t]=i2{};if(t<live){if constexpr(ByteAv)__builtin_memcpy(&x[t],reinterpret_cast<const unsigned char*>(in)+(first+t*16+rc())*IN+k+gr()*8,8);else {DF_PACK8_LOOP(x[t],in[(first+t*16+rc())*IN+k+gr()*8+e]);}}}
+    for(uint t=0;t<TM;t++){x0[t]=i2{};x1[t]=i2{};if(t<live){if constexpr(ByteAv){__builtin_memcpy(&x0[t],reinterpret_cast<const unsigned char*>(in)+(first+t*16+rc())*IN+k+gr()*8,8);__builtin_memcpy(&x1[t],reinterpret_cast<const unsigned char*>(in)+(first+t*16+rc())*IN+k+16+gr()*8,8);}else{DF_PACK8_LOOP(x0[t],in[(first+t*16+rc())*IN+k+gr()*8+e]);DF_PACK8_LOOP(x1[t],in[(first+t*16+rc())*IN+k+16+gr()*8+e]);}}}
 #pragma unroll
-   for(uint j=0;j<TN;j++){uint r0=row+j*16;i2 y;__builtin_memcpy(&y,wf+((r0/16)*(IN/32)+k/32)*512+((((k%32)/16)*2+gr())*16+rc())*8,8);
+    for(uint j=0;j<TN;j++){uint r0=row+j*16;w16_i4 yw;__builtin_memcpy(&yw,wf+((r0/16)*(IN/32)+k/32)*512+(gr()*16+rc())*16,16);
+     i2 y0={yw[0],yw[1]},y1={yw[2],yw[3]};
 #pragma unroll
-    for(uint t=0;t<TM;t++)a[t][j]=__builtin_amdgcn_wmma_f32_16x16x16_fp8_fp8_w32_gfx12(x[t],y,a[t][j]);}}
+     for(uint t=0;t<TM;t++){a[t][j]=__builtin_amdgcn_wmma_f32_16x16x16_fp8_fp8_w32_gfx12(x0[t],y0,a[t][j]);a[t][j]=__builtin_amdgcn_wmma_f32_16x16x16_fp8_fp8_w32_gfx12(x1[t],y1,a[t][j]);}}}
 #pragma unroll
-  for(uint t=0;t<TM;t++)
+   for(uint t=0;t<TM;t++)
 #pragma unroll
-  for(uint j=0;j<TN;j++)for(uint e=0;e<8;e++)total[t][j][e]=p?total[t][j][e]+a[t][j][e]:a[t][j][e];}
+   for(uint j=0;j<TN;j++)for(uint e=0;e<8;e++)total[t][j][e]+=a[t][j][e];}
+ }else{
+  for(uint p=0;p<4;p++){f8 a[TM][TN]{};
+   if(!p)
 #pragma unroll
- for(uint t=0;t<TM;t++){if(t>=live)continue;for(uint j=0;j<TN;j++)for(uint e=0;e<8;e++)out[(first+t*16+gr()*8+e)*OUT+row+j*16+rc()]=F(VIT_FAST_H(total[t][j][e]));}
+   for(uint t=0;t<TM;t++)for(uint j=0;j<TN;j++)if(t<live)for(uint e=0;e<8;e++)a[t][j][e]=VIT_FAST_H((ByteSkip?__builtin_amdgcn_cvt_f32_fp8(int(reinterpret_cast<const unsigned char*>(skip)[(first+t*16+gr()*8+e)*OUT+row+j*16+rc()]),0):(HalfSkip?float(reinterpret_cast<const _Float16*>(skip)[(first+t*16+gr()*8+e)*OUT+row+j*16+rc()]):skip[(first+t*16+gr()*8+e)*OUT+row+j*16+rc()]))*w[ScaleOffset+row+j*16+rc()]);
+   for(uint k=p*(IN/4);k<(p+1)*(IN/4);k+=16){i2 x[TM];
+#pragma unroll
+    for(uint t=0;t<TM;t++){x[t]=i2{};if(t<live){if constexpr(ByteAv)__builtin_memcpy(&x[t],reinterpret_cast<const unsigned char*>(in)+(first+t*16+rc())*IN+k+gr()*8,8);else {DF_PACK8_LOOP(x[t],in[(first+t*16+rc())*IN+k+gr()*8+e]);}}}
+#pragma unroll
+    for(uint j=0;j<TN;j++){uint r0=row+j*16;i2 y;__builtin_memcpy(&y,wf+((r0/16)*(IN/32)+k/32)*512+((((k%32)/16)*2+gr())*16+rc())*8,8);
+#pragma unroll
+     for(uint t=0;t<TM;t++)a[t][j]=__builtin_amdgcn_wmma_f32_16x16x16_fp8_fp8_w32_gfx12(x[t],y,a[t][j]);}}
+#pragma unroll
+   for(uint t=0;t<TM;t++)
+#pragma unroll
+   for(uint j=0;j<TN;j++)for(uint e=0;e<8;e++)total[t][j][e]=p?total[t][j][e]+a[t][j][e]:a[t][j][e];}
+ }
+#pragma unroll
+ for(uint t=0;t<TM;t++){if(t>=live)continue;for(uint j=0;j<TN;j++)for(uint e=0;e<8;e++){if constexpr(ByteOut)reinterpret_cast<unsigned char*>(out)[(first+t*16+gr()*8+e)*OUT+row+j*16+rc()]=byte_F(VIT_FAST_H(total[t][j][e]));else out[(first+t*16+gr()*8+e)*OUT+row+j*16+rc()]=F(VIT_FAST_H(total[t][j][e]));}}
 }
 WAVE void vit_stream_project_n64_b(const float*in,const float*w,const float*skip,float*out,uint tokens,uint inputs,uint outputs,const uint*reuse_gate){vit_stream_project_tiles<1,4,true,false>(in,w,skip,out,tokens,reuse_gate);}
 WAVE void vit_stream_project_n64_h(const float*in,const float*w,const float*skip,float*out,uint tokens,uint inputs,uint outputs,const uint*reuse_gate){vit_stream_project_tiles<1,4,false,true>(in,w,skip,out,tokens,reuse_gate);}
@@ -183,8 +203,13 @@ KERNEL __attribute__((amdgpu_flat_work_group_size(160,160))) void vit_stream_qkv
   for(uint k=0;k<32;k+=16){h8 x{},ones{};for(uint e=0;e<8;e++){float v=raw[rc()*33+k+gr()*8+e];x[e]=(_Float16)(v*v);ones[e]=(_Float16)1.f;}sum=__builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(x,ones,sum);}
  }
  if(!live)return;
- const float scale=part==0?5.65625f*w[786432+row/32]:1.f;
- for(uint j=0;j<2;j++)for(uint e=0;e<8;e++){float v=acc[j][e];if(part<2){v*=__builtin_amdgcn_rsqf(maxf(sum[e],6.198883056640625e-5f))*scale;}out[(part*tokens+first+gr()*8+e)*1024+row+j*16+rc()]=byte_F(v);}
+ if(part<2){
+  const float scale=part==0?5.65625f*w[786432+row/32]:1.f;
+  #pragma unroll
+  for(uint e=0;e<8;e++){float inv=__builtin_amdgcn_rsqf(__builtin_fmaxf(sum[e],6.198883056640625e-5f))*scale;acc[0][e]*=inv;acc[1][e]*=inv;}
+ }
+ #pragma unroll
+ for(uint j=0;j<2;j++)for(uint e=0;e<8;e++)out[(part*tokens+first+gr()*8+e)*1024+row+j*16+rc()]=byte_F(acc[j][e]);
 }
 #endif
 #endif
@@ -228,8 +253,30 @@ KERNEL __attribute__((amdgpu_flat_work_group_size(160,160))) void vit_stream_qkv
   for(uint k=0;k<32;k+=16){h8 x{},ones{};for(uint e=0;e<8;e++){float v=raw[rc()*33+k+gr()*8+e];x[e]=(_Float16)(v*v);ones[e]=(_Float16)1.f;}sum=__builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(x,ones,sum);}
  }
  if(!live)return;
- const float scale=part==0?5.65625f*w[786432+row/32]:1.f;
- for(uint j=0;j<2;j++)for(uint e=0;e<8;e++){float v=acc[j][e];if(part<2){v*=__builtin_amdgcn_rsqf(maxf(sum[e],6.198883056640625e-5f))*scale;}out[(part*tokens+first+gr()*8+e)*1024+row+j*16+rc()]=byte_F(v);}
+ if(part<2){
+  const float scale=part==0?5.65625f*w[786432+row/32]:1.f;
+  #pragma unroll
+  for(uint e=0;e<8;e++){float inv=__builtin_amdgcn_rsqf(__builtin_fmaxf(sum[e],6.198883056640625e-5f))*scale;acc[0][e]*=inv;acc[1][e]*=inv;}
+ }
+ #pragma unroll
+ for(uint j=0;j<2;j++)for(uint e=0;e<8;e++)out[(part*tokens+first+gr()*8+e)*1024+row+j*16+rc()]=byte_F(acc[j][e]);
 }
 #endif
+#endif
+
+
+// New ABI-name, identical argument layout/math; only scalar tail address differs.
+#if VIT_CONTRACT_BYTE_EDGE && VIT_QKV_F8W
+WAVE void vit_stream_contract_frag_bout_compactw(const float*in,const float*w,const float*skip,float*out,uint tokens,uint inputs,uint outputs,const uint*reuse_gate){if(reuse_gate&&reuse_gate[0])return;if(inputs==4096&&outputs==1024)vit_contract_blocked_body<false,false,false,false,true,true,1048576>(in,w,skip,out,tokens);}
+WAVE void vit_stream_contract_frag_bout_compactw_w16(const float*in,const float*w,const float*skip,float*out,uint tokens,uint inputs,uint outputs,const uint*reuse_gate){if(reuse_gate&&reuse_gate[0])return;if(inputs==4096&&outputs==1024)vit_contract_blocked_body<false,false,false,false,true,true,1048576,true>(in,w,skip,out,tokens);}
+WAVE void vit_stream_contract_frag_bstream_bout_compactw(const float*in,const float*w,const float*skip,float*out,uint tokens,uint inputs,uint outputs,const uint*reuse_gate){if(reuse_gate&&reuse_gate[0])return;if(inputs==4096&&outputs==1024)vit_contract_blocked_body<false,false,true,false,true,true,1048576>(in,w,skip,out,tokens);}
+WAVE void vit_stream_contract_frag_bstream_bout_compactw_w16(const float*in,const float*w,const float*skip,float*out,uint tokens,uint inputs,uint outputs,const uint*reuse_gate){if(reuse_gate&&reuse_gate[0])return;if(inputs==4096&&outputs==1024)vit_contract_blocked_body<false,false,true,false,true,true,1048576,true>(in,w,skip,out,tokens);}
+#endif
+
+
+#if VIT_CONTRACT_BYTE_EDGE && VIT_QKV_F8W
+WAVE void vit_stream_project_n64_bb_compactw(const float*in,const float*w,const float*skip,float*out,uint tokens,uint inputs,uint outputs,const uint*reuse_gate){vit_stream_project_tiles<1,4,true,false,true,262144>(in,w,skip,out,tokens,reuse_gate);}
+WAVE void vit_stream_project_n64_bb_compactw_w16(const float*in,const float*w,const float*skip,float*out,uint tokens,uint inputs,uint outputs,const uint*reuse_gate){vit_stream_project_tiles<1,4,true,false,true,262144,true>(in,w,skip,out,tokens,reuse_gate);}
+WAVE void vit_stream_project_n64_bb_bout_compactw(const float*in,const float*w,const float*skip,float*out,uint tokens,uint inputs,uint outputs,const uint*reuse_gate){vit_stream_project_tiles<1,4,true,false,true,262144,false,true>(in,w,skip,out,tokens,reuse_gate);}
+WAVE void vit_stream_project_n64_bb_bout_compactw_w16(const float*in,const float*w,const float*skip,float*out,uint tokens,uint inputs,uint outputs,const uint*reuse_gate){vit_stream_project_tiles<1,4,true,false,true,262144,true,true>(in,w,skip,out,tokens,reuse_gate);}
 #endif

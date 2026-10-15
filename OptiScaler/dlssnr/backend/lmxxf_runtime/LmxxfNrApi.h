@@ -21,6 +21,10 @@ extern "C"
  * consumer queue before output reuse or destruction. A failed/uncertain clear
  * returns FAILED and the session must be rebuilt. */
 #define LMXXF_NR_CREATE_FLAG_ZERO_OUTPUT_FALLBACK (1u << 0)
+/* mochizuki only (lmxxf rejects it): run the network as ACO's machine code from dlssnr-amd\aco\ (upstream's
+   [Network] ACO Mode), where the driver offers VK_KHR_pipeline_binary; else, or without that folder, as before.
+   Decided once a process, by the first session that starts. */
+#define LMXXF_NR_CREATE_FLAG_ACO (1u << 1)
 
     enum LmxxfNrStatus
     {
@@ -80,6 +84,16 @@ extern "C"
 /* The 1080 tier on 1920x1088 instead of NVIDIA's 1920x1152 (DLSS5_NETWORK_1080_ROWS=1088): about 4% faster, slightly
    lossy at the bottom rows. A change rebuilds the network. */
 #define LMXXF_NR_FRAME_FLAG_COMPACT_1080 (1u << 7)
+/* mochizuki only: the int4 mixed network (upstream's [Int4Mixed]), faster, the picture slightly different. Needs the
+   session's ACO and dlssnr-amd\int4\ with dlssnr-int4.bin; else the default network, and the log says why. A change
+   rebuilds the network, the frames keeping the current one meanwhile while VRAM allows. */
+#define LMXXF_NR_FRAME_FLAG_INT4 (1u << 8)
+/* lmxxf, three passes: run two and extrapolate the third from them (upstream's DLSS5_MULTI_PASS_PREDICT): about a
+   third less time, close to a real third pass. */
+#define LMXXF_NR_FRAME_FLAG_PASS3_ESTIMATE (1u << 9)
+/* lmxxf, two or three passes: where the frame looks like skin, the result goes back toward pass 1's (upstream's
+   DLSS5_MULTI_PASS_SKIN_PROTECT), so faces do not take the extra passes. */
+#define LMXXF_NR_FRAME_FLAG_SKIN_PROTECT (1u << 10)
 
     typedef struct LmxxfNrFrameInfo
     {
