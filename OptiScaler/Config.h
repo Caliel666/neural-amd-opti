@@ -443,6 +443,19 @@ class Config
     // picture is close to the default network's, not the same. A change rebuilds the network in a few seconds while
     // the frames keep the current one, without a restart.
     CustomOptional<bool> MochizukiInt4 { false };
+    // With two or three passes: the later ones add only detail, without stacking the network's tone and colour shift
+    // (LMXXF_NR_FRAME_FLAG_CASCADE_DETAIL). A change rebuilds the network.
+    CustomOptional<bool> MochizukiCascadeDetail { true };
+    // With two or three passes: the result is held inside the first pass's local brightness range, so thin edges do
+    // not take a rim that grows every pass (LMXXF_NR_FRAME_FLAG_ANTI_HALO). Applies on the next frame.
+    CustomOptional<bool> MochizukiAntiHalo { true };
+    // Before Super Resolution: the camera jitter's step between frames added to the motion vectors the history is
+    // fetched with (they leave the jitter out). Experimental, off.
+    CustomOptional<bool> MochizukiJitterHistory { false };
+    // Anti-halo's strength, 0..1: 1 holds each pixel to the first pass's local range, 0 lets a quarter past it.
+    CustomOptional<float> MochizukiAntiHaloStrength { 0.8f };
+    // Three passes: two run and the third is estimated from them, about a third less time.
+    CustomOptional<bool> MochizukiPassEstimate { true };
     CustomOptional<float> MochizukiMaxRatio { 2.0f };
     // Linear colour only: the brightness the network treats as white, 0.01..100.
     CustomOptional<float> MochizukiWhitePoint { 1.0f };

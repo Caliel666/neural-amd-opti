@@ -687,6 +687,9 @@ struct mzi::Capture::State
         if (refused.empty())
             refused = what;
     }
+    // A pipeline made from a binary (ACO's machine code, VK_KHR_pipeline_binary): nothing to compile ahead, so no
+    // manifest, and nothing to say about it.
+    bool binaries = false;
 
     void Prewarm(const std::atomic<bool>* stop);
     void SaveCache();
@@ -845,6 +848,8 @@ extern "C" VKAPI_ATTR VkResult VKAPI_CALL mzi_vkCreateComputePipelines(VkDevice 
                     for (auto* next = static_cast<const VkBaseInStructure*>(ci.pNext); next; next = next->pNext)
                     {
                         const auto* r = reinterpret_cast<const VkPipelineRobustnessCreateInfoEXT*>(next);
+                        if (next->sType == VK_STRUCTURE_TYPE_PIPELINE_BINARY_INFO_KHR)
+                            s.binaries = true;
                         if (next->sType == VK_STRUCTURE_TYPE_PIPELINE_ROBUSTNESS_CREATE_INFO_EXT && !p.unrobust &&
                             r->storageBuffers == VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DISABLED_EXT &&
                             r->uniformBuffers == VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DISABLED_EXT &&
@@ -1224,6 +1229,8 @@ void Capture::State::SaveCache()
 
 void Capture::State::WriteManifest()
 {
+    if (binaries)
+        return;
     if (!refused.empty())
     {
         nr::logf("[mochizuki] prewarm manifest not written: the build made %s", refused.c_str());

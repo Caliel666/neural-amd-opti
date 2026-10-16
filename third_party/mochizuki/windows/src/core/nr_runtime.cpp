@@ -460,6 +460,13 @@ struct Runtime::Impl {
     int cascade_radius{4};
     nrvk::Context::Image lograt{}, cascade_tmp{}, lowpass{};
     nrvk::Kernel cascade_lograt, cascade_blur_h, cascade_blur_v, cascade_feed;
+    // Controls::anti_halo: the first pass's answer, and the pass that holds the
+    // last one to it. Model-sized, GENERAL for life; made with more than one pass.
+    nrvk::Context::Image first_answer{};
+    nrvk::Kernel dehalo;
+    // Controls::pass3_estimate: a gain per 16x16 tile, and the passes that make and apply it. With three passes.
+    nrvk::Context::Image predict_gain_image{};
+    nrvk::Kernel predict_gain, predict_apply;
     std::vector<nrvk::Context::Image> history_store;
     // ---- what the pass costs, measured on the GPU ----------------------------
     //
@@ -1016,6 +1023,11 @@ struct Runtime::Impl {
         if (cascade_blur_h.device) cascade_blur_h.destroy();
         if (cascade_blur_v.device) cascade_blur_v.destroy();
         if (cascade_feed.device) cascade_feed.destroy();
+        if (first_answer.handle) session.ctx.destroy(first_answer);
+        if (dehalo.device) dehalo.destroy();
+        if (predict_gain_image.handle) session.ctx.destroy(predict_gain_image);
+        if (predict_gain.device) predict_gain.destroy();
+        if (predict_apply.device) predict_apply.destroy();
         for (auto& h : history_store) session.ctx.destroy(h);
         for (auto& f : features) if (f.second.history.handle) session.ctx.destroy(f.second.history);
         for (auto& r : retiring) if (r.first.handle) session.ctx.destroy(r.first);
@@ -1108,12 +1120,22 @@ struct Runtime::Impl {
         }
     }
 
+    // Intensity past 1 raises each pass's luminance ratio to its power, so every pass that carried it compounded
+    // it (2 over three passes came out near ratio^8, blotchy). Only the frame's last pass extrapolates; the ones
+    // before stop at 1.
+    Resolved resolve_frame_pass(const Controls& c, uint32_t pass) const {
+        Resolved r = resolve_pass(c, pass);
+        const uint32_t last = std::min<uint32_t>(std::max(c.passes, 1), std::max<uint32_t>(max_passes, 1u)) - 1;
+        if (pass != last) r.intensity = std::min(r.intensity, 1.0f);
+        return r;
+    }
+
     void controls(const Controls& c) {
         const uint32_t npass = std::max<uint32_t>(max_passes, 1u);
         pass_push.assign(npass, {});
-        for (auto& d : session.disp) patch_push(d.push, d.kern, resolve_pass(c, 0));
+        for (auto& d : session.disp) patch_push(d.push, d.kern, resolve_frame_pass(c, 0));
         for (uint32_t p = 1; p < npass; ++p) {
-            const Resolved r = resolve_pass(c, p);
+            const Resolved r = resolve_frame_pass(c, p);
             pass_push[p].assign(session.disp.size(), {});
             for (size_t i = 0; i < session.disp.size(); ++i) {
                 if (!carries_controls(session.disp[i].kern)) continue;
@@ -1491,6 +1513,19 @@ Runtime::Runtime(const HostDevice& host, const RuntimeConfig& config, const Cont
         if (mask_config.width) throw std::invalid_argument("the control mask path does not support more than one pass");
         impl_->shown_keep = s.ctx.image(mw, mh, VK_FORMAT_R32G32B32A32_SFLOAT, true);
         s.ctx.transition(impl_->shown_keep, VK_IMAGE_LAYOUT_GENERAL);
+        impl_->first_answer = s.ctx.image(mw, mh, VK_FORMAT_R32G32B32A32_SFLOAT, false);
+        s.ctx.transition(impl_->first_answer, VK_IMAGE_LAYOUT_GENERAL);
+        impl_->dehalo.create(s.ctx, (adapters / "runtime_dehalo.spv").string(), {}, 12,
+                             {&s.surf0, &impl_->first_answer});
+        if (config.max_passes >= 3) {
+            impl_->predict_gain_image = s.ctx.image((mw + 15) / 16, (mh + 15) / 16, VK_FORMAT_R32_SFLOAT, false);
+            s.ctx.transition(impl_->predict_gain_image, VK_IMAGE_LAYOUT_GENERAL);
+            impl_->predict_gain.create(s.ctx, (adapters / "runtime_predict_gain.spv").string(), {}, 8,
+                                       {&impl_->shown_keep, &impl_->first_answer, &s.surf0,
+                                        &impl_->predict_gain_image});
+            impl_->predict_apply.create(s.ctx, (adapters / "runtime_predict_apply.spv").string(), {}, 8,
+                                        {&impl_->first_answer, &s.surf0, &impl_->predict_gain_image});
+        }
         if (config.cascade_detail_only) {
             impl_->cascade_detail = true;
             impl_->cascade_radius = std::max(4, int(mh / 60));
@@ -1504,9 +1539,9 @@ Runtime::Runtime(const HostDevice& host, const RuntimeConfig& config, const Cont
             impl_->cascade_lograt.create(s.ctx, (adapters / "cascade_lograt.spv").string(), {}, 12,
                                          {&s.surf0, &impl_->shown_keep, &impl_->lograt});
             impl_->cascade_blur_h.create(s.ctx, (adapters / "cascade_blur.spv").string(), {}, 16,
-                                         {&impl_->lograt, &impl_->cascade_tmp});
+                                         {&impl_->lograt, &impl_->cascade_tmp, &impl_->shown_keep});
             impl_->cascade_blur_v.create(s.ctx, (adapters / "cascade_blur.spv").string(), {}, 16,
-                                         {&impl_->cascade_tmp, &impl_->lowpass});
+                                         {&impl_->cascade_tmp, &impl_->lowpass, &impl_->shown_keep});
             impl_->cascade_feed.create(s.ctx, (adapters / "cascade_feed.spv").string(), {}, 12,
                                        {&impl_->shown_keep, &impl_->lograt, &impl_->lowpass, &tex_in_storage});
         }
@@ -2520,7 +2555,23 @@ ControlMaskResult Runtime::record_all(VkCommandBuffer cmd, const ColourFrame& fr
     // store[k] is copied into the bound history image before the pass and
     // the model's write (surf1) copied back after it. With one pass the
     // history round trip is the single copy it always was.
+    const bool estimate = passes == 3 && c.pass3_estimate && impl_->predict_apply.device;
     for (uint32_t pass = 0; pass < passes; ++pass) {
+        if (pass == 2 && estimate) {
+            // The third pass from the first two (runtime_predict_*.comp); its timestamps bracket the estimate, so
+            // the network time read back stays whole.
+            const bool time_est = impl_->timing_ok && impl_->split_timing;
+            const uint32_t est_query = timing_slot * impl_->timing_stride + 2 + 2 * pass;
+            if (time_est) vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, impl_->timing, est_query);
+            compute_barrier(cmd);
+            const uint32_t ext[2] = {nw, nh};
+            dispatch(cmd, impl_->predict_gain, (nw + 15) / 16, (nh + 15) / 16, 1, ext, sizeof ext);
+            compute_barrier(cmd);
+            dispatch(cmd, impl_->predict_apply, (nw + 7) / 8, (nh + 7) / 8, 1, ext, sizeof ext);
+            compute_barrier(cmd);
+            if (time_est) vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, impl_->timing, est_query + 1);
+            continue;
+        }
         if (pass > 0 && impl_->cascade_detail) {
             // Detail only: the first pass's input with the previous pass's
             // local structure on it (windows/shaders/passes/cascade_feed.comp).
@@ -2612,6 +2663,7 @@ ControlMaskResult Runtime::record_all(VkCommandBuffer cmd, const ColourFrame& fr
                             s.runner.inv_barrier && !last);
         }
         if (time_net) vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, impl_->timing, net_query + 1);
+        if (pass == 0 && passes > 1 && (c.anti_halo || estimate)) copy_general(s.surf0, impl_->first_answer);
         if (temporal && !t.pingpong) {
             // History is a copy of what the MODEL wrote - the temporal post variant
             // puts that on the second surface, before the application strength -
@@ -2636,6 +2688,12 @@ ControlMaskResult Runtime::record_all(VkCommandBuffer cmd, const ColourFrame& fr
                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                     VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
         }
+    }
+    if (passes > 1 && c.anti_halo) {
+        compute_barrier(cmd);
+        struct { uint32_t w, h; float margin; } hp{nw, nh, std::clamp(c.anti_halo_margin, 0.0f, 0.5f)};
+        dispatch(cmd, impl_->dehalo, (nw + 7) / 8, (nh + 7) / 8, 1, &hp, sizeof hp);
+        compute_barrier(cmd);
     }
     if (temporal) {
         // Leave the bound history holding the FIRST pass's, which is what the

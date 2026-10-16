@@ -98,6 +98,18 @@ struct Controls {
     // counter does whatever the motion vectors. Off (the default): the seed stays 0 - without a history to average
     // the noise, a moving seed shimmers on a still picture.
     bool noise_every_frame = false;
+    // Two or three passes: after the last, hold the answer's luminance inside
+    // the range the first pass's answer has around each pixel
+    // (windows/shaders/passes/runtime_dehalo.comp), so edges do not gain a rim
+    // that grows every pass. No effect with one pass.
+    bool anti_halo = false;
+    // How far past the first pass's local range anti_halo lets a pixel go, as a
+    // fraction of it: 0 holds it exactly, 0.25 lets most of the sharpening through.
+    float anti_halo_margin = 0.05f;
+    // Three passes: run two and estimate the third from them
+    // (windows/shaders/passes/runtime_predict_*.comp, after lmxxf's
+    // multi_pass_predict): about a third less time, close to a real third pass.
+    bool pass3_estimate = false;
 };
 
 struct HostDevice {

@@ -5,6 +5,7 @@
 #include "../submission/SubmissionTls.h"
 #include "lmxxf_runtime/LmxxfNrApi.h"
 #include "mochizuki_runtime/MochizukiNrControls.h"
+#include "MochizukiGuides.h"
 #include "../amd/AmdBridge.h"
 #include <State.h>
 #include <cmath>
@@ -103,7 +104,10 @@ MochizukiFrameSettings MochizukiFrame(const Config& cfg)
     s.passes = std::clamp(cfg.MochizukiPasses.value_or_default(), 1u, 3u);
     // int4 mixed runs as ACO's machine code only: without ACO the runtime would build the default network anyway.
     const bool int4 = cfg.MochizukiInt4.value_or_default() && cfg.MochizukiAco.value_or_default();
-    s.flags = int4 ? LMXXF_NR_FRAME_FLAG_INT4 : 0;
+    s.flags = (int4 ? LMXXF_NR_FRAME_FLAG_INT4 : 0) |
+              (cfg.MochizukiCascadeDetail.value_or_default() ? LMXXF_NR_FRAME_FLAG_CASCADE_DETAIL : 0) |
+              (cfg.MochizukiAntiHalo.value_or_default() ? LMXXF_NR_FRAME_FLAG_ANTI_HALO : 0) |
+              (cfg.MochizukiPassEstimate.value_or_default() ? LMXXF_NR_FRAME_FLAG_PASS3_ESTIMATE : 0);
     return s;
 }
 
@@ -134,6 +138,8 @@ void FillMochizukiControls(const Config& cfg, MochizukiNrControls& c)
     c.preprocess_curve = std::min(cfg.MochizukiPreprocessCurve.value_or_default(), 6u);
     c.preprocess_contrast = MzSetting(cfg.MochizukiPreprocessContrast.value_or_default(), .5f, 2.f, 1.f);
     c.preprocess_saturation = MzSetting(cfg.MochizukiPreprocessSaturation.value_or_default(), .05f, 2.f, 1.f);
+    // Strength 0..1 in the menu: 1 holds a pixel to the first pass's range, 0 lets a quarter past it.
+    c.anti_halo_margin = .25f * (1.f - MzSetting(cfg.MochizukiAntiHaloStrength.value_or_default(), 0.f, 1.f, .8f));
     const auto pass = [&c](MochizukiNrPassControls& p, const auto& style, const auto& intensity, const auto& tone,
                            const auto& structure, const auto& skin, const auto& mask)
     {
@@ -174,6 +180,12 @@ InfoSlot& LastInfo()
 std::atomic<LmxxfBackend*> g_recycleTarget { nullptr };
 
 } // namespace
+
+// lmxxf takes the FrameInfo sizes it knows, which end before the depth fields; mochizuki takes all of it.
+uint32_t LmxxfBackend::FrameInfoSize() const
+{
+    return Lmxxf() ? uint32_t(offsetof(LmxxfNrFrameInfo, depth)) : uint32_t(sizeof(LmxxfNrFrameInfo));
+}
 
 void LmxxfBackend::SetStatus(const char* s)
 {
@@ -885,7 +897,7 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
 
     D3D12_RESOURCE_DESC desc = frame.colour->GetDesc();
     LmxxfNrFrameInfo fi {};
-    fi.struct_size = sizeof(fi);
+    fi.struct_size = FrameInfoSize();
     // Only frames that reach PrepareFrame count, so a duplicate Evaluate cannot break the history's continuity.
     fi.frame_id = ++frameId;
     fi.command_list = cmd;
@@ -929,14 +941,62 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
     const bool temporal = temporalOn && frame.motion;
     if (temporal)
     {
+        // mochizuki: the vectors with the jitter's step added (MochizukiJitterHistory) and a depth its runtime cannot
+        // copy read into R32F, both on this list (MochizukiGuides).
+        ID3D12Resource* motion = frame.motion;
+        D3D12_RESOURCE_STATES motionState = frame.motionState;
+        ID3D12Resource* depth = frame.depth;
+        D3D12_RESOURCE_STATES depthState = frame.depthState;
+        if (!Lmxxf())
+        {
+            // The step from this frame's jitter to the last one's, in render pixels, as the stabilizer takes it; in
+            // the vectors' own units it is that over their extent's share of the render grid and their scale.
+            const bool jitterOn = Config::Instance()->MochizukiJitterHistory.value_or_default();
+            const bool shift = jitterOn && haveJitter && !frame.afterUpscale &&
+                               (frame.jitterX != lastJitterX || frame.jitterY != lastJitterY) &&
+                               frame.motionScaleX != 0.f && frame.motionScaleY != 0.f && frame.width && frame.height;
+            float offsetX = 0.f, offsetY = 0.f;
+            if (shift)
+            {
+                const float mw = float(frame.motionWidth ? frame.motionWidth : frame.width);
+                const float mh = float(frame.motionHeight ? frame.motionHeight : frame.height);
+                offsetX = (lastJitterX - frame.jitterX) * (mw / float(frame.width)) / frame.motionScaleX;
+                offsetY = (lastJitterY - frame.jitterY) * (mh / float(frame.height)) / frame.motionScaleY;
+            }
+            lastJitterX = frame.jitterX;
+            lastJitterY = frame.jitterY;
+            haveJitter = true;
+            try
+            {
+                if (!guides)
+                    guides = std::make_unique<MochizukiGuides>(device);
+                const MochizukiGuides::Out g = guides->Prepare(cmd, frame, shift, offsetX, offsetY);
+                motion = g.motion;
+                motionState = g.motionState;
+                depth = g.depth;
+                depthState = g.depthState;
+            }
+            catch (const std::exception& e)
+            {
+                static bool logged = false;
+                if (!std::exchange(logged, true))
+                    LOG_WARN("mochizuki: guides left as the game gave them: {}", e.what());
+            }
+        }
         fi.flags |= LMXXF_NR_FRAME_FLAG_TEMPORAL;
-        fi.motion = frame.motion;
-        fi.motion_state = static_cast<uint32_t>(frame.motionState);
+        fi.motion = motion;
+        fi.motion_state = static_cast<uint32_t>(motionState);
         fi.motion_width = frame.motionWidth;
         fi.motion_height = frame.motionHeight;
         fi.motion_scale_x = frame.motionScaleX;
         fi.motion_scale_y = frame.motionScaleY;
         fi.reset = frame.reset ? 1u : 0u;
+        if (!Lmxxf() && depth)
+        {
+            fi.depth = depth;
+            fi.depth_state = static_cast<uint32_t>(depthState);
+            fi.depth_inverted = frame.depthInverted ? 1u : 0u;
+        }
         fi.smooth_threshold =
             std::clamp(Config::Instance()->LmxxfSmoothThreshold.value_or_default(), 0.f, 255.f) / 255.f;
         fi.smooth_strength = std::clamp(Config::Instance()->LmxxfSmoothStrength.value_or_default(), 0.f, 1.f);
@@ -1129,7 +1189,7 @@ ID3D12Resource* LmxxfBackend::RecordDiagnostic(ID3D12GraphicsCommandList* cmd, c
             {
                 D3D12_RESOURCE_DESC desc = frame.colour->GetDesc();
                 LmxxfNrFrameInfo fi {};
-                fi.struct_size = sizeof(fi);
+                fi.struct_size = FrameInfoSize();
                 fi.frame_id = ++frameId; // Record leaves the increment to whichever path calls PrepareFrame.
                 fi.command_list = cmd;
                 fi.color_width = frame.width ? frame.width : static_cast<uint32_t>(desc.Width);
@@ -1357,7 +1417,15 @@ int LmxxfBackend::PendingListIndex(UINT, ID3D12CommandList* const*) const { retu
 
 void LmxxfBackend::Submitting(ID3D12CommandQueue*, UINT, ID3D12CommandList* const*) {}
 
-void LmxxfBackend::TraceBoundary(const std::string&) {}
+// The bridge's settle gate (AmdBridge Run): every change that restarts its wait. A game that never settles shows here
+// what keeps changing; the first 30, then every 100th.
+void LmxxfBackend::TraceBoundary(const std::string& reason)
+{
+    static std::atomic<uint32_t> count { 0 };
+    const uint32_t n = count.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (n <= 30 || n % 100 == 0)
+        LOG_INFO("{}: {} (#{})", Lmxxf() ? "lmxxf" : "mochizuki", reason, n);
+}
 
 void LmxxfBackend::Submitted(ID3D12CommandQueue* q, UINT count, ID3D12CommandList* const* lists)
 {

@@ -78,6 +78,9 @@ extern "C"
         uint32_t preprocess_curve;    /* 0 none, 1 neutral, 2 reinhard, 3 filmic (default), 4 gt, 5 aces, 6 agx */
         float preprocess_contrast;    /* about mid grey, 0.5..2, default 1 */
         float preprocess_saturation;  /* 0.05..2, default 1 */
+        /* With LMXXF_NR_FRAME_FLAG_ANTI_HALO: how far past the first pass's local range a pixel may go, as a
+         * fraction of it: 0..0.5, default 0.05 (also for a host whose struct ends before it). */
+        float anti_halo_margin;
     } MochizukiNrControls;
 
     /* What the session is doing, for a menu. Safe to ask from any thread, at any rate. */

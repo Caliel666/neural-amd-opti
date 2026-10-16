@@ -94,6 +94,13 @@ extern "C"
 /* lmxxf, two or three passes: where the frame looks like skin, the result goes back toward pass 1's (upstream's
    DLSS5_MULTI_PASS_SKIN_PROTECT), so faces do not take the extra passes. */
 #define LMXXF_NR_FRAME_FLAG_SKIN_PROTECT (1u << 10)
+/* mochizuki, two or three passes: a later pass sees the first pass's input with only the previous pass's local
+   structure (upstream's cascade_detail_only), so passes add detail and do not stack the network's tone and colour
+   shift. A change rebuilds the network. */
+#define LMXXF_NR_FRAME_FLAG_CASCADE_DETAIL (1u << 11)
+/* mochizuki, two or three passes: after the last, each pixel's luminance is held inside the range the first pass's
+   answer has around it, so thin edges do not gain a rim that grows every pass. Per frame, no rebuild. */
+#define LMXXF_NR_FRAME_FLAG_ANTI_HALO (1u << 12)
 
     typedef struct LmxxfNrFrameInfo
     {
@@ -128,6 +135,12 @@ extern "C"
         /* With STYLE: NGX Style 0 Standard (NVIDIA's default), 1 Natural, 2 Cinematic. It is written into the
            kernels as they load, so a change rebuilds the network (a hitch of a second or two). */
         uint32_t style;
+        /* mochizuki, TEMPORAL: the game's depth at the colour's extent. The history reads the motion vector at the
+           nearest of five depth taps, so a silhouette takes the foreground's vector. Null: read at the pixel. A host
+           talking to lmxxf sends struct_size without these (offsetof depth), as lmxxf takes only the sizes it knows. */
+        void* depth;             /* ID3D12Resource*: D32, D32S8, R32 or D16 formats; others are left unread */
+        uint32_t depth_state;    /* D3D12_RESOURCE_STATES at RecordInputs */
+        uint32_t depth_inverted; /* nonzero: 1 is near (NGX DepthInverted) */
     } LmxxfNrFrameInfo;
 
     typedef struct LmxxfNrJob

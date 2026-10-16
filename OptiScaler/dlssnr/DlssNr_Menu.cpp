@@ -220,6 +220,102 @@ static void RenoCompositionControls(Config* config, bool withIntensity = true)
     ImGui::EndDisabled();
 }
 
+// Back to the default: the key is unset, so Save Settings drops it from the INI.
+template <class... Option> static void Unset(Option&... opts)
+{
+    ((opts = std::optional<typename Option::value_type> {}), ...);
+}
+
+static void UnsetReno(Config* c)
+{
+    Unset(c->DlssNrRenoComposition, c->DlssNrRenoIntensity, c->DlssNrRenoGuard, c->DlssNrRenoColour,
+          c->DlssNrRenoChromaClamp, c->DlssNrRenoPedestal);
+}
+
+// Every control a runtime's page shows, except where NR runs (Enable, NR without upscaling, the placement before or
+// after SR and RR, the runtime choice), what the installer sets (AmdAsync), what needs a restart (MochizukiAco) and
+// the exposure anchors captured in this game.
+static void ResetLmxxf(Config* c)
+{
+    Unset(c->DlssNrPasses, c->DlssNrTransferStrength, c->DlssNrColourStrength, c->DlssNrDebugView, c->LmxxfTemporal,
+          c->LmxxfSmoothStrength, c->LmxxfSmoothThreshold, c->LmxxfSmoothResidual, c->LmxxfStyle, c->LmxxfVitReuse,
+          c->LmxxfCompact1080, c->LmxxfPassEstimate, c->LmxxfSkinProtect);
+    UnsetReno(c);
+}
+
+static void ResetMochizuki(Config* c)
+{
+    Unset(c->MochizukiHistoryStrength, c->MochizukiStabilizerStrength, c->MochizukiStabilizerThreshold,
+          c->MochizukiDetailStrength, c->MochizukiColourStrength, c->MochizukiPasses, c->MochizukiModelScale,
+          c->MochizukiIntensity, c->MochizukiStyle, c->MochizukiLocalTone, c->MochizukiLocalStructure,
+          c->MochizukiSkinStructure, c->MochizukiAutoMask, c->MochizukiInt4, c->MochizukiCascadeDetail,
+          c->MochizukiAntiHalo, c->MochizukiJitterHistory, c->MochizukiAntiHaloStrength, c->MochizukiPassEstimate,
+          c->MochizukiMaxRatio, c->MochizukiWhitePoint, c->MochizukiApplyModel, c->MochizukiLinearInput,
+          c->MochizukiGameExposure, c->MochizukiDynamicResolution, c->MochizukiPreprocess,
+          c->MochizukiPreprocessExposure, c->MochizukiPreprocessBias, c->MochizukiPreprocessCurve,
+          c->MochizukiPreprocessContrast, c->MochizukiPreprocessSaturation, c->MochizukiPass2Style,
+          c->MochizukiPass2Intensity, c->MochizukiPass2LocalTone, c->MochizukiPass2LocalStructure,
+          c->MochizukiPass2SkinStructure, c->MochizukiPass2AutoMask, c->MochizukiPass3Style, c->MochizukiPass3Intensity,
+          c->MochizukiPass3LocalTone, c->MochizukiPass3LocalStructure, c->MochizukiPass3SkinStructure,
+          c->MochizukiPass3AutoMask);
+    // Unset, it would fall back to LmxxfTemporal; its default is on.
+    c->MochizukiTemporal = true;
+    UnsetReno(c);
+}
+
+static void ResetDaniel(Config* c)
+{
+    Unset(c->AmdEffectStrength, c->AmdEncoding, c->AmdEveryFrame, c->AmdFixedSeed, c->AmdGraphicsWait, c->AmdSlots,
+          c->AmdNrScale, c->AmdDynamicScale, c->AmdDynamicTargetFps, c->AmdQuality, c->AmdStyle, c->AmdToneCurve,
+          c->AmdToneLift, c->AmdUseGameExposure, c->AmdNeuralLighting, c->AmdNeuralLightingStrength,
+          c->AmdStabilizerStrength, c->AmdStabilizerThreshold);
+    Unset(c->AmdLookEnabled, c->AmdLookAppearance, c->AmdLookMix, c->AmdLookMaterialDetail, c->AmdLookShapeDefinition,
+          c->AmdLookLocalLighting, c->AmdLookSkinDetail, c->AmdLookSkinSoftness, c->AmdLookDetectSkin,
+          c->AmdLookSpecularControl, c->AmdLookHighlightRollOff, c->AmdLookColourSeparation, c->AmdLookShadowDepth,
+          c->AmdLookAntiHalo, c->AmdLookFlatAreaProtection, c->AmdLookInspect, c->AmdLookTone, c->AmdLookExposureEV,
+          c->AmdLookContrast, c->AmdLookSaturation, c->AmdLookHighlightCompression);
+    Unset(c->AmdRtgiEnabled, c->AmdRtgiQuality, c->AmdRtgiDenoiser, c->AmdRtgiInspect, c->AmdRtgiContact,
+          c->AmdRtgiSaturation, c->AmdRtgiRadius, c->AmdRtgiMix, c->AmdRtgiLighting, c->AmdRtgiOcclusion,
+          c->AmdRtgiAmbient, c->AmdRtgiThickness, c->AmdRtgiSmoothness, c->AmdRtgiFade, c->AmdRtgiFov,
+          c->AmdRtgiFarPlane);
+    Unset(c->DlssNrPasses, c->DlssNrUnlockPasses, c->DlssNrWorkingScale, c->DlssNrScalingDownscaler,
+          c->DlssNrApplyModel, c->DlssNrPreset, c->DlssNrStyle, c->DlssNrIntensity, c->DlssNrLocalStructure,
+          c->DlssNrLocalTone, c->DlssNrSkinStructure, c->DlssNrAutoMask, c->DlssNrPassOverrides, c->DlssNrPass2Preset,
+          c->DlssNrPass2Style, c->DlssNrPass2Intensity, c->DlssNrPass2LocalStructure, c->DlssNrPass2LocalTone,
+          c->DlssNrPass2SkinStructure, c->DlssNrPass2AutoMask, c->DlssNrPass3Preset, c->DlssNrPass3Style,
+          c->DlssNrPass3Intensity, c->DlssNrPass3LocalStructure, c->DlssNrPass3LocalTone, c->DlssNrPass3SkinStructure,
+          c->DlssNrPass3AutoMask);
+    Unset(c->DlssNrTransfer, c->DlssNrTransferStrength, c->DlssNrColourStrength, c->DlssNrMaxRatio,
+          c->DlssNrReversibleMode, c->DlssNrSkinProtection, c->DlssNrSkinToneEnabled, c->DlssNrSkinDetail,
+          c->DlssNrSkinColour, c->DlssNrEnvironmentDetail, c->DlssNrEnvironmentColour, c->DlssNrShowSkinMask,
+          c->DlssNrWhitePointSource, c->DlssNrWhitePointScale, c->DlssNrWhitePointTrim, c->DlssNrScanMeter,
+          c->DlssNrScanInverted, c->DlssNrScanTrim, c->DlssNrHoldFrame, c->DlssNrCompare, c->DlssNrCompareSplit,
+          c->DlssNrCompareZoom, c->DlssNrCompareSwap, c->DlssNrCompareTags, c->DlssNrTagScale, c->DlssNrDebugView);
+    UnsetReno(c);
+}
+
+// Beside the runtime's name, asked once more before it acts.
+template <class Reset> static void ResetAllButton(const char* runtime, Config* config, Reset reset)
+{
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Reset all"))
+        ImGui::OpenPopup("Reset all##nr");
+    if (ImGui::BeginPopup("Reset all##nr"))
+    {
+        ImGui::Text("Put every %s setting on this page back to its default?", runtime);
+        ImGui::TextDisabled("Save Settings keeps it for the next start.");
+        if (ImGui::Button("Reset"))
+        {
+            reset(config);
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel"))
+            ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+}
+
 void RenderMenu(Config* config, float menuResScale)
 {
 
@@ -325,6 +421,7 @@ void RenderMenu(Config* config, float menuResScale)
             ImGui::TextDisabled("lmxxf");
             HelpMarker("AMD NR runtime: lmxxf (open-source HIP kernels, same-frame execution)."
                        "\nNrBackend in OptiScaler.ini picks the runtime; restart after changing it.");
+            ResetAllButton("lmxxf", config, ResetLmxxf);
 
             NeuralPassLine(config, "GPU time the game's queue spends on the model each frame: copying its"
                                    "\ninputs, waiting while the HIP kernels run between the two halves of"
@@ -435,6 +532,7 @@ void RenderMenu(Config* config, float menuResScale)
             HelpMarker("AMD NR runtime: mochizuki (open-source Vulkan network on a device of its own,"
                        "\nsame-frame execution). NrBackend in OptiScaler.ini picks the runtime; restart after"
                        "\nchanging it.");
+            ResetAllButton("mochizuki", config, ResetMochizuki);
             NeuralPassLine(config, "GPU time the game's queue spends on the model each frame: copying its"
                                    "\ninputs, waiting while the Vulkan network runs between the two halves of"
                                    "\nthe game's command list, and copying the result back."
@@ -547,6 +645,34 @@ void RenderMenu(Config* config, float menuResScale)
                        "\nnetwork's whole GPU time to every frame, and some VRAM."
                        "\n\nA change rebuilds the network, a second or two without NR, so it applies when"
                        "\nyou release the slider.");
+            ImGui::BeginDisabled(mzPasses < 2);
+            bool cascade = config->MochizukiCascadeDetail.value_or_default();
+            if (ImGui::Checkbox("Later passes add detail only", &cascade))
+                config->MochizukiCascadeDetail = cascade;
+            ImGui::EndDisabled();
+            HelpMarker("With 2 or 3 passes: each later pass is shown the original frame carrying only the"
+                       "\nprevious pass's detail, so the passes sharpen without stacking the network's"
+                       "\nbrightness and colour shift. A change rebuilds the network.");
+            ImGui::BeginDisabled(mzPasses < 2);
+            bool antiHalo = config->MochizukiAntiHalo.value_or_default();
+            if (ImGui::Checkbox("Anti-halo", &antiHalo))
+                config->MochizukiAntiHalo = antiHalo;
+            ImGui::EndDisabled();
+            HelpMarker("With 2 or 3 passes: keeps each pixel's brightness inside what the first pass made"
+                       "\naround it, so thin edges such as wires do not take a light or dark rim that grows"
+                       "\nwith every pass.");
+            ImGui::BeginDisabled(mzPasses < 2 || !antiHalo);
+            liveSlider("Anti-halo strength", config->MochizukiAntiHaloStrength, 0.0f, 1.0f);
+            ImGui::EndDisabled();
+            HelpMarker("1 holds each pixel to the first pass's range around it; lower lets more of the later"
+                       "\npasses' sharpening through. 0.8 by default.");
+            ImGui::BeginDisabled(mzPasses < 3);
+            bool estimate = config->MochizukiPassEstimate.value_or_default();
+            if (ImGui::Checkbox("Estimate pass 3##mz", &estimate))
+                config->MochizukiPassEstimate = estimate;
+            ImGui::EndDisabled();
+            HelpMarker("With 3 passes: runs two and estimates the third from how the second changed the"
+                       "\nfirst, in 16x16 blocks. About a third less GPU time, close to a real third pass.");
             static float mzScale = 100.f;
             static bool editingMzScale = false;
             if (!editingMzScale)
@@ -579,7 +705,8 @@ void RenderMenu(Config* config, float menuResScale)
             HelpMarker("The model's own processing profiles, fed to the network as it runs.");
             liveSlider("Intensity", config->MochizukiIntensity, 0.0f, 2.0f);
             HelpMarker("How strongly the network applies its change, before detail and colour strength."
-                       "\nBelow 1 it blends toward the original; above 1 it is exaggerated.");
+                       "\nBelow 1 it blends toward the original; above 1 it is exaggerated, on the last"
+                       "\npass only when several run.");
             liveSlider("Local structure", config->MochizukiLocalStructure, 0.0f, 2.0f);
             HelpMarker("The model's structure strength. With the automatic skin mask, the strength for"
                        "\neverything but skin.");
@@ -662,7 +789,9 @@ void RenderMenu(Config* config, float menuResScale)
                 int exposure = int(std::min(config->MochizukiPreprocessExposure.value_or_default(), 2u));
                 if (ImGui::Combo("Exposure##prep", &exposure, "Off\0Auto\0Fixed (bias only)\0"))
                     config->MochizukiPreprocessExposure = uint32_t(exposure);
-                DeferredSlider("Exposure bias (EV)##prep", &config->MochizukiPreprocessBias, -8.0f, 8.0f, 0.0f);
+                // -3..3 here: far from 0 the network sees a frame near black or white and its answer comes back
+                // blotchy. MochizukiPreprocessBias in the INI still takes -8..8.
+                DeferredSlider("Exposure bias (EV)##prep", &config->MochizukiPreprocessBias, -3.0f, 3.0f, 0.0f);
                 int curve = int(std::min(config->MochizukiPreprocessCurve.value_or_default(), 6u));
                 if (ImGui::Combo("Curve##prep", &curve, "None\0Neutral\0Reinhard\0Filmic\0GT\0ACES\0AgX\0"))
                     config->MochizukiPreprocessCurve = uint32_t(curve);
@@ -703,6 +832,13 @@ void RenderMenu(Config* config, float menuResScale)
                 config->MochizukiApplyModel = !networkOnly;
             HelpMarker("Runs the network at its full cost but shows the frame as the game drew it, to"
                        "\nmeasure the cost or compare with and without the effect.");
+            bool jitterHistory = config->MochizukiJitterHistory.value_or_default();
+            if (ImGui::Checkbox("Jitter-aligned history (experimental)", &jitterHistory))
+                config->MochizukiJitterHistory = jitterHistory;
+            HelpMarker("With an upscaler the frame NR sees moves by a fraction of a pixel every frame (the"
+                       "\ncamera jitter), which the game's motion vectors leave out. On, the history is"
+                       "\nfetched where the last frame's sample really was: finer detail may hold steadier."
+                       "\nNeeds Temporal history. No effect without an upscaler.");
 
             if (ImGui::TreeNode("Info"))
             {
@@ -752,6 +888,7 @@ void RenderMenu(Config* config, float menuResScale)
             ImGui::TextDisabled("%s", haveVer ? ver : "pass1?");
             HelpMarker(haveVer ? "AMD NR runtime: danielblnc (DLSS-NR-on-AMD)."
                                : "AMD NR runtime: pass1 not identified yet.");
+            ResetAllButton("danielblnc", config, ResetDaniel);
         }
 
         // The final image runs only in a danielblnc session without an upscaler; otherwise the upscaler path does.

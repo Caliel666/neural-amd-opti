@@ -1131,7 +1131,9 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
             const uint32_t noTemporalSize = offsetof(LmxxfNrFrameInfo, motion);
             const uint32_t noSmoothSize = offsetof(LmxxfNrFrameInfo, smooth_threshold);
             const uint32_t noStyleSize = offsetof(LmxxfNrFrameInfo, style);
-            if ((info->struct_size != sizeof(LmxxfNrFrameInfo) && info->struct_size != noStyleSize &&
+            const uint32_t noDepthSize = offsetof(LmxxfNrFrameInfo, depth); // the depth fields are mochizuki's
+            if ((info->struct_size != sizeof(LmxxfNrFrameInfo) && info->struct_size != noDepthSize &&
+                 info->struct_size != noStyleSize &&
                  info->struct_size != noSmoothSize &&
                  info->struct_size != noTemporalSize && info->struct_size != noPassesSize &&
                  info->struct_size != legacySize) ||

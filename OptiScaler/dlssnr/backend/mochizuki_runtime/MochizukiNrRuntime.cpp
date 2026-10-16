@@ -527,6 +527,29 @@ Format MotionFormat(DXGI_FORMAT f)
     }
 }
 
+// The game's depth as the network's temporal path reads it: one float or unorm channel, which the core blits into its
+// own R32F image. A depth/stencil format copies its depth plane, as the D3D12 copy footprint names it. D24S8 packs 24
+// bits a float image cannot take as they are: none, and the motion vectors are read at the pixel as before.
+Format DepthFormat(DXGI_FORMAT f)
+{
+    switch (f)
+    {
+    case DXGI_FORMAT_R32_TYPELESS:
+    case DXGI_FORMAT_D32_FLOAT:
+    case DXGI_FORMAT_R32_FLOAT:
+    case DXGI_FORMAT_R32G8X24_TYPELESS:
+    case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
+    case DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS:
+        return { VK_FORMAT_R32_SFLOAT, 4 };
+    case DXGI_FORMAT_R16_TYPELESS:
+    case DXGI_FORMAT_D16_UNORM:
+    case DXGI_FORMAT_R16_UNORM:
+        return { VK_FORMAT_R16_UNORM, 2 };
+    default:
+        return {};
+    }
+}
+
 // Scene-referred float colour: the network sees it through the runtime's sRGB encode.
 bool IsLinear(VkFormat f)
 {
@@ -585,6 +608,7 @@ void DefaultControls(MochizukiNrControls& c)
     c.preprocess_curve = uint32_t(prep.curve);
     c.preprocess_contrast = prep.contrast;
     c.preprocess_saturation = prep.saturation;
+    c.anti_halo_margin = model.anti_halo_margin;
     for (MochizukiNrPassControls& p : c.pass)
     {
         p.style = uint32_t(pass.style);
@@ -621,6 +645,8 @@ SessionControls Sanitise(const MochizukiNrControls& c)
     prep.curve = int(c.preprocess_curve <= 6 ? c.preprocess_curve : 3);
     prep.contrast = San(c.preprocess_contrast, .5f, 2.f, 1.f);
     prep.saturation = San(c.preprocess_saturation, .05f, 2.f, 1.f);
+    m.anti_halo_margin =
+        MZ_HOLDS(&c, MochizukiNrControls, anti_halo_margin) ? San(c.anti_halo_margin, 0.f, .5f, .05f) : .05f;
     // validate() does not look at these, and the core puts them straight into push constants.
     for (size_t k = std::size(c.pass); k-- > 0;)
     {
@@ -666,7 +692,15 @@ struct Vulkan
         VkInstanceCreateInfo ii { VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO };
         ii.pApplicationInfo = &app;
         VkInstance createdInstance {};
+        // ReShade's Vulkan layer, installed system-wide, would load into the game with this instance and hook its
+        // D3D12 and DXGI from then on (BeamNG: NR stayed off). The layer's manifest names this variable as its off
+        // switch; the loader reads it at vkCreateInstance.
+        constexpr wchar_t kNoLayer[] = L"DISABLE_VK_LAYER_reshade_1";
+        wchar_t old[8] {};
+        const DWORD had = GetEnvironmentVariableW(kNoLayer, old, 8);
+        SetEnvironmentVariableW(kNoLayer, L"1");
         const VkResult created = vkCreateInstance(&ii, nullptr, &createdInstance);
+        SetEnvironmentVariableW(kNoLayer, had != 0 && had < 8 ? old : nullptr);
         if (created == VK_ERROR_INCOMPATIBLE_DRIVER)
             throw std::runtime_error("[unsupported] no Vulkan 1.3 driver (vkCreateInstance: "
                                      "VK_ERROR_INCOMPATIBLE_DRIVER)");
@@ -1249,6 +1283,11 @@ struct Job
     D3D12_RESOURCE_STATES colourState {};
     ID3D12Resource* motion {};
     D3D12_RESOURCE_STATES motionState {};
+    // The game's depth, with motion, at the frame's extent (width x height), padded to the bucket with dynamic
+    // resolution as the colour is.
+    ID3D12Resource* depth {};
+    D3D12_RESOURCE_STATES depthState {};
+    bool depthInverted = false;
     // The frame's valid extents, copied from the top-left of its colour and motion: the geometry's own, except with
     // dynamic resolution.
     UINT width = 0, height = 0, motionWidth = 0, motionHeight = 0;
@@ -1275,6 +1314,7 @@ struct Geometry
     DXGI_FORMAT motionFormat = DXGI_FORMAT_UNKNOWN;
     UINT motionWidth = 0, motionHeight = 0;
     bool bucketed = false; // the motion buffer is the allocation's, and a bucket-sized motion image is made too
+    DXGI_FORMAT depthFormat = DXGI_FORMAT_UNKNOWN; // the game's depth, its buffers at (width, height)
     bool operator==(const Geometry&) const = default;
 };
 
@@ -1287,8 +1327,9 @@ struct NetworkKey
     float scale = 1.f;
     uint32_t maxPasses = 1;
     bool linear = false;
-    bool prep = false; // RuntimeConfig::preprocess
-    bool int4 = false; // RuntimeConfig::int4_mixed (LMXXF_NR_FRAME_FLAG_INT4)
+    bool prep = false;    // RuntimeConfig::preprocess
+    bool int4 = false;    // RuntimeConfig::int4_mixed (LMXXF_NR_FRAME_FLAG_INT4)
+    bool cascade = false; // RuntimeConfig::cascade_detail_only (LMXXF_NR_FRAME_FLAG_CASCADE_DETAIL), with passes
     bool operator==(const NetworkKey&) const = default;
 };
 
@@ -1318,10 +1359,10 @@ struct FrameBuffers
 {
     Geometry geometry;
     D3D12_RESOURCE_DESC resultDesc {};
-    Footprint colourFootprint, motionFootprint;
-    VkFormat colourVk = VK_FORMAT_UNDEFINED, motionVk = VK_FORMAT_UNDEFINED;
-    SharedBuffer input, output, motionBuffer;
-    Image colourImage, motionImage;
+    Footprint colourFootprint, motionFootprint, depthFootprint;
+    VkFormat colourVk = VK_FORMAT_UNDEFINED, motionVk = VK_FORMAT_UNDEFINED, depthVk = VK_FORMAT_UNDEFINED;
+    SharedBuffer input, output, motionBuffer, depthBuffer;
+    Image colourImage, motionImage, depthImage;
     Image motionScaled; // bucketed geometry with motion: the vectors laid over the subrect, at the bucket's extent
     ID3D12Resource* result {};
 
@@ -1332,8 +1373,10 @@ struct FrameBuffers
             input.Release(device);
             output.Release(device);
             motionBuffer.Release(device);
+            depthBuffer.Release(device);
             colourImage.Release(device);
             motionImage.Release(device);
+            depthImage.Release(device);
             motionScaled.Release(device);
         }
         if (result)
@@ -1577,11 +1620,12 @@ struct Session
     char lastError[256] {};
 
     Geometry geometry;
-    Footprint colourFootprint, motionFootprint;
-    VkFormat colourVk = VK_FORMAT_UNDEFINED, motionVk = VK_FORMAT_UNDEFINED;
-    SharedBuffer input, output, motionBuffer;
-    Image colourImage, motionImage, motionScaled;
-    ID3D12Resource* result {}; // what Super Resolution gets in place of the game's colour
+    Footprint colourFootprint, motionFootprint, depthFootprint;
+    VkFormat colourVk = VK_FORMAT_UNDEFINED, motionVk = VK_FORMAT_UNDEFINED, depthVk = VK_FORMAT_UNDEFINED;
+    SharedBuffer input, output, motionBuffer, depthBuffer;
+    Image colourImage, motionImage, motionScaled, depthImage;
+    std::atomic<uint32_t> depthRefused { 0 }; // the DXGI format of a depth the runtime cannot take, logged once
+    ID3D12Resource* result {};                // what Super Resolution gets in place of the game's colour
 
     // Dynamic resolution (DrsExtent), render thread only: the bucket, and what it has seen.
     struct Bucket
@@ -2318,13 +2362,17 @@ struct Session
         b.geometry = std::exchange(geometry, {});
         b.colourFootprint = colourFootprint;
         b.motionFootprint = motionFootprint;
+        b.depthFootprint = depthFootprint;
         b.colourVk = colourVk;
         b.motionVk = motionVk;
+        b.depthVk = depthVk;
         b.input = std::exchange(input, {});
         b.output = std::exchange(output, {});
         b.motionBuffer = std::exchange(motionBuffer, {});
+        b.depthBuffer = std::exchange(depthBuffer, {});
         b.colourImage = std::exchange(colourImage, {});
         b.motionImage = std::exchange(motionImage, {});
+        b.depthImage = std::exchange(depthImage, {});
         b.motionScaled = std::exchange(motionScaled, {});
         b.result = std::exchange(result, nullptr);
         std::fill(std::begin(fallbackCurrent), std::end(fallbackCurrent), false);
@@ -2360,7 +2408,7 @@ struct Session
     static UINT64 FrameBytes(const Geometry& g)
     {
         const UINT64 scaled = g.bucketed ? MotionFormat(g.motionFormat).bytes : 0;
-        return (kFramePixelBytes + scaled) * g.width * g.height;
+        return (kFramePixelBytes + scaled + 2 * DepthFormat(g.depthFormat).bytes) * g.width * g.height;
     }
 
     // A network measured: `bytes` is what it took, or gave back, in this process's VRAM.
@@ -2443,6 +2491,25 @@ struct Session
             if (g.bucketed)
                 b.motionScaled.Create(vk, mf.vk, g.width, g.height);
         }
+        const Format df = DepthFormat(g.depthFormat);
+        b.depthVk = df.vk;
+        if (df.vk)
+        {
+            // The depth plane's copy format, as D3D12 lays it out in a buffer.
+            D3D12_RESOURCE_DESC dd {};
+            dd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+            dd.Width = g.width;
+            dd.Height = g.height;
+            dd.DepthOrArraySize = 1;
+            dd.MipLevels = 1;
+            dd.Format = g.depthFormat;
+            dd.SampleDesc = { 1, 0 };
+            D3D12_PLACED_SUBRESOURCE_FOOTPRINT plane {};
+            device->GetCopyableFootprints(&dd, 0, 1, 0, &plane, nullptr, nullptr, nullptr);
+            b.depthFootprint = Footprint(plane.Footprint.Format, df.bytes, g.width, g.height);
+            b.depthBuffer.Create(device, vk, b.depthFootprint.bytes);
+            b.depthImage.Create(vk, df.vk, g.width, g.height);
+        }
         D3D12_HEAP_PROPERTIES hp {};
         hp.Type = D3D12_HEAP_TYPE_DEFAULT;
         Check(device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &desc,
@@ -2456,13 +2523,17 @@ struct Session
     {
         colourFootprint = b.colourFootprint;
         motionFootprint = b.motionFootprint;
+        depthFootprint = b.depthFootprint;
         colourVk = b.colourVk;
         motionVk = b.motionVk;
+        depthVk = b.depthVk;
         input = std::exchange(b.input, {});
         output = std::exchange(b.output, {});
         motionBuffer = std::exchange(b.motionBuffer, {});
+        depthBuffer = std::exchange(b.depthBuffer, {});
         colourImage = std::exchange(b.colourImage, {});
         motionImage = std::exchange(b.motionImage, {});
+        depthImage = std::exchange(b.depthImage, {});
         motionScaled = std::exchange(b.motionScaled, {});
         result = std::exchange(b.result, nullptr);
         geometry = b.geometry;
@@ -2770,6 +2841,7 @@ struct Session
             config.max_passes = key.maxPasses;
             config.preprocess = key.prep;
             config.int4_mixed = key.int4 ? 1 : 0;
+            config.cascade_detail_only = key.cascade;
             // The linear path's frame is a proxy made with the soft knee, which the preprocess undoes first.
             config.preprocess_unknee = key.linear;
             nr::TemporalConfig temporal;
@@ -2781,9 +2853,10 @@ struct Session
             host.queue = vk.buildQueue;
             host.queue_family = vk.family;
             host.buffer_device_address = vk.bufferDeviceAddress;
-            char options[64] = {};
+            char options[96] = {};
             if (key.scale != 1.f || key.maxPasses > 1)
-                std::snprintf(options, sizeof options, ", model scale %.2f, up to %u passes", key.scale, key.maxPasses);
+                std::snprintf(options, sizeof options, ", model scale %.2f, up to %u passes%s", key.scale,
+                              key.maxPasses, key.cascade ? " (later passes add detail only)" : "");
             nr::logf("[mochizuki] building the%s network at %ux%u, VkFormat %d%s%s%s", key.int4 ? " int4 mixed" : "",
                      key.width, key.height, int(key.format), config.linear_input ? ", linear colour" : "", options,
                      keep ? "; the frames keep the current one meanwhile" : "");
@@ -3421,6 +3494,16 @@ struct Session
             motionW = W;
             motionH = H;
         }
+        const bool depth = motion && job.depth && depthImage.image;
+        if (depth)
+        {
+            upload(depthBuffer, depthImage, depthFootprint, w, h, padded);
+            if (padded)
+            {
+                Pad(c, depthImage.image, w, h, W, H);
+                ready(depthImage.image);
+            }
+        }
         if (call == hooks.enqueueThrowAt)
             throw std::runtime_error("MZ_TEST_ENQUEUE_THROW_AT: recording the network failed (test hook)");
 
@@ -3445,6 +3528,18 @@ struct Session
             frame.motion.usage = kImageUsage;
             frame.motion_scale_x = job.motionScaleX;
             frame.motion_scale_y = job.motionScaleY;
+            // The core reads the vectors at the nearest of five depth taps, so a silhouette takes the foreground's
+            // and not the background's (no light rim trailing a moving character).
+            if (depth)
+            {
+                frame.depth = frame.colour;
+                frame.depth.image = depthImage.image;
+                frame.depth.format = depthVk;
+                frame.depth.width = W;
+                frame.depth.height = H;
+                frame.depth.usage = kImageUsage;
+                frame.depth_inverted = job.depthInverted;
+            }
             const nr::EngineResult r = runtime->record_engine(c, frame, job.controls);
             dispatches.store(r.frame.network_dispatches, std::memory_order_relaxed);
             consumed = r.history_consumed;
@@ -3787,17 +3882,63 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
             // resolution the bucket, whose motion buffer is the motion allocation's.
             const bool blittable = !drsMode || !mf.vk || s->Blittable(mf.vk);
             s->DrsExtent(drsMode, w, h, cd, blittable, g.width, g.height, g.bucketed);
+            // Exact geometry's buffers are the subrect's: a game that renders it into two colour textures of other
+            // sizes in turn (Forza Horizon 6) keeps them.
+            if (!g.bucketed)
+            {
+                g.colourWidth = 0;
+                g.colourHeight = 0;
+            }
             if (mf.vk)
             {
                 g.motionFormat = md.Format;
                 g.motionWidth = g.bucketed ? UINT(md.Width) : motionW;
                 g.motionHeight = g.bucketed ? md.Height : motionH;
             }
+            // A frame without vectors on a geometry made with them (a menu, a cut) keeps its buffers: it runs without
+            // the history, and the next frame with vectors needs no new ones.
+            const bool keepMotion = !mf.vk && s->geometry.motionFormat != DXGI_FORMAT_UNKNOWN &&
+                                    s->geometry.colourFormat == g.colourFormat && s->geometry.width == g.width &&
+                                    s->geometry.height == g.height && s->geometry.bucketed == g.bucketed;
+            if (keepMotion)
+            {
+                g.motionFormat = s->geometry.motionFormat;
+                g.motionWidth = s->geometry.motionWidth;
+                g.motionHeight = s->geometry.motionHeight;
+                g.depthFormat = s->geometry.depthFormat;
+            }
+            // The game's depth, with its vectors: its top-left w x h, as the colour's.
+            ID3D12Resource* depth = nullptr;
+            if (mf.vk && MZ_HOLDS(info, LmxxfNrFrameInfo, depth_inverted) && info->depth)
+            {
+                auto* d = static_cast<ID3D12Resource*>(info->depth);
+                const D3D12_RESOURCE_DESC dd = d->GetDesc();
+                if (DepthFormat(dd.Format).vk && dd.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+                    dd.SampleDesc.Count == 1 && dd.Width >= w && dd.Height >= h)
+                {
+                    depth = d;
+                    g.depthFormat = dd.Format;
+                    s->depthRefused = 0;
+                }
+                else if (s->depthRefused.exchange(uint32_t(dd.Format)) != uint32_t(dd.Format))
+                    nr::logf("[mochizuki] depth in DXGI format %u (%llux%u, %u samples) is not supported; the history "
+                             "reads the motion vectors at the pixel",
+                             unsigned(dd.Format), static_cast<unsigned long long>(dd.Width), dd.Height,
+                             dd.SampleDesc.Count);
+            }
+            // Likewise a frame without depth keeps the depth buffers of a geometry otherwise its own.
+            if (mf.vk && !depth && s->geometry.depthFormat != DXGI_FORMAT_UNKNOWN &&
+                s->geometry.motionFormat == g.motionFormat && s->geometry.motionWidth == g.motionWidth &&
+                s->geometry.motionHeight == g.motionHeight && s->geometry.colourFormat == g.colourFormat &&
+                s->geometry.width == g.width && s->geometry.height == g.height && s->geometry.bucketed == g.bucketed)
+                g.depthFormat = s->geometry.depthFormat;
             // Neither a network nor buffers that cannot be had now fail the session: the frame goes without NR, and
             // they are tried again as their holds say.
             s->prepWanted = s->prepWanted || model.preprocess.active();
             const bool int4 = (info->flags & LMXXF_NR_FRAME_FLAG_INT4) != 0;
-            const NetworkKey key { g.width, g.height, cf.vk, scale, maxPasses, linear, s->prepWanted, int4 };
+            // One pass has no later pass to change: the flag alone does not rebuild its network.
+            const bool cascade = (info->flags & LMXXF_NR_FRAME_FLAG_CASCADE_DETAIL) != 0 && maxPasses > 1;
+            const NetworkKey key { g.width, g.height, cf.vk, scale, maxPasses, linear, s->prepWanted, int4, cascade };
             std::string why;
             if (!s->EnsureNetwork(key, g, colour, why))
                 return Fail(LMXXF_NR_UNAVAILABLE, why.c_str());
@@ -3812,8 +3953,9 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
                              g.width, g.height, static_cast<unsigned long long>(g.colourWidth), g.colourHeight,
                              unsigned(g.colourFormat), g.motionWidth, g.motionHeight, unsigned(g.motionFormat));
                 else
-                    nr::logf("[mochizuki] frame %ux%u colour DXGI %u, motion %ux%u DXGI %u", g.width, g.height,
-                             unsigned(g.colourFormat), g.motionWidth, g.motionHeight, unsigned(g.motionFormat));
+                    nr::logf("[mochizuki] frame %ux%u colour DXGI %u, motion %ux%u DXGI %u, depth DXGI %u", g.width,
+                             g.height, unsigned(g.colourFormat), g.motionWidth, g.motionHeight,
+                             unsigned(g.motionFormat), unsigned(g.depthFormat));
             }
             // A new valid extent restarts the history: it holds the frame's content where the old one had it.
             if (w != s->validWidth || h != s->validHeight)
@@ -3854,6 +3996,8 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
             next.controls.detail_strength = detail;
             next.controls.colour_strength = colourStrength;
             next.controls.passes = int(served);
+            next.controls.anti_halo = (info->flags & LMXXF_NR_FRAME_FLAG_ANTI_HALO) != 0;
+            next.controls.pass3_estimate = (info->flags & LMXXF_NR_FRAME_FLAG_PASS3_ESTIMATE) != 0;
             next.history = history;
             next.white = white;
             s->infoWhite.store(white, std::memory_order_relaxed);
@@ -3866,6 +4010,12 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
                 // value * scale = pixels of the motion extent; the network reads previous uv = uv + mv.
                 next.motionScaleX = info->motion_scale_x / float(motionW);
                 next.motionScaleY = info->motion_scale_y / float(motionH);
+                if (g.depthFormat != DXGI_FORMAT_UNKNOWN)
+                {
+                    next.depth = depth;
+                    next.depthState = static_cast<D3D12_RESOURCE_STATES>(info->depth_state);
+                    next.depthInverted = info->depth_inverted != 0;
+                }
                 if (g.bucketed)
                 {
                     // In the bucket, as uploaded when they span the whole of it as in exact; otherwise laid over the
@@ -3916,6 +4066,9 @@ int32_t RecordInputs(void* context, void* job, void* command_list)
                      if (j.motion)
                          CopyToBuffer(c, j.motion, j.motionState, s->motionBuffer.resource, s->motionFootprint,
                                       j.motionWidth, j.motionHeight);
+                     if (j.depth)
+                         CopyToBuffer(c, j.depth, j.depthState, s->depthBuffer.resource, s->depthFootprint, j.width,
+                                      j.height);
                      j.state = LMXXF_NR_JOB_PRODUCER_SUBMITTED;
                      return int32_t(LMXXF_NR_OK);
                  });
@@ -4120,8 +4273,8 @@ int32_t GetLastError(char* buf, uint32_t chars)
 // MochizukiNrControls.h. Every Controls field is 4 bytes and 4-aligned and the struct ends at its last field, so the
 // whole fields a caller's struct holds are its first struct_size & ~3 bytes.
 static_assert(alignof(MochizukiNrControls) == 4 &&
-              sizeof(MochizukiNrControls) == offsetof(MochizukiNrControls, preprocess_saturation) +
-                                                 sizeof(MochizukiNrControls::preprocess_saturation) &&
+              sizeof(MochizukiNrControls) ==
+                  offsetof(MochizukiNrControls, anti_halo_margin) + sizeof(MochizukiNrControls::anti_halo_margin) &&
               offsetof(MochizukiNrControls, pass) == 72 && offsetof(MochizukiNrControls, preprocess) == 136 &&
               sizeof(MochizukiNrPassControls) == 32);
 // Info has no implicit padding (reserved0 fills the gap before frames), so its offsets do not depend on packing; its

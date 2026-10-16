@@ -597,6 +597,11 @@ bool Config::Reload(std::filesystem::path iniPath)
             MochizukiAutoMask.set_from_config(readBool("DlssNr", "MochizukiAutoMask"));
             MochizukiAco.set_from_config(readBool("DlssNr", "MochizukiAco"));
             MochizukiInt4.set_from_config(readBool("DlssNr", "MochizukiInt4"));
+            MochizukiCascadeDetail.set_from_config(readBool("DlssNr", "MochizukiCascadeDetail"));
+            MochizukiAntiHalo.set_from_config(readBool("DlssNr", "MochizukiAntiHalo"));
+            MochizukiJitterHistory.set_from_config(readBool("DlssNr", "MochizukiJitterHistory"));
+            MochizukiAntiHaloStrength.set_from_config(readFloat("DlssNr", "MochizukiAntiHaloStrength"));
+            MochizukiPassEstimate.set_from_config(readBool("DlssNr", "MochizukiPassEstimate"));
             MochizukiMaxRatio.set_from_config(readFloat("DlssNr", "MochizukiMaxRatio"));
             MochizukiWhitePoint.set_from_config(readFloat("DlssNr", "MochizukiWhitePoint"));
             MochizukiApplyModel.set_from_config(readBool("DlssNr", "MochizukiApplyModel"));
@@ -1796,6 +1801,16 @@ bool Config::SaveIni()
                      GetBoolValue(Instance()->MochizukiAutoMask.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiAco", GetBoolValue(Instance()->MochizukiAco.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiInt4", GetBoolValue(Instance()->MochizukiInt4.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiCascadeDetail",
+                     GetBoolValue(Instance()->MochizukiCascadeDetail.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiAntiHalo",
+                     GetBoolValue(Instance()->MochizukiAntiHalo.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiJitterHistory",
+                     GetBoolValue(Instance()->MochizukiJitterHistory.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiAntiHaloStrength",
+                     GetFloatValue(Instance()->MochizukiAntiHaloStrength.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiPassEstimate",
+                     GetBoolValue(Instance()->MochizukiPassEstimate.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiMaxRatio",
                      GetFloatValue(Instance()->MochizukiMaxRatio.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiWhitePoint",

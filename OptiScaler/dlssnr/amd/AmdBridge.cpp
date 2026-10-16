@@ -833,12 +833,37 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
         }
     }
     const auto now = GetTickCount64();
-    if (settlingWidth != gateWidth || settlingHeight != gateHeight || settlingFormat != gateFormat ||
-        settlingScale != requestedScale)
+    // mochizuki: a game that renders into two colour textures in turn (Forza Horizon 6) changes the gate's key every
+    // frame, A B A B, and the wait never ended. Back to the key before the last is a flip, not a change: the wait and
+    // the history stay. Anything else is a change as before.
+    static UINT altWidth = 0, altHeight = 0;
+    static DXGI_FORMAT altFormat = DXGI_FORMAT_UNKNOWN;
+    static bool altValid = false, altLogged = false;
+    const bool keyChanged = settlingWidth != gateWidth || settlingHeight != gateHeight ||
+                            settlingFormat != gateFormat || settlingScale != requestedScale;
+    const bool flip = keyChanged && mochizuki && altValid && altWidth == gateWidth && altHeight == gateHeight &&
+                      altFormat == gateFormat && settlingScale == requestedScale;
+    if (flip)
     {
+        if (!std::exchange(altLogged, true))
+            b->TraceBoundary("the game alternates two colour textures: " + std::to_string(settlingWidth) + "x" +
+                             std::to_string(settlingHeight) + " and " + std::to_string(gateWidth) + "x" +
+                             std::to_string(gateHeight) + "; NR runs on both");
+        std::swap(altWidth, settlingWidth);
+        std::swap(altHeight, settlingHeight);
+        std::swap(altFormat, settlingFormat);
+    }
+    else if (keyChanged)
+    {
+        altWidth = settlingWidth;
+        altHeight = settlingHeight;
+        altFormat = settlingFormat;
+        altValid = settlingWidth != 0;
         b->TraceBoundary("settings change: input " + std::to_string(settlingWidth) + "x" +
                          std::to_string(settlingHeight) + " -> " + std::to_string(gateWidth) + "x" +
-                         std::to_string(gateHeight) + (dynamicResolution ? " (colour allocation)" : "") +
+                         std::to_string(gateHeight) +
+                         (dynamicResolution ? " (colour allocation, DXGI " + std::to_string(UINT(gateFormat)) + ")"
+                                            : std::string()) +
                          "; NR scale " + std::to_string(settlingScale) + " -> " + std::to_string(requestedScale) +
                          "; " + VramUsage(adapter));
         settlingWidth = gateWidth;
@@ -856,7 +881,11 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
     const FrameIdentity current { f.colour, f.motion, f.depth, gateWidth, gateHeight };
     // Resource addresses rotate in Unreal's frame buffers. Only an extent
     // change requires warm-up; pointer equality can suppress every frame.
-    const bool sameFrame = current.width == lastFrame.width && current.height == lastFrame.height;
+    // The other of mochizuki's two alternating textures (above) is the same frame too.
+    const bool sameFrame = (current.width == lastFrame.width && current.height == lastFrame.height) ||
+                           (flip && lastFrame.width == altWidth && lastFrame.height == altHeight);
+    if (sameFrame && flip)
+        lastFrame = current;
     if (!sameFrame)
     {
         lastFrame = current;

@@ -27,7 +27,7 @@ import sys
 from pathlib import Path
 
 R = Path(__file__).resolve().parents[2]
-RUNTIME = ['runtime_alpha', 'runtime_encode', 'runtime_transfer', 'runtime_upscale', 'runtime_prep', 'runtime_depth', 'cascade_lograt', 'cascade_blur', 'cascade_feed',
+RUNTIME = ['runtime_alpha', 'runtime_encode', 'runtime_transfer', 'runtime_upscale', 'runtime_prep', 'runtime_depth', 'cascade_lograt', 'cascade_blur', 'cascade_feed', 'runtime_dehalo', 'runtime_predict_gain', 'runtime_predict_apply',
            'runtime_downscale', 'runtime_taps']
 # runtime passes built from another pass's source with defines: name -> (source, defines)
 RUNTIME_VARIANTS = {'runtime_transfer_store': ('runtime_transfer', ['NR_STORE_NATIVE'])}

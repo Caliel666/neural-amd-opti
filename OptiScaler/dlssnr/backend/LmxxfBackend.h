@@ -58,6 +58,10 @@ class LmxxfBackend final : public Host
     ID3D12CommandQueue* migrateTo = nullptr;
     LmxxfProbe::Mode diagnostic = LmxxfProbe::Mode::Off;
     LmxxfProbe::ColorCopy colorProbe;
+    // mochizuki's guides as its runtime takes them (MochizukiGuides.h), and the last frame's jitter for their step.
+    std::unique_ptr<class MochizukiGuides> guides;
+    float lastJitterX = 0.f, lastJitterY = 0.f;
+    bool haveJitter = false;
     LmxxfProbe::StagingProbe stagingProbe;
     uint64_t probeEvaluateId = 0;   // Host ordinal, NOT an engine frame ID or GPU completion.
     uint64_t evaluateSequence_ = 0; // Monotonic sequence across all Evaluate calls including bypassed.
@@ -82,6 +86,7 @@ class LmxxfBackend final : public Host
     void ListRecycled(ID3D12CommandList* list);
     void UnregisterListRecycled();
     bool Lmxxf() const { return runtimeFile == L"LmxxfNrRuntime.dll"; }
+    uint32_t FrameInfoSize() const;
     void SetStatus(const char* s);
 
   public:

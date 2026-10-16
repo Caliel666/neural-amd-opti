@@ -687,10 +687,16 @@ struct Context
         {
             const auto now = GetTickCount64();
             const auto& cfg = *Config::Instance();
-            const float strength =
-                cfg.AmdStabilizerStrength.has_value() ? cfg.AmdStabilizerStrength.value_or_default() : .8f;
-            const float threshold =
-                cfg.AmdStabilizerThreshold.has_value() ? cfg.AmdStabilizerThreshold.value_or_default() : 4.f;
+            // mochizuki keeps a history of its own and its page has its own stabilizer (off by default): danielblnc's
+            // 0.8 here smeared its edit along the optical flow's misses (foliage).
+            const float strength = mochizuki ? cfg.MochizukiStabilizerStrength.value_or_default()
+                                   : cfg.AmdStabilizerStrength.has_value()
+                                       ? cfg.AmdStabilizerStrength.value_or_default()
+                                       : .8f;
+            const float threshold = mochizuki ? cfg.MochizukiStabilizerThreshold.value_or_default()
+                                    : cfg.AmdStabilizerThreshold.has_value()
+                                        ? cfg.AmdStabilizerThreshold.value_or_default()
+                                        : 4.f;
             if (strength > 0)
                 result =
                     stabilizer->Record(cmd.Get(), f, result, stableLast && now - lastModifiedTick < 250 && !f.reset,
@@ -827,7 +833,8 @@ struct Context
         }
         auto cpu = composeHeap->GetCPUDescriptorHandleForHeapStart();
         D3D12_SHADER_RESOURCE_VIEW_DESC srv {};
-        srv.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        // The stabilizer's output is R16G16B16A16_FLOAT; without it mochizuki's answer comes in the frame's format.
+        srv.Format = AmdPreSr::ReadFormat(result->GetDesc().Format);
         srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         srv.Texture2D.MipLevels = 1;
@@ -937,7 +944,7 @@ inline bool Render(IDXGISwapChain* sc, ID3D12CommandQueue* queue, const std::fil
         if (!Follow(d.Get(), queue))
             return false;
         // Without the runtime on this device only frame generation's guides are left to make.
-        if (!guides && !context->backend && runtimeLoaded)
+        if (!guides && !context->backend && !context->mochizuki && runtimeLoaded)
         {
             status = "NR without upscaling: NR runs on the game's other D3D12 device; restart the game for NR";
             return false;
