@@ -48,6 +48,17 @@ MochizukiNrRuntime.cpp` hosts the runtime instead, on a Vulkan device of its own
    - Network time, three interleaved runs each (runtime's own GPU time): 1080p 8.48-8.52 ms with them,
      8.51-8.70 ms without; 1440p 14.95-15.01 and 14.91-15.15 ms. Within the noise.
 3. `windows/src/core/nr_runtime.cpp`: `NR_GRAPH_ARGS` (diagnostic), more graph options after the runtime's own.
+4. (0.5.3) `nr_runtime.cpp` `resolve_frame_pass`: Intensity above 1 extrapolates on the frame's last pass only; the
+   passes before stop at 1 (it compounded to about ratio^8 over three passes).
+5. (0.5.3) `shaders/passes/cascade_blur.comp` (windows and linux, the ACO build reads linux/): the detail-only
+   cascade's low-pass is edge-aware, weighted by the first pass's input in log luminance, binding 2 = `shown_keep`.
+   The box blur left a band of its radius (`mh/60`) around thin edges.
+6. (0.5.3) `Controls::anti_halo` and `anti_halo_margin`: `shaders/passes/runtime_dehalo.comp` after the last pass
+   holds the answer's luminance inside the first pass's 3x3 range (the first answer is kept in `first_answer`).
+7. (0.5.3) `Controls::pass3_estimate`: with three passes the third is `runtime_predict_gain.comp` and
+   `runtime_predict_apply.comp`, after lmxxf's `multi_pass_predict.hip`; its timestamps still bracket it.
+
+The new passes are in both `build_network.py` `RUNTIME` lists.
 
 ### Sync to v0.0.5 (2026-10-14)
 
