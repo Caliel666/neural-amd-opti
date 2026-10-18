@@ -337,6 +337,8 @@ class State
     std::deque<double> frameTimes;
     std::vector<DetailedGpuTime> detailedGpuTimes;
     double lastFGFrameTime = 0.0;
+    double lastFGPresentMs = 0.0;                    // FG swapchain present plus the FPS limiter sleep after it
+    std::atomic<double> lastLowLatencySleepMs = 0.0; // the last low latency sleep, taken by XeFG's Dynamic MFG
     double presentFrameTime = 0.0;
     std::mutex frameTimeMutex;
 

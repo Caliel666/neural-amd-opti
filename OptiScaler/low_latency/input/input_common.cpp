@@ -321,7 +321,11 @@ InputResult InputCommon::sleep(const InputContext& inputContext, IUnknown* pDevi
         return InputResult::UsingDifferentInput;
 
     if (auto current_tech = currently_active_tech.load())
+    {
+        auto sleepStart = Util::MillisecondsNow();
         current_tech->sleep(frame_id);
+        State::Instance().lastLowLatencySleepMs.store(Util::MillisecondsNow() - sleepStart, std::memory_order_relaxed);
+    }
     else
         return InputResult::NoReadyOutput;
 

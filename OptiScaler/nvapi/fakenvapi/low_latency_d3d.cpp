@@ -230,7 +230,11 @@ NvAPI_Status LowLatency::Sleep(IUnknown* pDevice)
         return ERROR();
 
     if (auto current_tech = currently_active_tech.load())
+    {
+        auto sleepStart = Util::MillisecondsNow();
         current_tech->sleep();
+        State::Instance().lastLowLatencySleepMs.store(Util::MillisecondsNow() - sleepStart, std::memory_order_relaxed);
+    }
 
     return OK();
 }

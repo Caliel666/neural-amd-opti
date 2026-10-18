@@ -1337,6 +1337,7 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
         MenuOverlayDx::FrameGenerationPresent(false);
 
     HRESULT result;
+    const auto presentStart = Util::MillisecondsNow();
     if (pPresentParameters == nullptr)
         result = o_FGSCPresent(This, SyncInterval, Flags);
     else
@@ -1374,6 +1375,10 @@ HRESULT FGHooks::FGPresent(IDXGISwapChain* This, UINT SyncInterval, UINT Flags,
     {
         FrameLimit::sleep(fg != nullptr ? fg->IsActive() && !fg->IsPaused() : false);
     }
+
+    // The present call and the FPS limiter sleep, the part of the frame the game waited here (Dynamic MFG)
+    if (willPresent)
+        state.lastFGPresentMs = Util::MillisecondsNow() - presentStart;
 
     if ((config->SimulateWaitableObject.value_or_default() ||
          (state.gameEngine == GameEngineType::Unity && state.activeFgOutput == FGOutput::XeFG)) &&
