@@ -60,17 +60,20 @@ keeps its pipeline cache there and logs to `mochizuki_nr.log`.
 
 Its settings are the `[DlssNr] Mochizuki*` keys, and it takes none of its tuning from another runtime's
 (`TransferStrength`, `Passes`, `AmdModelScale`, `AmdDynamicScale` and the model keys stay danielblnc's,
-lmxxf's and NVIDIA's). `LmxxfBackend::Record` sends them two ways, both only when the backend is not
-lmxxf:
+lmxxf's and NVIDIA's). The network always runs inside upstream's RenoDX stage (`MochizukiNrControls::renodx`,
+always 1 from this host), so the model, pass stack, resolution, composition, look and encoding controls are
+the stage's `MochizukiReno*` keys (`MochizukiRenoKeys.inc`). `LmxxfBackend::Record` sends them two ways, both
+only when the backend is not lmxxf:
 
 - In `LmxxfNrFrameInfo`: `MochizukiDetailStrength` and `MochizukiColourStrength` (0 to 4 here, 0 to 2
   for lmxxf; the host's default is 0, the game's own colour at the network's luminance, where the
   runtime's own default is 1), `MochizukiModelScale` and `MochizukiPasses`. The last two rebuild the
   network, so the menu commits them when the slider is released.
 - Through the runtime's own `MochizukiNrSetControls` export (`mochizuki_runtime/MochizukiNrControls.h`):
-  the model controls, the highlight guard, history strength, white point, linear input, apply model and
-  the pass 2 and 3 overrides. They go only when they change or the session is new, starting from the
-  runtime's `MochizukiNrGetControlDefaults`, and apply on the next frame.
+  the `reno_*` fields, history strength, apply model, dynamic resolution, the preprocess and the noise
+  seed. They go only when they change or the session is new, starting from the runtime's
+  `MochizukiNrGetControlDefaults`, and apply on the next frame (`RenoPasses`, `RenoResolutionScale` and
+  `RenoSourceEncoding` rebuild the network, so the menu commits them when the control is released).
 
 `MochizukiTemporal` switches the history (without the key, `LmxxfTemporal` does). Every default is the
 network's own, so an INI without these keys runs as before. `AmdModelScale` and `AmdDynamicScale` do

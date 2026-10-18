@@ -403,10 +403,11 @@ class Config
     // By colour (upstream's mask), so brown and orange surfaces are protected too.
     CustomOptional<bool> LmxxfSkinProtect { false };
     // mochizuki's settings, the INI key being the member's name. Its tuning comes from these keys only, never from
-    // the danielblnc, lmxxf or NVIDIA ones, so each runtime keeps its own, and every default is the network's own:
-    // what it ran with before these keys existed. Passes, ModelScale and LinearInput rebuild the network (a second
-    // or two without NR); the rest apply on the next frame. One leftover: without MochizukiTemporal, LmxxfTemporal
-    // decides (below).
+    // the danielblnc, lmxxf or NVIDIA ones, so each runtime keeps its own. The network always runs inside upstream's
+    // RenoDX stage, whose MochizukiReno* settings (MochizukiRenoKeys.inc, RenoDX's own, with its defaults) hold the
+    // model, pass, resolution, composition, look and encoding controls; the keys here are what the stage has no
+    // setting for. RenoPasses, RenoResolutionScale and RenoSourceEncoding rebuild the network (a second or two
+    // without NR); the rest apply on the next frame. One leftover: without MochizukiTemporal, LmxxfTemporal decides.
     //
     // History from the previous frame, moved along the game's motion vectors. An INI without the key follows
     // LmxxfTemporal, which switched it before it had its own, so a value set here is always saved, true included.
@@ -416,24 +417,6 @@ class Config
     // The host stabilizer after the runtime, as AmdStabilizerStrength and AmdStabilizerThreshold are for danielblnc.
     CustomOptional<float> MochizukiStabilizerStrength { 0.0f };
     CustomOptional<float> MochizukiStabilizerThreshold { 2.0f };
-    // How much of the network's detail (0..2) and colour change (0..4) reaches the frame. Above 1 exaggerates it.
-    // Colour defaults to 0, the game's own colour at the network's luminance.
-    CustomOptional<float> MochizukiDetailStrength { 1.0f };
-    CustomOptional<float> MochizukiColourStrength { 0.0f };
-    // Network runs per frame, 1..3, each on the last one's output and each at the network's whole cost.
-    CustomOptional<uint32_t> MochizukiPasses { 1 };
-    // The network's resolution as a share of the render resolution, 0.25..1 in steps of 0.05. The cost goes with its
-    // square.
-    CustomOptional<float> MochizukiModelScale { 1.0f };
-    // The model's controls: intensity 0..2; style 0 standard, 1 natural, 2 cinematic; local tone and local structure
-    // 0..2; skin structure -1..2, where -1 follows local structure (it needs the automatic mask); and the highlight
-    // guard, the most the result may multiply or divide a pixel's brightness by, 1..8.
-    CustomOptional<float> MochizukiIntensity { 1.0f };
-    CustomOptional<uint32_t> MochizukiStyle { 0 };
-    CustomOptional<float> MochizukiLocalTone { 1.0f };
-    CustomOptional<float> MochizukiLocalStructure { 1.0f };
-    CustomOptional<float> MochizukiSkinStructure { -1.0f };
-    CustomOptional<bool> MochizukiAutoMask { true };
     // The network as ACO's machine code (the Linux driver's compiler, made in advance) instead of AMD's Windows
     // compiler: about a fifth faster, the same picture. On by default; its author tested it on AMD Software 26.9.2
     // only. Takes effect when the game starts again; without the driver's pipeline binaries the driver compiles as
@@ -443,29 +426,28 @@ class Config
     // picture is close to the default network's, not the same. A change rebuilds the network in a few seconds while
     // the frames keep the current one, without a restart.
     CustomOptional<bool> MochizukiInt4 { false };
-    // With two or three passes: the later ones add only detail, without stacking the network's tone and colour shift
-    // (LMXXF_NR_FRAME_FLAG_CASCADE_DETAIL). A change rebuilds the network.
+    // The 310.8 model instead of 310.9's new one, which runs when dlssnr-amd\dlssnr-small.bin is there; int4 mixed
+    // implies it. A change rebuilds the network (LMXXF_NR_FRAME_FLAG_ORIGINAL_MODEL).
+    CustomOptional<bool> MochizukiOriginalModel { false };
+    // No effect while the network runs in the RenoDX stage, which stacks its own passes (RenoPasses) and resolves
+    // each itself; kept, out of the menu and the INI, for passes outside it. With two or three passes: the later ones
+    // add only detail (LMXXF_NR_FRAME_FLAG_CASCADE_DETAIL); the result is held inside the first pass's local
+    // brightness range (LMXXF_NR_FRAME_FLAG_ANTI_HALO), 1 holding each pixel to it and 0 letting a quarter past it;
+    // with three, the third is estimated from the first two (LMXXF_NR_FRAME_FLAG_PASS3_ESTIMATE), which may come
+    // back reworked for the stage.
     CustomOptional<bool> MochizukiCascadeDetail { true };
-    // With two or three passes: the result is held inside the first pass's local brightness range, so thin edges do
-    // not take a rim that grows every pass (LMXXF_NR_FRAME_FLAG_ANTI_HALO). Applies on the next frame.
     CustomOptional<bool> MochizukiAntiHalo { true };
+    CustomOptional<float> MochizukiAntiHaloStrength { 0.8f };
+    CustomOptional<bool> MochizukiPassEstimate { true };
     // Before Super Resolution: the camera jitter's step between frames added to the motion vectors the history is
     // fetched with (they leave the jitter out). Experimental, off.
     CustomOptional<bool> MochizukiJitterHistory { false };
-    // Anti-halo's strength, 0..1: 1 holds each pixel to the first pass's local range, 0 lets a quarter past it.
-    CustomOptional<float> MochizukiAntiHaloStrength { 0.8f };
-    // Three passes: two run and the third is estimated from them, about a third less time.
-    CustomOptional<bool> MochizukiPassEstimate { true };
-    CustomOptional<float> MochizukiMaxRatio { 2.0f };
-    // Linear colour only: the brightness the network treats as white, 0.01..100.
-    CustomOptional<float> MochizukiWhitePoint { 1.0f };
     // false runs the network at its whole cost but shows the original frame, to measure it or compare.
     CustomOptional<bool> MochizukiApplyModel { true };
-    // Whether the colour is linear light: 0 auto (float formats are), 1 yes, 2 no.
-    CustomOptional<uint32_t> MochizukiLinearInput { 0 };
-    // Linear colour: take the white point from the game's exposure (the upscaler's exposure texture), as danielblnc's
-    // runtime does; MochizukiWhitePoint then multiplies it. Without a texture, MochizukiWhitePoint alone.
-    CustomOptional<bool> MochizukiGameExposure { true };
+    // No effect in the RenoDX stage, whose network reads the vectors at the pixel, so no depth goes to the runtime;
+    // kept, out of the menu and the INI. It handed the network the game's depth, which picks the motion vector of the
+    // nearer surface on silhouettes.
+    CustomOptional<bool> MochizukiUseDepth { true };
     // Dynamic resolution. exact builds the network for the render resolution, so each change of it rebuilds the
     // network (a second or two without NR). auto, the default, does so until the render resolution drops below the
     // size of the game's colour buffer; from then on it keeps one network, built for the largest resolution seen, and
@@ -473,29 +455,27 @@ class Config
     // Anything else is auto.
     CustomOptional<std::string> MochizukiDynamicResolution { "auto" };
     // Preprocess (mochizuki0323's): the picture the network is shown, changed before it runs and taken back out of its
-    // answer. Off by default; the first time it is on the network is rebuilt once. Exposure 0 off, 1 auto (a histogram
-    // auto exposure, for games that do not hand theirs over), 2 fixed (the bias alone); bias -8..8 EV; curve 0 none,
-    // 1 neutral, 2 reinhard, 3 filmic, 4 gt, 5 aces, 6 agx; contrast 0.5..2; saturation 0.05..2.
+    // answer, in the RenoDX stage's encoding. Off by default. Exposure 0 off, 1 auto (a histogram auto exposure, for
+    // games that do not hand theirs over; it replaces RenoDX's divisor), 2 fixed (the bias alone); bias -8..8 EV;
+    // curve 0 none, 1 neutral, 2 reinhard, 3 filmic, 4 gt, 5 aces, 6 agx (in place of RenoDX's); contrast 0.5..2;
+    // saturation 0.05..2.
     CustomOptional<bool> MochizukiPreprocess { false };
     CustomOptional<uint32_t> MochizukiPreprocessExposure { 1 };
     CustomOptional<float> MochizukiPreprocessBias { 0.0f };
     CustomOptional<uint32_t> MochizukiPreprocessCurve { 3 };
     CustomOptional<float> MochizukiPreprocessContrast { 1.0f };
     CustomOptional<float> MochizukiPreprocessSaturation { 1.0f };
-    // Passes 2 and 3. A pass with none of these set inherits pass 1 with local tone 0, since tone applied again on
-    // every pass compounds; one with any of them set takes the others from pass 1 the same way.
-    CustomOptional<uint32_t, NoDefault> MochizukiPass2Style;
-    CustomOptional<float, NoDefault> MochizukiPass2Intensity;
-    CustomOptional<float, NoDefault> MochizukiPass2LocalTone;
-    CustomOptional<float, NoDefault> MochizukiPass2LocalStructure;
-    CustomOptional<float, NoDefault> MochizukiPass2SkinStructure;
-    CustomOptional<bool, NoDefault> MochizukiPass2AutoMask;
-    CustomOptional<uint32_t, NoDefault> MochizukiPass3Style;
-    CustomOptional<float, NoDefault> MochizukiPass3Intensity;
-    CustomOptional<float, NoDefault> MochizukiPass3LocalTone;
-    CustomOptional<float, NoDefault> MochizukiPass3LocalStructure;
-    CustomOptional<float, NoDefault> MochizukiPass3SkinStructure;
-    CustomOptional<bool, NoDefault> MochizukiPass3AutoMask;
+    // Read and ignored, as TheAutomatic/dlss-5-amd-project keeps it: its older builds used 1 to force 30 layers.
+    CustomOptional<uint32_t> MochizukiLayerMode { 0 };
+    // Frames without motion vectors: the network's noise seed moves every frame, as NVIDIA's DLL does.
+    CustomOptional<bool> MochizukiNoiseEveryFrame { false };
+#define MZR_F(name, def, lo, hi, group, label, member, help) CustomOptional<float> name { def };
+#define MZR_U(name, def, lo, hi, group, label, member, help) CustomOptional<uint32_t> name { def };
+#define MZR_B(name, def, lo, hi, group, label, member, help) CustomOptional<bool> name { def };
+#include "dlssnr/backend/MochizukiRenoKeys.inc"
+#undef MZR_F
+#undef MZR_U
+#undef MZR_B
     // Experimental dirty insert: request SpinDraw=1 even when freeze/admission fails.
     // No complete D3D12 graphics-state restore — risk matches the danielblnc runtime. Default 0.
     CustomOptional<int> AmdGraphicsUnsafe { 0 };

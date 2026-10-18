@@ -585,28 +585,16 @@ bool Config::Reload(std::filesystem::path iniPath)
             MochizukiHistoryStrength.set_from_config(readFloat("DlssNr", "MochizukiHistoryStrength"));
             MochizukiStabilizerStrength.set_from_config(readFloat("DlssNr", "MochizukiStabilizerStrength"));
             MochizukiStabilizerThreshold.set_from_config(readFloat("DlssNr", "MochizukiStabilizerThreshold"));
-            MochizukiDetailStrength.set_from_config(readFloat("DlssNr", "MochizukiDetailStrength"));
-            MochizukiColourStrength.set_from_config(readFloat("DlssNr", "MochizukiColourStrength"));
-            MochizukiPasses.set_from_config(readUInt("DlssNr", "MochizukiPasses"));
-            MochizukiModelScale.set_from_config(readFloat("DlssNr", "MochizukiModelScale"));
-            MochizukiIntensity.set_from_config(readFloat("DlssNr", "MochizukiIntensity"));
-            MochizukiStyle.set_from_config(readUInt("DlssNr", "MochizukiStyle"));
-            MochizukiLocalTone.set_from_config(readFloat("DlssNr", "MochizukiLocalTone"));
-            MochizukiLocalStructure.set_from_config(readFloat("DlssNr", "MochizukiLocalStructure"));
-            MochizukiSkinStructure.set_from_config(readFloat("DlssNr", "MochizukiSkinStructure"));
-            MochizukiAutoMask.set_from_config(readBool("DlssNr", "MochizukiAutoMask"));
             MochizukiAco.set_from_config(readBool("DlssNr", "MochizukiAco"));
             MochizukiInt4.set_from_config(readBool("DlssNr", "MochizukiInt4"));
+            MochizukiOriginalModel.set_from_config(readBool("DlssNr", "MochizukiOriginalModel"));
             MochizukiCascadeDetail.set_from_config(readBool("DlssNr", "MochizukiCascadeDetail"));
             MochizukiAntiHalo.set_from_config(readBool("DlssNr", "MochizukiAntiHalo"));
             MochizukiJitterHistory.set_from_config(readBool("DlssNr", "MochizukiJitterHistory"));
             MochizukiAntiHaloStrength.set_from_config(readFloat("DlssNr", "MochizukiAntiHaloStrength"));
             MochizukiPassEstimate.set_from_config(readBool("DlssNr", "MochizukiPassEstimate"));
-            MochizukiMaxRatio.set_from_config(readFloat("DlssNr", "MochizukiMaxRatio"));
-            MochizukiWhitePoint.set_from_config(readFloat("DlssNr", "MochizukiWhitePoint"));
             MochizukiApplyModel.set_from_config(readBool("DlssNr", "MochizukiApplyModel"));
-            MochizukiLinearInput.set_from_config(readUInt("DlssNr", "MochizukiLinearInput"));
-            MochizukiGameExposure.set_from_config(readBool("DlssNr", "MochizukiGameExposure"));
+            MochizukiUseDepth.set_from_config(readBool("DlssNr", "MochizukiUseDepth"));
             MochizukiDynamicResolution.set_from_config(readString("DlssNr", "MochizukiDynamicResolution", true));
             MochizukiPreprocess.set_from_config(readBool("DlssNr", "MochizukiPreprocess"));
             MochizukiPreprocessExposure.set_from_config(readUInt("DlssNr", "MochizukiPreprocessExposure"));
@@ -614,18 +602,15 @@ bool Config::Reload(std::filesystem::path iniPath)
             MochizukiPreprocessCurve.set_from_config(readUInt("DlssNr", "MochizukiPreprocessCurve"));
             MochizukiPreprocessContrast.set_from_config(readFloat("DlssNr", "MochizukiPreprocessContrast"));
             MochizukiPreprocessSaturation.set_from_config(readFloat("DlssNr", "MochizukiPreprocessSaturation"));
-            MochizukiPass2Style.set_from_config(readUInt("DlssNr", "MochizukiPass2Style"));
-            MochizukiPass2Intensity.set_from_config(readFloat("DlssNr", "MochizukiPass2Intensity"));
-            MochizukiPass2LocalTone.set_from_config(readFloat("DlssNr", "MochizukiPass2LocalTone"));
-            MochizukiPass2LocalStructure.set_from_config(readFloat("DlssNr", "MochizukiPass2LocalStructure"));
-            MochizukiPass2SkinStructure.set_from_config(readFloat("DlssNr", "MochizukiPass2SkinStructure"));
-            MochizukiPass2AutoMask.set_from_config(readBool("DlssNr", "MochizukiPass2AutoMask"));
-            MochizukiPass3Style.set_from_config(readUInt("DlssNr", "MochizukiPass3Style"));
-            MochizukiPass3Intensity.set_from_config(readFloat("DlssNr", "MochizukiPass3Intensity"));
-            MochizukiPass3LocalTone.set_from_config(readFloat("DlssNr", "MochizukiPass3LocalTone"));
-            MochizukiPass3LocalStructure.set_from_config(readFloat("DlssNr", "MochizukiPass3LocalStructure"));
-            MochizukiPass3SkinStructure.set_from_config(readFloat("DlssNr", "MochizukiPass3SkinStructure"));
-            MochizukiPass3AutoMask.set_from_config(readBool("DlssNr", "MochizukiPass3AutoMask"));
+            MochizukiLayerMode.set_from_config(readUInt("DlssNr", "MochizukiLayerMode"));
+            MochizukiNoiseEveryFrame.set_from_config(readBool("DlssNr", "MochizukiNoiseEveryFrame"));
+#define MZR_F(name, def, lo, hi, group, label, member, help) name.set_from_config(readFloat("DlssNr", #name));
+#define MZR_U(name, def, lo, hi, group, label, member, help) name.set_from_config(readUInt("DlssNr", #name));
+#define MZR_B(name, def, lo, hi, group, label, member, help) name.set_from_config(readBool("DlssNr", #name));
+#include "dlssnr/backend/MochizukiRenoKeys.inc"
+#undef MZR_F
+#undef MZR_U
+#undef MZR_B
             AmdGraphicsUnsafe.set_from_config(readInt("DlssNr", "AmdGraphicsUnsafe"));
             AmdRtgiEnabled.set_from_config(readBool("AmdRtgi", "Enabled"));
             AmdRtgiQuality.set_from_config(readUInt("AmdRtgi", "Quality"));
@@ -1781,26 +1766,10 @@ bool Config::SaveIni()
                      GetFloatValue(Instance()->MochizukiStabilizerStrength.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiStabilizerThreshold",
                      GetFloatValue(Instance()->MochizukiStabilizerThreshold.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "MochizukiDetailStrength",
-                     GetFloatValue(Instance()->MochizukiDetailStrength.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "MochizukiColourStrength",
-                     GetFloatValue(Instance()->MochizukiColourStrength.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "MochizukiPasses", GetIntValue(Instance()->MochizukiPasses.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "MochizukiModelScale",
-                     GetFloatValue(Instance()->MochizukiModelScale.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "MochizukiIntensity",
-                     GetFloatValue(Instance()->MochizukiIntensity.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "MochizukiStyle", GetIntValue(Instance()->MochizukiStyle.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "MochizukiLocalTone",
-                     GetFloatValue(Instance()->MochizukiLocalTone.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "MochizukiLocalStructure",
-                     GetFloatValue(Instance()->MochizukiLocalStructure.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "MochizukiSkinStructure",
-                     GetFloatValue(Instance()->MochizukiSkinStructure.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "MochizukiAutoMask",
-                     GetBoolValue(Instance()->MochizukiAutoMask.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiAco", GetBoolValue(Instance()->MochizukiAco.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiInt4", GetBoolValue(Instance()->MochizukiInt4.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiOriginalModel",
+                     GetBoolValue(Instance()->MochizukiOriginalModel.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiCascadeDetail",
                      GetBoolValue(Instance()->MochizukiCascadeDetail.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiAntiHalo",
@@ -1811,16 +1780,10 @@ bool Config::SaveIni()
                      GetFloatValue(Instance()->MochizukiAntiHaloStrength.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiPassEstimate",
                      GetBoolValue(Instance()->MochizukiPassEstimate.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "MochizukiMaxRatio",
-                     GetFloatValue(Instance()->MochizukiMaxRatio.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "MochizukiWhitePoint",
-                     GetFloatValue(Instance()->MochizukiWhitePoint.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiApplyModel",
                      GetBoolValue(Instance()->MochizukiApplyModel.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "MochizukiLinearInput",
-                     GetIntValue(Instance()->MochizukiLinearInput.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "MochizukiGameExposure",
-                     GetBoolValue(Instance()->MochizukiGameExposure.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiUseDepth",
+                     GetBoolValue(Instance()->MochizukiUseDepth.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiDynamicResolution",
                      Instance()->MochizukiDynamicResolution.value_for_config().value_or("auto").c_str());
         ini.SetValue("DlssNr", "MochizukiPreprocess",
@@ -1835,30 +1798,20 @@ bool Config::SaveIni()
                      GetFloatValue(Instance()->MochizukiPreprocessContrast.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiPreprocessSaturation",
                      GetFloatValue(Instance()->MochizukiPreprocessSaturation.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "MochizukiPass2Style",
-                     GetIntValue(Instance()->MochizukiPass2Style.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "MochizukiPass2Intensity",
-                     GetFloatValue(Instance()->MochizukiPass2Intensity.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "MochizukiPass2LocalTone",
-                     GetFloatValue(Instance()->MochizukiPass2LocalTone.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "MochizukiPass2LocalStructure",
-                     GetFloatValue(Instance()->MochizukiPass2LocalStructure.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "MochizukiPass2SkinStructure",
-                     GetFloatValue(Instance()->MochizukiPass2SkinStructure.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "MochizukiPass2AutoMask",
-                     GetBoolValue(Instance()->MochizukiPass2AutoMask.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "MochizukiPass3Style",
-                     GetIntValue(Instance()->MochizukiPass3Style.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "MochizukiPass3Intensity",
-                     GetFloatValue(Instance()->MochizukiPass3Intensity.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "MochizukiPass3LocalTone",
-                     GetFloatValue(Instance()->MochizukiPass3LocalTone.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "MochizukiPass3LocalStructure",
-                     GetFloatValue(Instance()->MochizukiPass3LocalStructure.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "MochizukiPass3SkinStructure",
-                     GetFloatValue(Instance()->MochizukiPass3SkinStructure.value_for_config()).c_str());
-        ini.SetValue("DlssNr", "MochizukiPass3AutoMask",
-                     GetBoolValue(Instance()->MochizukiPass3AutoMask.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiLayerMode",
+                     GetIntValue(Instance()->MochizukiLayerMode.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "MochizukiNoiseEveryFrame",
+                     GetBoolValue(Instance()->MochizukiNoiseEveryFrame.value_for_config()).c_str());
+#define MZR_F(name, def, lo, hi, group, label, member, help)                                                           \
+    ini.SetValue("DlssNr", #name, GetFloatValue(Instance()->name.value_for_config()).c_str());
+#define MZR_U(name, def, lo, hi, group, label, member, help)                                                           \
+    ini.SetValue("DlssNr", #name, GetIntValue(Instance()->name.value_for_config()).c_str());
+#define MZR_B(name, def, lo, hi, group, label, member, help)                                                           \
+    ini.SetValue("DlssNr", #name, GetBoolValue(Instance()->name.value_for_config()).c_str());
+#include "dlssnr/backend/MochizukiRenoKeys.inc"
+#undef MZR_F
+#undef MZR_U
+#undef MZR_B
         ini.SetValue("DlssNr", "AmdGraphicsUnsafe",
                      GetIntValue(Instance()->AmdGraphicsUnsafe.value_for_config()).c_str());
         ini.SetValue("AmdRtgi", "Enabled", GetBoolValue(Instance()->AmdRtgiEnabled.value_for_config()).c_str());

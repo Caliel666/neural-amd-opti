@@ -475,6 +475,10 @@ struct Stage::Impl {
     Image exposure;                // texel (0,0) of the game's exposure texture, copied
     bool commit_cleared = false;
     bool decoded_storage = false;  // decoded is the output's own format (else RGBA16F + blit)
+    // Local patch, StageFrame::first: pass 1's commit (HDR) in decoded's format, whether the blits into
+    // StageConfig::first_format work (from decoded's format; from the frame's, for NR off), and this record's.
+    Image first_out;
+    bool first_ok = false, first_bypass_ok = false, first_done = false;
     NormStream norm;
     std::vector<std::pair<uint64_t, Image>> retired;
     std::vector<std::pair<uint64_t, VkDescriptorSet>> retired_sets;
@@ -803,6 +807,20 @@ struct Stage::Impl {
         load(programs[kPrep], "prep", sizeof(PrepPush));
         if (hdr) load(programs[kPrepEncode], "prep_encode", 16);
     }
+    // Local patch: the frame-sized `from` (in `layout`) onto StageFrame::first, whose old contents go.
+    void blit_first(VkCommandBuffer cmd, VkImage from, VkImageLayout layout, VkImage first) {
+        image_barrier(cmd, first, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                      VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                      VK_ACCESS_TRANSFER_WRITE_BIT);
+        VkImageBlit b{};
+        b.srcSubresource = b.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        b.srcOffsets[1] = b.dstOffsets[1] = {int32_t(cfg.width), int32_t(cfg.height), 1};
+        vkCmdBlitImage(cmd, from, layout, first, VK_IMAGE_LAYOUT_GENERAL, 1, &b, VK_FILTER_NEAREST);
+        // The later passes' writes into `from` wait for the read; the host's copy of `first` for the write.
+        memory_barrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                       VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT);
+        first_done = true;
+    }
     Image& stack_out(uint32_t pass) { return hdr ? ((pass & 1u) ? work_b : work_a) : ((pass & 1u) ? decoded_alt : decoded); }
     VkImageView scale_or_work0() const { return units.absolute ? work0.view : scale.view; }
 
@@ -813,15 +831,15 @@ struct Stage::Impl {
         *transfer = settings.pass_transfer[i];
         *color = settings.pass_color[i];
     }
-    // ChainActive: whether any pass changes the image. A Display frame blends by colour strength (transfer only
-    // scales its pedestal removal); a classic frame by transfer strength.
+    // ChainActive: whether any pass changes the image. A Display frame takes its brightness edit by transfer
+    // strength and its colour edit by colour strength (v6_common.hlsli, local patch); a classic frame blends by
+    // transfer strength.
     bool chain_active(uint32_t first, uint32_t passes) const {
         const bool display = frame_display_codec(settings, hdr, units);
-        const bool pedestal = frame_pedestal_removal(settings, hdr, units);
         for (uint32_t k = 0; k < passes; ++k) {
             float t = 0.f, c = 0.f;
             strengths(first + k, &t, &c);
-            if (display ? (pedestal && t > 0.f) || c > 0.f : t > 0.f) return true;
+            if (display ? t > 0.f || c > 0.f : t > 0.f) return true;
         }
         return false;
     }
@@ -1031,6 +1049,14 @@ Stage::Stage(const HostDevice& host, const StageConfig& cfg) : impl_(std::make_u
     nr::logf("[nr] RenoDX stage: %ux%u (network %ux%u), %s, frame format %d%s", W, H, NW, NH,
              m.hdr == 0 ? "SDR (legacy codec)" : m.units.absolute ? "absolute HDR (v6 codec)" : "relative HDR (v6 codec)",
              int(cfg.frame_format), m.decoded_storage ? "" : ", result through RGBA16F and a blit");
+    if (cfg.first_format != VK_FORMAT_UNDEFINED) {
+        const auto has = [&](VkFormat f, VkFormatFeatureFlags bit) {
+            VkFormatProperties fp{}; vkGetPhysicalDeviceFormatProperties(host.physical, f, &fp);
+            return (fp.optimalTilingFeatures & bit) != 0;
+        };
+        m.first_ok = has(m.decoded.format, VK_FORMAT_FEATURE_BLIT_SRC_BIT) && has(cfg.first_format, VK_FORMAT_FEATURE_BLIT_DST_BIT);
+        m.first_bypass_ok = m.first_ok && has(cfg.frame_format, VK_FORMAT_FEATURE_BLIT_SRC_BIT);
+    }
 }
 
 Stage::~Stage() {
@@ -1044,7 +1070,8 @@ Stage::~Stage() {
     }
     for (Image* im : {&m.original, &m.work0, &m.work_a, &m.work_b, &m.proxy, &m.neural, &m.look_out, &m.decoded,
                       &m.decoded_alt, &m.block_mean, &m.scale, &m.commit, &m.motion, &m.exposure, &m.up_proxy,
-                      &m.up_neural, &m.band_a, &m.band_b, &m.band_max_a, &m.band_max_b, &m.work_p, &m.prep_keep})
+                      &m.up_neural, &m.band_a, &m.band_b, &m.band_max_a, &m.band_max_b, &m.work_p, &m.prep_keep,
+                      &m.first_out})
         m.destroy(*im);
     for (auto& pl : m.looks)
         for (int i = 0; i < 2; ++i) { m.destroy(pl.history[i]); m.destroy(pl.history_z[i]); }
@@ -1104,6 +1131,8 @@ void Stage::set(const Settings& s) {
 }
 
 uint8_t Stage::hdr_mode() const { return impl_->hdr; }
+bool Stage::exports_first() const { return impl_->first_ok; }
+bool Stage::first_written() const { return impl_->first_done; }
 
 void working_resolution(const Settings& s, uint32_t rw, uint32_t rh, uint32_t gw, uint32_t gh, uint32_t* nw,
                         uint32_t* nh) {
@@ -1125,6 +1154,7 @@ uint32_t Stage::record(VkCommandBuffer cmd, const StageFrame& fr, const Network&
     const uint32_t W = m.cfg.width, H = m.cfg.height, NW = m.cfg.nr_width, NH = m.cfg.nr_height;
     const uint32_t gx = (W + 15) / 16, gy = (H + 15) / 16, nx = (NW + 15) / 16, ny = (NH + 15) / 16;
     const uint32_t passes = stack_passes(s);
+    m.first_done = false;
 
     // The colour into the output as it is: NR off (NeuralUplift), or every pass at zero strength (RenoDX's explicit
     // bypass).
@@ -1149,6 +1179,13 @@ uint32_t Stage::record(VkCommandBuffer cmd, const StageFrame& fr, const Network&
         } else if (fr.colour.before != fr.colour.after) {
             Impl::image_barrier(cmd, fr.colour.image, fr.colour.before, fr.colour.after, fr.colour.before_stage,
                                 fr.colour.before_access, fr.colour.after_stage, fr.colour.after_access);
+        }
+        // Local patch: StageFrame::first is the frame as it goes out.
+        if (fr.first && m.first_bypass_ok &&
+            (fr.output.after == VK_IMAGE_LAYOUT_GENERAL || fr.output.after == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)) {
+            Impl::memory_barrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_WRITE_BIT,
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+            m.blit_first(cmd, fr.output.image, fr.output.after, fr.first);
         }
         m.recreate = true;
         return 0;
@@ -1440,6 +1477,37 @@ uint32_t Stage::record(VkCommandBuffer cmd, const StageFrame& fr, const Network&
     float final_transfer = 0.f, final_color = 0.f;
     bool final_shaped = false;
     for (uint32_t k = 0; k < passes; ++k) {
+        // Local patch: StageFrame::first, before pass 2 can overwrite what it is made from. Pass 1's result as step 4
+        // below turns the last pass's into the frame's encoding (HDR: the pedestal and the commit), into first_out.
+        if (k == 1 && fr.first && m.first_ok) {
+            const Image* first = &m.stack_out(0);
+            if (m.hdr) {
+                if (!m.first_out.handle) {
+                    m.first_out = m.make_image(W, H, m.decoded.format, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
+                    m.init_fresh(cmd);
+                }
+                if (frame_pedestal_removal(s, m.hdr, m.units)) {
+                    const V6Constants red = make_v6(s, m.f6, W, H, W, H, NW, NH, NW, NH, final_transfer, final_color,
+                                                    s.chroma_clamp_stops, m.ratio_resolve);
+                    const VkDescriptorSet set = final_shaped
+                        ? m.S(Impl::kReduce6Unshaped, {{0, m.work0.view}, {1, m.proxy.view}, {2, m.neural.view},
+                                                       {3, m.scale_or_work0()}, {4, m.block_mean.view}})
+                        : m.S(Impl::kReduce6, {{0, first->view}, {1, m.work0.view}, {2, m.scale_or_work0()},
+                                               {3, m.work0.view}, {4, m.block_mean.view}});
+                    m.dispatch(cmd, final_shaped ? Impl::kReduce6Unshaped : Impl::kReduce6, set, &red, sizeof red,
+                               (W + 31) / 32, (H + 31) / 32);
+                }
+                const V6Constants com = make_v6(s, m.f6, W, H, W, H, W, H, W, H, final_transfer, final_color, 0.f);
+                const Impl::P commit = !m.units.absolute && m.feed != kFeedV1 ? Impl::kCommitExposure : Impl::kCommit6;
+                m.dispatch(cmd, commit,
+                           m.S(commit, {{0, first->view}, {1, m.work0.view},
+                                        {2, commit == Impl::kCommitExposure ? m.scale.view : m.scale_or_work0()},
+                                        {3, m.work0.view}, {4, m.first_out.view}, {5, m.block_mean.view}}),
+                           &com, sizeof com, gx, gy);
+                first = &m.first_out;
+            }
+            m.blit_first(cmd, first->handle, VK_IMAGE_LAYOUT_GENERAL, fr.first);
+        }
         float transfer = 1.f, color = 1.f;
         m.strengths(k, &transfer, &color);
         const Image& ref = k == 0 ? (m.hdr ? m.work0 : m.original) : m.stack_out(k - 1);

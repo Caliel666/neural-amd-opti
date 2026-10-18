@@ -141,6 +141,9 @@ struct StageConfig {
     // The settings at creation: NRSourceEncoding / NRLinearUnitNits decide relative or absolute units, which a stage
     // keeps for its life (a change between them takes a new stage, made with the new settings).
     Settings settings{};
+    // Local patch (OptiScaler's person protection): the format of StageFrame::first, the image that takes pass 1's
+    // result; UNDEFINED makes no room for it. Stage::exports_first says whether this GPU can write it.
+    VkFormat first_format = VK_FORMAT_UNDEFINED;
 };
 
 struct StageFrame {
@@ -169,6 +172,10 @@ struct StageFrame {
     // The Present hook point: the HDR diffuse white in nits (RenoDX's: NRPresentWhiteNits, a RenoDX mod's Game
     // Brightness, the Windows SDR content level, NRDiffuseWhiteNits).
     float present_white_nits = 203.0f;
+    // Local patch: with StageConfig::first_format, an image of it at the frame's extent (GENERAL, TRANSFER_DST) that
+    // takes pass 1's result in the frame's own encoding, as the output would be with one pass; with NR off, the
+    // frame as it goes out. Read back with Stage::first_written.
+    VkImage first = VK_NULL_HANDLE;
 };
 
 class Stage {
@@ -189,6 +196,10 @@ public:
     // The frame through every pass of the stack (Settings::passes) into StageFrame::output. Returns how many passes
     // ran the network (0: NR off, or every pass at zero strength - the frame copied through as it is).
     uint32_t record(VkCommandBuffer, const StageFrame&, const Network&);
+    // Local patch: whether StageFrame::first can be written (blits from the stage's result format and the frame's into
+    // StageConfig::first_format), and whether the last record wrote it.
+    bool exports_first() const;
+    bool first_written() const;
 
 private:
     struct Impl;

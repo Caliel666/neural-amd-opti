@@ -400,8 +400,10 @@ float3 ResolvePixel(uint2 pixel, float3 original) {
     // no reason to be temporally stable. Trust == 1 (well-lit pixels) keeps
     // the exact previous math.
     const float floor_trust = ProxyFloorTrust(proxy);
-    const float3 gain = exp2(floor_trust * (l_guarded + c));
-    result = lerp(original, original * gain, ColorStrength);
+    // TransferStrength scales the luma edit and ColorStrength the chroma edit, as they do in the divisor family
+    // below; one lerp of the whole gain by ColorStrength made colour 0 turn the network off.
+    const float3 gain = exp2(floor_trust * (TransferStrength * l_guarded + ColorStrength * c));
+    result = original * gain;
   } else {
     // Divisor family: UpgradeToneMap compares in proxy units (the encode
     // divided by Divisor); scale the neural result back to source units

@@ -118,10 +118,10 @@ extern "C"
         float color_strength;    /* Colour strength: lmxxf 0..2, mochizuki 0..4, default 1.0; above 1 extrapolates */
         uint32_t debug_view;     /* 0=normal, 1=proxy, 2=neural solo, 3=diff 20x, 4=tint */
         float model_scale;       /* 0.25..1.0, default 1.0 */
-        uint32_t passes;         /* network runs per frame, each on the previous output: 1..3, 0 = 1 */
-        void* motion;            /* ID3D12Resource*, the game's motion vectors; required for TEMPORAL */
-        uint32_t motion_state;   /* D3D12_RESOURCE_STATES at RecordInputs */
-        uint32_t motion_width;   /* extent the vectors cover; 0 = color_width x color_height */
+        uint32_t passes;       /* network runs per frame, each on the previous output: 1..3 (mochizuki 1..30), 0 = 1 */
+        void* motion;          /* ID3D12Resource*, the game's motion vectors; required for TEMPORAL */
+        uint32_t motion_state; /* D3D12_RESOURCE_STATES at RecordInputs */
+        uint32_t motion_width; /* extent the vectors cover; 0 = color_width x color_height */
         uint32_t motion_height;
         float motion_scale_x; /* value * scale = pixels of that extent (the NGX and FFX convention) */
         float motion_scale_y;

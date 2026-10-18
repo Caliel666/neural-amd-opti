@@ -45,6 +45,7 @@
 #include "mz_interpose.h"
 #include "nr_log.hpp"
 #include "nr_pipeline_binary.hpp"
+#include "nr_renodx.hpp"
 #include "nr_runtime.hpp"
 
 #include <algorithm>
@@ -569,9 +570,10 @@ float San(float v, float lo, float hi, float def) { return std::isfinite(v) ? st
 // network; 1 stays exactly 1, which keeps the model extent the frame's own.
 float ModelScale(float v) { return v == 0 ? 1.f : std::round(San(v, 0.25f, 1.f, 1.f) * 20.f) / 20.f; }
 
-// The most passes a frame can ask for (FrameInfo::passes; MochizukiNrControls::pass holds passes 2 and 3), and so the
-// most a network is built for: every pass it is built for costs a model-extent RGBA32F history image.
-constexpr uint32_t kMaxPasses = 3;
+// The most passes a frame can ask for (FrameInfo::passes; MochizukiNrControls::pass holds passes 2 and 3, later ones
+// inherit pass 1 with local tone 0), and so the most a network is built for: every pass it is built for costs a
+// model-extent RGBA32F history image. The host offers 1..3, and 1..30 with MochizukiUnlockPasses.
+constexpr uint32_t kMaxPasses = 30;
 
 // What SetControls last gave, sanitised. Until it is called, the core's defaults: today's output.
 struct SessionControls
@@ -582,6 +584,8 @@ struct SessionControls
     uint32_t linearMode = 0; // MochizukiNrControls::linear_input: 0 auto, 1 on, 2 off
     uint32_t maxPasses = 0;  // 0: the frame's passes
     uint32_t drsMode = 0;    // MochizukiNrControls::drs_mode: 0 exact, 1 auto, 2 always (Session::DrsExtent)
+    bool renodx = true;      // MochizukiNrControls::renodx: the RenoDX stage, with `reno` in place of `model`
+    nr::renodx::Settings reno;
 };
 
 void DefaultControls(MochizukiNrControls& c)
@@ -609,6 +613,16 @@ void DefaultControls(MochizukiNrControls& c)
     c.preprocess_contrast = prep.contrast;
     c.preprocess_saturation = prep.saturation;
     c.anti_halo_margin = model.anti_halo_margin;
+    c.enlarge_mode = uint32_t(model.transfer);
+    c.classic_scaler = uint32_t(model.classic_scaler);
+    c.renodx = 1;
+#define RDX_F(member, field, def, low, high) c.member = def;
+#define RDX_U RDX_F
+#define RDX_B RDX_F
+#include "MochizukiRenoOptions.inc"
+#undef RDX_F
+#undef RDX_U
+#undef RDX_B
     for (MochizukiNrPassControls& p : c.pass)
     {
         p.style = uint32_t(pass.style);
@@ -647,6 +661,18 @@ SessionControls Sanitise(const MochizukiNrControls& c)
     prep.saturation = San(c.preprocess_saturation, .05f, 2.f, 1.f);
     m.anti_halo_margin =
         MZ_HOLDS(&c, MochizukiNrControls, anti_halo_margin) ? San(c.anti_halo_margin, 0.f, .5f, .05f) : .05f;
+    // A shorter struct leaves these at DefaultControls' values (SetControls copies over them).
+    m.transfer = c.enlarge_mode <= 2 ? int(c.enlarge_mode) : 0;
+    m.classic_scaler = c.classic_scaler <= 3 ? int(c.classic_scaler) : 1;
+    m.noise_every_frame = c.noise_every_frame != 0;
+    out.renodx = c.renodx != 0;
+#define RDX_F(member, field, def, low, high) out.reno.field = San(c.member, low, high, def);
+#define RDX_U(member, field, def, low, high) out.reno.field = std::clamp(c.member, uint32_t(low), uint32_t(high));
+#define RDX_B(member, field, def, low, high) out.reno.field = c.member != 0;
+#include "MochizukiRenoOptions.inc"
+#undef RDX_F
+#undef RDX_U
+#undef RDX_B
     // validate() does not look at these, and the core puts them straight into push constants.
     for (size_t k = std::size(c.pass); k-- > 0;)
     {
@@ -712,19 +738,33 @@ struct Vulkan
         const std::vector<VkPhysicalDevice> all =
             VkEnumerate<VkPhysicalDevice>("vkEnumeratePhysicalDevices", [this](uint32_t* n, VkPhysicalDevice* p)
                                           { return vkEnumeratePhysicalDevices(instance, n, p); });
+        // Every Vulkan device on the game's adapter: a stale second ICD can list the same LUID again (Detroit on an
+        // RX 9070: the first one lacked VK_EXT_shader_float8), so each is checked and the first that passes is taken,
+        // the newest driver when several do.
+        struct Candidate
+        {
+            VkPhysicalDevice device {};
+            std::string name;
+            uint32_t driverVersion = 0;
+        };
+        std::vector<Candidate> matches;
         for (VkPhysicalDevice p : all)
         {
-            VkPhysicalDeviceIDProperties id { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES };
+            VkPhysicalDeviceDriverProperties driver { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES };
+            VkPhysicalDeviceIDProperties id { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES, &driver };
             VkPhysicalDeviceProperties2 props { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &id };
             vkGetPhysicalDeviceProperties2(p, &props);
-            if (id.deviceLUIDValid && !std::memcmp(id.deviceLUID, &luid, sizeof luid))
-            {
-                physical = p;
-                name = props.properties.deviceName;
-                break;
-            }
+            if (!id.deviceLUIDValid || std::memcmp(id.deviceLUID, &luid, sizeof luid))
+                continue;
+            const uint32_t api = props.properties.apiVersion;
+            nr::logf("[mochizuki] Vulkan device %zu on the adapter: %s, driver %s (%s), driverVersion 0x%08X, Vulkan "
+                     "%u.%u.%u",
+                     matches.size(), props.properties.deviceName, driver.driverName, driver.driverInfo,
+                     props.properties.driverVersion, VK_API_VERSION_MAJOR(api), VK_API_VERSION_MINOR(api),
+                     VK_API_VERSION_PATCH(api));
+            matches.push_back({ p, props.properties.deviceName, props.properties.driverVersion });
         }
-        if (!physical)
+        if (matches.empty())
         {
             char text[112];
             std::snprintf(text, sizeof text,
@@ -734,21 +774,6 @@ struct Vulkan
         }
         if (hooks.unsupported)
             throw std::runtime_error("[unsupported] MZ_TEST_UNSUPPORTED: the capability check failed (test hook)");
-
-        uint32_t count = 0;
-        vkGetPhysicalDeviceQueueFamilyProperties(physical, &count, nullptr);
-        std::vector<VkQueueFamilyProperties> families(count);
-        vkGetPhysicalDeviceQueueFamilyProperties(physical, &count, families.data());
-        family = count;
-        for (uint32_t i = 0; i < count; ++i)
-            if ((families[i].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) ==
-                (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT))
-            {
-                family = i;
-                break;
-            }
-        if (family == count)
-            throw std::runtime_error("[unsupported] no graphics and compute queue family");
 
         // What nrvk::Context::create enables, plus the timeline semaphores the game's fences are imported as.
         VkPhysicalDeviceCooperativeMatrixFeaturesKHR coop {
@@ -780,41 +805,109 @@ struct Vulkan
                                      VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME };
 
         // The capability precheck: what vkCreateDevice would refuse with the chain above, found and named before it
-        // is called. Vulkan 1.3 and the extensions first, since only then may their structures be chained.
-        VkPhysicalDeviceProperties props {};
-        vkGetPhysicalDeviceProperties(physical, &props);
-        if (props.apiVersion < VK_API_VERSION_1_3)
+        // is called, as the reason the device fails (empty when it passes). Vulkan 1.3 and the extensions first,
+        // since only then may their structures be chained.
+        std::vector<VkQueueFamilyProperties> families;
+        std::vector<VkExtensionProperties> offered;
+        bool deviceAddress = false;
+        const auto check = [&](VkPhysicalDevice p) -> std::string
         {
-            char text[96];
-            std::snprintf(text, sizeof text, "[unsupported] the device offers Vulkan %u.%u; 1.3 is required",
-                          VK_API_VERSION_MAJOR(props.apiVersion), VK_API_VERSION_MINOR(props.apiVersion));
-            throw std::runtime_error(text);
+            uint32_t count = 0;
+            vkGetPhysicalDeviceQueueFamilyProperties(p, &count, nullptr);
+            families.assign(count, {});
+            vkGetPhysicalDeviceQueueFamilyProperties(p, &count, families.data());
+            family = count;
+            for (uint32_t i = 0; i < count; ++i)
+                if ((families[i].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) ==
+                    (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT))
+                {
+                    family = i;
+                    break;
+                }
+            if (family == count)
+                return "[unsupported] no graphics and compute queue family";
+            VkPhysicalDeviceProperties props {};
+            vkGetPhysicalDeviceProperties(p, &props);
+            if (props.apiVersion < VK_API_VERSION_1_3)
+            {
+                char text[96];
+                std::snprintf(text, sizeof text, "[unsupported] the device offers Vulkan %u.%u; 1.3 is required",
+                              VK_API_VERSION_MAJOR(props.apiVersion), VK_API_VERSION_MINOR(props.apiVersion));
+                return text;
+            }
+            offered = VkEnumerate<VkExtensionProperties>(
+                "vkEnumerateDeviceExtensionProperties", [this, p](uint32_t* n, VkExtensionProperties* e)
+                { return vkEnumerateDeviceExtensionProperties(p, nullptr, n, e); });
+            for (const char* e : extensions)
+                if (std::none_of(offered.begin(), offered.end(),
+                                 [e](const VkExtensionProperties& x) { return !std::strcmp(x.extensionName, e); }))
+                    return std::string("[unsupported] the driver lacks ") + e;
+            VkPhysicalDeviceCooperativeMatrixFeaturesKHR hasCoop {
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR
+            };
+            VkPhysicalDeviceShaderFloat8FeaturesEXT hasFp8 {
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT8_FEATURES_EXT
+            };
+            VkPhysicalDeviceVulkan11Features has11 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES };
+            VkPhysicalDeviceVulkan12Features has12 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
+            VkPhysicalDeviceVulkan13Features has13 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
+            VkPhysicalDeviceWorkgroupMemoryExplicitLayoutFeaturesKHR hasWml {
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_WORKGROUP_MEMORY_EXPLICIT_LAYOUT_FEATURES_KHR
+            };
+            hasCoop.pNext = &hasFp8;
+            hasFp8.pNext = &has11;
+            has11.pNext = &has12;
+            has12.pNext = &has13;
+            has13.pNext = &hasWml;
+            VkPhysicalDeviceFeatures2 has { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &hasCoop };
+            vkGetPhysicalDeviceFeatures2(p, &has);
+            const struct
+            {
+                VkBool32 wanted, offered;
+                const char* name;
+            } features[] = {
+                { coop.cooperativeMatrix, hasCoop.cooperativeMatrix, "cooperativeMatrix" },
+                { fp8.shaderFloat8, hasFp8.shaderFloat8, "shaderFloat8" },
+                { fp8.shaderFloat8CooperativeMatrix, hasFp8.shaderFloat8CooperativeMatrix,
+                  "shaderFloat8CooperativeMatrix" },
+                { f11.storageBuffer16BitAccess, has11.storageBuffer16BitAccess, "storageBuffer16BitAccess" },
+                { f12.storageBuffer8BitAccess, has12.storageBuffer8BitAccess, "storageBuffer8BitAccess" },
+                { f12.shaderFloat16, has12.shaderFloat16, "shaderFloat16" },
+                { f12.shaderInt8, has12.shaderInt8, "shaderInt8" },
+                { f12.vulkanMemoryModel, has12.vulkanMemoryModel, "vulkanMemoryModel" },
+                { f12.timelineSemaphore, has12.timelineSemaphore, "timelineSemaphore" },
+                { f13.subgroupSizeControl, has13.subgroupSizeControl, "subgroupSizeControl" },
+                { f13.synchronization2, has13.synchronization2, "synchronization2" },
+                { wml.workgroupMemoryExplicitLayout, hasWml.workgroupMemoryExplicitLayout,
+                  "workgroupMemoryExplicitLayout" },
+                { wml.workgroupMemoryExplicitLayout8BitAccess, hasWml.workgroupMemoryExplicitLayout8BitAccess,
+                  "workgroupMemoryExplicitLayout8BitAccess" },
+                { wml.workgroupMemoryExplicitLayout16BitAccess, hasWml.workgroupMemoryExplicitLayout16BitAccess,
+                  "workgroupMemoryExplicitLayout16BitAccess" },
+            };
+            for (const auto& f : features)
+                if (f.wanted && !f.offered)
+                    return std::string("[unsupported] the driver lacks the Vulkan feature ") + f.name;
+            deviceAddress = has12.bufferDeviceAddress == VK_TRUE;
+            return {};
+        };
+        std::string refused;
+        const Candidate* chosen = nullptr;
+        for (const Candidate& c : matches)
+        {
+            const std::string reason = check(c.device);
+            if (!reason.empty())
+            {
+                if (matches.size() > 1)
+                    nr::logf("[mochizuki] Vulkan device %zu fails the check: %s", size_t(&c - matches.data()),
+                             reason.c_str());
+                if (refused.empty())
+                    refused = reason;
+            }
+            else if (!chosen || c.driverVersion > chosen->driverVersion)
+                chosen = &c;
         }
-        const std::vector<VkExtensionProperties> offered = VkEnumerate<VkExtensionProperties>(
-            "vkEnumerateDeviceExtensionProperties", [this](uint32_t* n, VkExtensionProperties* p)
-            { return vkEnumerateDeviceExtensionProperties(physical, nullptr, n, p); });
-        for (const char* e : extensions)
-            if (std::none_of(offered.begin(), offered.end(),
-                             [e](const VkExtensionProperties& p) { return !std::strcmp(p.extensionName, e); }))
-                throw std::runtime_error(std::string("[unsupported] the driver lacks ") + e);
-        VkPhysicalDeviceCooperativeMatrixFeaturesKHR hasCoop {
-            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR
-        };
-        VkPhysicalDeviceShaderFloat8FeaturesEXT hasFp8 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT8_FEATURES_EXT };
-        VkPhysicalDeviceVulkan11Features has11 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES };
-        VkPhysicalDeviceVulkan12Features has12 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
-        VkPhysicalDeviceVulkan13Features has13 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
-        VkPhysicalDeviceWorkgroupMemoryExplicitLayoutFeaturesKHR hasWml {
-            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_WORKGROUP_MEMORY_EXPLICIT_LAYOUT_FEATURES_KHR
-        };
-        hasCoop.pNext = &hasFp8;
-        hasFp8.pNext = &has11;
-        has11.pNext = &has12;
-        has12.pNext = &has13;
-        has13.pNext = &hasWml;
-        VkPhysicalDeviceFeatures2 has { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &hasCoop };
-        vkGetPhysicalDeviceFeatures2(physical, &has);
-        const struct
+        if (!chosen)
         {
             VkBool32 wanted, offered;
             const char* name;
@@ -842,7 +935,7 @@ struct Vulkan
             if (f.wanted && !f.offered)
                 throw std::runtime_error(std::string("[unsupported] the driver lacks the Vulkan feature ") + f.name);
         // Optional: without it the network takes its descriptor reads.
-        bufferDeviceAddress = has12.bufferDeviceAddress == VK_TRUE;
+        bufferDeviceAddress = deviceAddress;
         f12.bufferDeviceAddress = bufferDeviceAddress ? VK_TRUE : VK_FALSE;
         // MZ_PROBE_PIPELINE_BINARY=1 only (mz_interpose.h): two more extensions, and their features after wml.
         std::vector<const char*> enabled(std::begin(extensions), std::end(extensions));
@@ -1296,6 +1389,8 @@ struct Job
     bool reset = false;
     nr::Controls controls;            // the frame's, sanitised: validate() cannot refuse them
     float history = 1.f, white = 1.f; // set on the runtime before the frame is recorded
+    nr::renodx::Settings reno;        // for a network in the RenoDX stage (ProductRuntime::reno), in place of controls
+    float renoExposure = 0.f;         // the game's exposure (MochizukiNrSetExposure), 0 for none
 };
 
 // The handle PrepareFrame hands out for job generation gen: odd, so never null and never a pointer.
@@ -1378,10 +1473,14 @@ struct FrameBuffers
             motionImage.Release(device);
             depthImage.Release(device);
             motionScaled.Release(device);
+            firstOutput.Release(device);
         }
         if (result)
             result->Release();
         result = nullptr;
+        if (firstResult)
+            firstResult->Release();
+        firstResult = nullptr;
     }
 };
 
@@ -1417,8 +1516,16 @@ constexpr ULONGLONG kVramRetryMs = 10'000; // the VRAM check, after it refused
 // model pixel term adds 16 bytes to that calibration for the second RGBA32F history image a one-pass network keeps.
 constexpr UINT64 kNetworkFixedBytes = 160ull << 20;
 constexpr UINT64 kModelPixelBytes = 288;
-constexpr double kPassFactor[] = { 1.0, 1.2, 1.3 }; // by the passes built for (max_passes), 1 to kMaxPasses
-static_assert(std::size(kPassFactor) == kMaxPasses);
+constexpr double kPassFactor[] = { 1.0, 1.2, 1.3 }; // by the passes built for (max_passes), 1 to 3
+// Past three passes, each one more as the step from one to two (TheAutomatic/dlss-5-amd-project's estimate for its
+// 30-layer mode): not measured, on the safe side.
+double PassMemoryFactor(uint32_t passes)
+{
+    passes = std::clamp(passes, 1u, kMaxPasses);
+    if (passes <= std::size(kPassFactor))
+        return kPassFactor[passes - 1];
+    return kPassFactor[std::size(kPassFactor) - 1] + 0.2 * double(passes - std::size(kPassFactor));
+}
 constexpr UINT64 kScaledFramePixelBytes = 36;
 constexpr UINT64 kFramePixelBytes = 48;
 constexpr UINT64 kVramMarginBytes = 64ull << 20;
@@ -1550,7 +1657,7 @@ struct Session
     // EnsureNetwork installs it. With a queue of their own for the builds, a network for another model scale, pass
     // count or colour encoding is built while the frames keep the old one (keep serving); runtime and net change under
     // submitMutex. Only EnsureNetwork and ~Session join the builder, under buildMutex once buildDone is set.
-    std::unique_ptr<nr::Runtime> runtime;
+    std::unique_ptr<ProductRuntime> runtime;
     NetworkKey net, buildKey;
     std::thread builder;
     std::mutex buildMutex;
@@ -1561,7 +1668,7 @@ struct Session
     std::atomic<bool> abandon { false };
     bool builderOwnsSession = false; // under buildMutex
     std::chrono::steady_clock::time_point abandonedAt;
-    std::unique_ptr<nr::Runtime> built;
+    std::unique_ptr<ProductRuntime> built;
     char buildError[1024] {}; // a fixed buffer, so the builder cannot throw on its way to buildDone
     NrError::Kind buildErrorKind = NrError::Other;
     double buildSeconds = 0;
@@ -1570,7 +1677,7 @@ struct Session
     // (Releaser). What is left when the session ends goes after its drain, or leaks with a lost device.
     struct Retired
     {
-        std::unique_ptr<nr::Runtime> network;
+        std::unique_ptr<ProductRuntime> network;
         UINT64 finished = 0;
     };
     std::mutex releaseMutex;
@@ -1605,7 +1712,7 @@ struct Session
     // What GetInfo reports: atomics and a copy of the last error, never the runtime, since it may ask from any thread.
     std::atomic<bool> infoBuilding { false };
     std::atomic<uint32_t> infoModelWidth { 0 }, infoModelHeight { 0 }, infoFrameWidth { 0 }, infoFrameHeight { 0 },
-        infoMaxPasses { 0 }, infoPasses { 1 }, motionRefused { 0 }, dispatches { 0 };
+        infoMaxPasses { 0 }, infoPasses { 1 }, motionRefused { 0 }, dispatches { 0 }, infoReno { 0 };
     std::atomic<float> infoBuildSeconds { 0 };
     std::atomic<float> infoPrepEv { NAN };
     std::atomic<float> infoWhite { 1.f };
@@ -1923,7 +2030,7 @@ struct Session
 
     // `network`, which the frames up to `finished` in fromVk may still use, handed to the releaser (Releaser); without
     // memory for that it leaks rather than be freed under the GPU. Any thread.
-    void RetireNetwork(std::unique_ptr<nr::Runtime> network, UINT64 finished) noexcept
+    void RetireNetwork(std::unique_ptr<ProductRuntime> network, UINT64 finished) noexcept
     {
         try
         {
@@ -1959,7 +2066,7 @@ struct Session
 
     // A network the frames no longer use goes on the releaser thread, once the Vulkan side has finished the frames
     // that used it: neither that wait nor the release (about 30 ms at 1080p) is the render thread's. Render thread.
-    void ReleaseLater(std::unique_ptr<nr::Runtime> network, UINT64 finished) noexcept
+    void ReleaseLater(std::unique_ptr<ProductRuntime> network, UINT64 finished) noexcept
     {
         RetireNetwork(std::move(network), finished);
         StartReleaser();
@@ -1989,7 +2096,7 @@ struct Session
                              int(r));
                 break;
             }
-            std::unique_ptr<nr::Runtime> network = std::move(retired.front().network);
+            std::unique_ptr<ProductRuntime> network = std::move(retired.front().network);
             retired.erase(retired.begin());
             lock.unlock();
             const auto t0 = std::chrono::steady_clock::now();
@@ -2375,6 +2482,9 @@ struct Session
         b.depthImage = std::exchange(depthImage, {});
         b.motionScaled = std::exchange(motionScaled, {});
         b.result = std::exchange(result, nullptr);
+        b.firstFootprint = firstFootprint;
+        b.firstOutput = std::exchange(firstOutput, {});
+        b.firstResult = std::exchange(firstResult, nullptr);
         std::fill(std::begin(fallbackCurrent), std::end(fallbackCurrent), false);
         return b;
     }
@@ -2390,8 +2500,10 @@ struct Session
             const UINT scaled = key.scale >= 1.f ? v : std::max(8u, UINT(double(v) * key.scale + 0.5));
             return UINT64((scaled + 63) / 64 * 64);
         };
-        const double passes = kPassFactor[std::clamp(key.maxPasses, 1u, kMaxPasses) - 1];
-        const UINT64 activations = UINT64(double(kModelPixelBytes * model(key.width) * model(key.height)) * passes);
+        // The RenoDX stage's network runs one pass at a time at the stage's extent, a history for each pass.
+        const double passes = PassMemoryFactor(key.renodx ? 1u : key.maxPasses);
+        const UINT64 width = key.renodx ? key.renoWidth : key.width, height = key.renodx ? key.renoHeight : key.height;
+        const UINT64 activations = UINT64(double(kModelPixelBytes * model(UINT(width)) * model(UINT(height))) * passes);
         const UINT64 scaled = key.scale < 1.f ? kScaledFramePixelBytes * key.width * key.height : 0;
         return kNetworkFixedBytes + activations + scaled;
     }
@@ -2536,6 +2648,9 @@ struct Session
         depthImage = std::exchange(b.depthImage, {});
         motionScaled = std::exchange(b.motionScaled, {});
         result = std::exchange(b.result, nullptr);
+        firstFootprint = b.firstFootprint;
+        firstOutput = std::exchange(b.firstOutput, {});
+        firstResult = std::exchange(b.firstResult, nullptr);
         geometry = b.geometry;
     }
 
@@ -2642,7 +2757,7 @@ struct Session
                      buildKey.width, buildKey.height);
         if (runtime)
         {
-            std::unique_ptr<nr::Runtime> old;
+            std::unique_ptr<ProductRuntime> old;
             UINT64 finished = 0;
             {
                 std::lock_guard lock(submitMutex);
@@ -2657,7 +2772,7 @@ struct Session
     // the last frame handed to the Vulkan side, the last one that may use it. It may go once fromVk is there, which the
     // render thread does not wait for (ReleaseLater, or the builder). `why` goes to the log with the network's time.
     // Under submitMutex.
-    std::unique_ptr<nr::Runtime> TakeNetwork(const char* why, UINT64& finished)
+    std::unique_ptr<ProductRuntime> TakeNetwork(const char* why, UINT64& finished)
     {
         LogNetworkTime(why);
         finished = lastFinished.load();
@@ -2677,7 +2792,7 @@ struct Session
     // history restarts.
     void Install()
     {
-        std::unique_ptr<nr::Runtime> old;
+        std::unique_ptr<ProductRuntime> old;
         UINT64 oldFinished = 0;
         {
             std::lock_guard lock(submitMutex);
@@ -2706,6 +2821,7 @@ struct Session
         infoModelWidth = runtime->model_width();
         infoModelHeight = runtime->model_height();
         infoMaxPasses = net.maxPasses;
+        infoReno = runtime->reno != nullptr;
         infoBuildSeconds = float(buildSeconds);
         if (runtime->model_width() != net.width || runtime->model_height() != net.height || net.maxPasses > 1)
             nr::logf("[mochizuki] network ready at %ux%u (model %ux%u, up to %u passes) in %.1f s%s", net.width,
@@ -2765,24 +2881,42 @@ struct Session
         if (!serve && geometry.width && !(geometry == g))
             RetireGeometry();
         // The network, and the frame's buffers unless they are made already, beside what the frames still hold.
-        bool admitted = VramAdmits(NetworkBytes(key) + (geometry == g ? 0 : FrameBytes(g)) + kVramMarginBytes,
-                                   key.width, key.height, "the network", why, &buildBaseUsage);
-        if (!admitted && (runtime || !buried.empty() || Releasing()))
+        const UINT64 need = NetworkBytes(key) + (geometry == g ? 0 : FrameBytes(g)) + kVramMarginBytes;
+        bool admitted = VramAdmits(need, key.width, key.height, "the network", why, &buildBaseUsage);
+        if (!admitted && (!buried.empty() || Releasing()))
         {
-            // Not beside them: what the frames held goes first, after a drain of both sides, and the networks retired
-            // before with it (the drain lets the releaser free them), then the check again.
+            // Not beside them: what was retired already goes first, after a drain of both sides (the drain lets the
+            // releaser free the networks), then the check again.
             Drain();
-            if (runtime)
-            {
-                std::lock_guard lock(submitMutex);
-                LogNetworkTime("replacing the network");
-                runtime.reset();
-            }
-            if (geometry.width && !(geometry == g))
-                ReleaseGeometry();
             ReleasesDone(kDrainWaitMs);
-            admitted = VramAdmits(NetworkBytes(key) + (geometry == g ? 0 : FrameBytes(g)) + kVramMarginBytes, key.width,
-                                  key.height, "the network", why, &buildBaseUsage);
+            admitted = VramAdmits(need, key.width, key.height, "the network", why, &buildBaseUsage);
+        }
+        const bool freeGeometry = geometry.width && !(geometry == g);
+        if (!admitted && (runtime || freeGeometry))
+        {
+            // Then what the frames hold, but only when freeing it would make room: the game takes back what is
+            // freed, so a network given up for one that is then refused leaves nothing, not even the way back (OpenGL
+            // games). Refused here, the running network keeps serving and a revert to it is immediate.
+            const UINT64 reclaim = (runtime ? NetworkBytes(net) : 0) + (freeGeometry ? FrameBytes(geometry) : 0);
+            std::string notEnough;
+            if (VramAdmits(need > reclaim ? need - reclaim : 0, key.width, key.height,
+                           "the network once the running one is freed", notEnough))
+            {
+                Drain();
+                if (runtime)
+                {
+                    std::lock_guard lock(submitMutex);
+                    LogNetworkTime("replacing the network");
+                    runtime.reset();
+                }
+                if (geometry.width && !(geometry == g))
+                    ReleaseGeometry();
+                ReleasesDone(kDrainWaitMs);
+                admitted = VramAdmits(need, key.width, key.height, "the network", why, &buildBaseUsage);
+            }
+            else
+                nr::logf("[mochizuki] %s, the running network's %llu MB included: it keeps serving", notEnough.c_str(),
+                         static_cast<unsigned long long>(reclaim >> 20));
         }
         if (!admitted)
         {
@@ -2802,7 +2936,7 @@ struct Session
         }
         // A network the frames do not keep goes on the builder thread before the build, once the Vulkan side has
         // finished the frames that used it: the render thread waits for neither that nor its release.
-        std::unique_ptr<nr::Runtime> old;
+        std::unique_ptr<ProductRuntime> old;
         UINT64 oldFinished = 0;
         if (runtime && !keep)
         {
@@ -2819,7 +2953,7 @@ struct Session
     // first, once fromVk has reached `oldFinished`; `buffers`, when set, asks for the next frame's buffers too
     // (geometry and resultDesc). `keep`: the frames keep their network meanwhile. On a throw, `old` goes to the
     // releaser (ReleaseLater), never here.
-    void StartBuild(std::unique_ptr<nr::Runtime> old, UINT64 oldFinished, std::unique_ptr<FrameBuffers> buffers,
+    void StartBuild(std::unique_ptr<ProductRuntime> old, UINT64 oldFinished, std::unique_ptr<FrameBuffers> buffers,
                     bool keep)
     {
         if (prepared)
@@ -2841,9 +2975,26 @@ struct Session
             config.max_passes = key.maxPasses;
             config.preprocess = key.prep;
             config.int4_mixed = key.int4 ? 1 : 0;
+            // The new model goes back to the 310.8 one by itself when dlssnr-small.bin is missing, and logs it.
+            config.network = key.original ? 0 : 1;
             config.cascade_detail_only = key.cascade;
             // The linear path's frame is a proxy made with the soft knee, which the preprocess undoes first.
             config.preprocess_unknee = key.linear;
+            // The RenoDX stage hands the network its own RGBA16F proxy at the stage's extent, one pass at a time, and
+            // takes the answer as it is (native compose): RenoDX encodes, preprocesses and composes.
+            if (key.renodx)
+            {
+                config.width = key.renoWidth;
+                config.height = key.renoHeight;
+                config.colour_format = VK_FORMAT_R16G16B16A16_SFLOAT;
+                config.linear_input = false;
+                config.model_scale = 1.f;
+                config.max_passes = 1;
+                config.native_compose = true;
+                config.preprocess = false;
+                config.cascade_detail_only = false;
+                config.preprocess_unknee = false;
+            }
             nr::TemporalConfig temporal;
             temporal.enable = true;
             nr::HostDevice host;
@@ -2857,8 +3008,11 @@ struct Session
             if (key.scale != 1.f || key.maxPasses > 1)
                 std::snprintf(options, sizeof options, ", model scale %.2f, up to %u passes%s", key.scale,
                               key.maxPasses, key.cascade ? " (later passes add detail only)" : "");
+            if (key.renodx)
+                std::snprintf(options, sizeof options, ", in the RenoDX stage at %ux%u, %u pass%s", key.renoWidth,
+                              key.renoHeight, key.maxPasses, key.maxPasses == 1 ? "" : "es");
             nr::logf("[mochizuki] building the%s network at %ux%u, VkFormat %d%s%s%s", key.int4 ? " int4 mixed" : "",
-                     key.width, key.height, int(key.format), config.linear_input ? ", linear colour" : "", options,
+                     key.width, key.height, int(key.format), key.linear ? ", linear colour" : "", options,
                      keep ? "; the frames keep the current one meanwhile" : "");
             UseUtf8Paths();
             {
@@ -2873,11 +3027,11 @@ struct Session
             infoBuilding = true;
             gpuUsed = true;
             // The builder takes `old` over only once its thread exists: a failed start must not free it here.
-            nr::Runtime* const handed = old.get();
+            ProductRuntime* const handed = old.get();
             builder = std::thread(
-                [this, host, config, temporal, handed, oldFinished, buffers = std::move(buffers)]() mutable
+                [this, host, config, temporal, key, handed, oldFinished, buffers = std::move(buffers)]() mutable
                 {
-                    Build(host, config, temporal, std::unique_ptr<nr::Runtime>(handed), oldFinished,
+                    Build(host, config, temporal, key, std::unique_ptr<ProductRuntime>(handed), oldFinished,
                           std::move(buffers));
                 });
             (void) old.release();
@@ -2931,7 +3085,8 @@ struct Session
     };
 
     void Build(const nr::HostDevice& host, const nr::RuntimeConfig& config, const nr::TemporalConfig& temporal,
-               std::unique_ptr<nr::Runtime> old, UINT64 oldFinished, std::unique_ptr<FrameBuffers> buffers)
+               const NetworkKey& key, std::unique_ptr<ProductRuntime> old, UINT64 oldFinished,
+               std::unique_ptr<FrameBuffers> buffers)
     {
         const auto t0 = std::chrono::steady_clock::now();
         if (old)
@@ -2946,7 +3101,7 @@ struct Session
             else
                 RetireNetwork(std::move(old), oldFinished);
         }
-        std::unique_ptr<nr::Runtime> made;
+        std::unique_ptr<ProductRuntime> made;
         char error[sizeof buildError] {};
         NrError::Kind kind = NrError::Other;
         try
@@ -2980,7 +3135,7 @@ struct Session
                 throw std::runtime_error("stopped: the session is being destroyed");
             {
                 const nr::BuildCancelScope cancel(&abandon);
-                made = std::make_unique<nr::Runtime>(host, config, nr::ControlMaskConfig {}, temporal);
+                made = std::make_unique<ProductRuntime>(host, config, temporal, key, vk);
             }
             pipelines.Finish();
         }
@@ -3540,6 +3695,11 @@ struct Session
                 frame.depth.usage = kImageUsage;
                 frame.depth_inverted = job.depthInverted;
             }
+        }
+        if (runtime->reno)
+            consumed = RecordReno(c, frame);
+        else if (motion)
+        {
             const nr::EngineResult r = runtime->record_engine(c, frame, job.controls);
             dispatches.store(r.frame.network_dispatches, std::memory_order_relaxed);
             consumed = r.history_consumed;
@@ -3858,22 +4018,29 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
                     colourStrength = San(info->color_strength, 0.f, 4.f, 1.f);
             }
             const float scale = MZ_HOLDS(info, LmxxfNrFrameInfo, model_scale) ? ModelScale(info->model_scale) : 1.f;
-            const uint32_t passes =
+            const uint32_t framePasses =
                 MZ_HOLDS(info, LmxxfNrFrameInfo, passes) ? std::clamp(info->passes, 1u, kMaxPasses) : 1u; // 0 is 1
             nr::Controls model;
             float history = 1.f, white = 1.f;
             uint32_t linearMode = 0, maxPassesSetting = 0, drsMode = 0;
+            bool renodx = false;
+            nr::renodx::Settings reno;
+            const float exposure = s->gameExposure.load(std::memory_order_relaxed);
             {
                 std::lock_guard lock(s->controlsMutex);
                 model = s->controls.model;
                 history = s->controls.history;
                 white = s->controls.white;
                 linearMode = s->controls.linearMode;
-                if (const float e = s->gameExposure.load(std::memory_order_relaxed); e > 0.f)
-                    white = std::clamp(white / e, 1e-4f, 1e4f);
+                if (exposure > 0.f)
+                    white = std::clamp(white / exposure, 1e-4f, 1e4f);
                 maxPassesSetting = s->controls.maxPasses;
                 drsMode = s->controls.drsMode;
+                renodx = s->controls.renodx;
+                reno = s->controls.reno;
             }
+            // The RenoDX stage runs its own stack, whatever the frame asks for.
+            const uint32_t passes = renodx ? nr::renodx::stack_passes(reno) : framePasses;
             // By default the network is built for exactly the frame's passes, so one pass costs nothing extra; a
             // larger max_passes lets the pass count change without a rebuild.
             const uint32_t maxPasses = maxPassesSetting ? std::clamp(maxPassesSetting, passes, kMaxPasses) : passes;
@@ -3909,7 +4076,8 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
             }
             // The game's depth, with its vectors: its top-left w x h, as the colour's.
             ID3D12Resource* depth = nullptr;
-            if (mf.vk && MZ_HOLDS(info, LmxxfNrFrameInfo, depth_inverted) && info->depth)
+            // The RenoDX stage's network reads the vectors at the pixel: no depth is copied for it.
+            if (mf.vk && !renodx && MZ_HOLDS(info, LmxxfNrFrameInfo, depth_inverted) && info->depth)
             {
                 auto* d = static_cast<ID3D12Resource*>(info->depth);
                 const D3D12_RESOURCE_DESC dd = d->GetDesc();
@@ -4000,6 +4168,8 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
             next.controls.pass3_estimate = (info->flags & LMXXF_NR_FRAME_FLAG_PASS3_ESTIMATE) != 0;
             next.history = history;
             next.white = white;
+            next.reno = reno;
+            next.renoExposure = exposure;
             s->infoWhite.store(white, std::memory_order_relaxed);
             if (mf.vk)
             {
@@ -4274,22 +4444,25 @@ int32_t GetLastError(char* buf, uint32_t chars)
 // whole fields a caller's struct holds are its first struct_size & ~3 bytes.
 static_assert(alignof(MochizukiNrControls) == 4 &&
               sizeof(MochizukiNrControls) ==
-                  offsetof(MochizukiNrControls, anti_halo_margin) + sizeof(MochizukiNrControls::anti_halo_margin) &&
+                  offsetof(MochizukiNrControls, reno_mvec_scale_y) + sizeof(MochizukiNrControls::reno_mvec_scale_y) &&
               offsetof(MochizukiNrControls, pass) == 72 && offsetof(MochizukiNrControls, preprocess) == 136 &&
+              offsetof(MochizukiNrControls, enlarge_mode) == 164 && offsetof(MochizukiNrControls, renodx) == 176 &&
               sizeof(MochizukiNrPassControls) == 32);
 // Info has no implicit padding (reserved0 fills the gap before frames), so its offsets do not depend on packing; its
 // sizeof does (tail padding after network_dispatches), which is why a filler reports the end of its last field.
 static_assert(offsetof(MochizukiNrInfo, reserved0) == 44 && offsetof(MochizukiNrInfo, frames) == 48 &&
               offsetof(MochizukiNrInfo, last_error) == 64 && offsetof(MochizukiNrInfo, network_dispatches) == 320 &&
               offsetof(MochizukiNrInfo, preprocess_ev) == 324 && offsetof(MochizukiNrInfo, white_point) == 328 &&
-              offsetof(MochizukiNrInfo, build_stage) == 332 && offsetof(MochizukiNrInfo, build_total) == 340);
+              offsetof(MochizukiNrInfo, build_stage) == 332 && offsetof(MochizukiNrInfo, build_total) == 340 &&
+              offsetof(MochizukiNrInfo, renodx_effective) == 344);
 
 // The bytes GetInfo writes into a struct of `size` bytes: the whole fields that fit, never part of one, and never
 // Info's tail padding. A host that appends a field there (sizeof does not grow) then sees struct_size end before it.
 size_t InfoBytes(size_t size)
 {
     constexpr size_t ends[] = {
-        offsetof(MochizukiNrInfo, build_total) + sizeof(MochizukiNrInfo::build_total), // the last field
+        offsetof(MochizukiNrInfo, renodx_effective) + sizeof(MochizukiNrInfo::renodx_effective), // the last field
+        offsetof(MochizukiNrInfo, renodx_effective),
         offsetof(MochizukiNrInfo, build_stage),
         offsetof(MochizukiNrInfo, white_point) + sizeof(MochizukiNrInfo::white_point),
         offsetof(MochizukiNrInfo, white_point),
@@ -4354,6 +4527,7 @@ int32_t GetInfo(void* context, MochizukiNrInfo* out)
         info.network_dispatches = s->dispatches;
         info.preprocess_ev = s->infoPrepEv;
         info.white_point = s->infoWhite;
+        info.renodx_effective = s->infoReno;
         // The core's own build progress (nr_log.hpp: builds run one at a time), while this session builds.
         if (info.building)
         {

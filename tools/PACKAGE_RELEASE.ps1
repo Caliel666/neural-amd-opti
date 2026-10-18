@@ -232,60 +232,122 @@ MochizukiTemporal=true
 MochizukiHistoryStrength=1
 MochizukiStabilizerStrength=0
 MochizukiStabilizerThreshold=2
-MochizukiDetailStrength=1
-MochizukiColourStrength=0
-MochizukiPasses=1
-MochizukiModelScale=1
-; mochizuki model controls: intensity 0-2; style 0 standard, 1 natural, 2 cinematic; local tone and
-; local structure 0-2; skin structure -1 (follows local structure) to 2; highlight guard (MaxRatio)
-; 1-8; white point (linear colour only) 0.01-100. ApplyModel=false runs the network at full cost
-; but shows the original frame.
-MochizukiIntensity=1
-MochizukiStyle=0
-MochizukiLocalTone=1
-MochizukiLocalStructure=1
-MochizukiSkinStructure=-1
-MochizukiAutoMask=true
 ; mochizuki ACO: the network as machine code made in advance by ACO (the Linux driver's compiler) from
 ; dlssnr-amd\aco\, about a fifth faster, the same picture; tested by its author on AMD Software 26.9.2.
 ; A change takes effect when the game starts again. Int4: with ACO, the int4 mixed network, about a tenth
 ; faster again, the picture close to the default network's but not the same; switches without a restart.
 MochizukiAco=true
 MochizukiInt4=false
-MochizukiMaxRatio=2
-MochizukiWhitePoint=1
+; OriginalModel: the 310.8 model instead of 310.9.16's new one (dlssnr-amd\dlssnr-small.bin, about a third faster,
+; the default when it is there). int4 mixed always runs on the 310.8 model. ApplyModel=false runs the network
+; at full cost but shows the original frame.
+MochizukiOriginalModel=false
 MochizukiApplyModel=true
-MochizukiLinearInput=0
-; mochizuki on linear colour: the white point from the game's exposure, as danielblnc's runtime does;
-; MochizukiWhitePoint then multiplies it. false: MochizukiWhitePoint alone.
-MochizukiGameExposure=true
 ; mochizuki dynamic resolution: exact rebuilds the network for every render resolution (a second or
 ; two without NR each time); auto keeps one network, built for the largest resolution seen, once the
 ; render resolution drops below the colour buffer; always does so from the first frame.
 MochizukiDynamicResolution=auto
 ; mochizuki Preprocess: changes the picture the network is shown and takes it back out of its answer.
-; Off by default; turning it on rebuilds the network once. Exposure 0 off, 1 auto (for games that do
-; not hand their exposure over), 2 fixed (bias alone); bias -8..8 EV; curve 0 none, 1 neutral,
-; 2 reinhard, 3 filmic, 4 gt, 5 aces, 6 agx; contrast 0.5-2; saturation 0.05-2.
+; Off by default. Exposure 0 off, 1 auto (for games that do not hand their exposure over), 2 fixed
+; (bias alone), either replacing the RenoDX stage's divisor; bias -8..8 EV; curve 0 none, 1 neutral,
+; 2 reinhard, 3 filmic, 4 gt, 5 aces, 6 agx, in place of the stage's; contrast 0.5-2; saturation 0.05-2.
 MochizukiPreprocess=false
 MochizukiPreprocessExposure=1
 MochizukiPreprocessBias=0
 MochizukiPreprocessCurve=3
 MochizukiPreprocessContrast=1
 MochizukiPreprocessSaturation=1
-; mochizuki passes 2 and 3: auto inherits pass 1, with local tone 0.
-MochizukiPass2Style=auto
-MochizukiPass2Intensity=auto
-MochizukiPass2LocalTone=auto
-MochizukiPass2LocalStructure=auto
-MochizukiPass2SkinStructure=auto
-MochizukiPass2AutoMask=auto
-MochizukiPass3Style=auto
-MochizukiPass3Intensity=auto
-MochizukiPass3LocalTone=auto
-MochizukiPass3LocalStructure=auto
-MochizukiPass3SkinStructure=auto
-MochizukiPass3AutoMask=auto
+; NoiseEveryFrame: frames without motion vectors move the noise seed every frame. LayerMode is read and
+; ignored (older builds' 30-layer switch).
+MochizukiNoiseEveryFrame=false
+MochizukiLayerMode=0
+; mochizuki RenoDX stage: RenoDX's encode and composition around the network (RenoComposition is not used
+; with mochizuki). RenoPasses (1-4, 1-30 with RenoUnlockPasses), RenoResolutionScale and
+; RenoSourceEncoding rebuild the network; the game's exposure is the stage's feed (RenoFeedMode).
+MochizukiRenoIntensity=1
+MochizukiRenoStyle=0
+MochizukiRenoLocalTone=1
+MochizukiRenoLocalStructure=1
+MochizukiRenoSkinStructure=-1
+MochizukiRenoAutoMask=false
+MochizukiRenoSkinIndependent=true
+MochizukiRenoPasses=1
+MochizukiRenoUnlockPasses=false
+MochizukiRenoChainedHistory=true
+MochizukiRenoPass2Transfer=1
+MochizukiRenoPass2Color=1
+MochizukiRenoPass2Intensity=1
+MochizukiRenoPass2FollowPass1=true
+MochizukiRenoPass2Style=0
+MochizukiRenoPass2LocalTone=1
+MochizukiRenoPass2Structure=1
+MochizukiRenoPass2Skin=-1
+MochizukiRenoPass2AutoMask=false
+MochizukiRenoPass3Transfer=1
+MochizukiRenoPass3Color=1
+MochizukiRenoPass3Intensity=1
+MochizukiRenoPass3FollowPass1=true
+MochizukiRenoPass3Style=0
+MochizukiRenoPass3LocalTone=1
+MochizukiRenoPass3Structure=1
+MochizukiRenoPass3Skin=-1
+MochizukiRenoPass3AutoMask=false
+MochizukiRenoPass4Transfer=1
+MochizukiRenoPass4Color=1
+MochizukiRenoPass4Intensity=1
+MochizukiRenoPass4FollowPass1=true
+MochizukiRenoPass4Style=0
+MochizukiRenoPass4LocalTone=1
+MochizukiRenoPass4Structure=1
+MochizukiRenoPass4Skin=-1
+MochizukiRenoPass4AutoMask=false
+MochizukiRenoColorStrength=1
+MochizukiRenoTransferStrength=1
+MochizukiRenoChromaClamp=1
+MochizukiRenoTransferMode=0
+MochizukiRenoStyleHighlightGuard=0
+MochizukiRenoDetailStability=0
+MochizukiRenoSdrBlackRestore=0
+MochizukiRenoDisplayPedestal=0
+MochizukiRenoCodecMode=2
+MochizukiRenoNeuralFloorGuard=true
+MochizukiRenoResolutionScale=1
+MochizukiRenoFollowInputRes=false
+MochizukiRenoLookUpsample=0
+MochizukiRenoLookMode=false
+MochizukiRenoLookStrength=1
+MochizukiRenoLookBrighten=1
+MochizukiRenoLookDarken=1
+MochizukiRenoLookColour=1
+MochizukiRenoLookHue=1
+MochizukiRenoLookShadows=1
+MochizukiRenoLookMidtones=1
+MochizukiRenoLookHighlights=1
+MochizukiRenoLookMaxBrighten=0
+MochizukiRenoLookMaxDarken=0
+MochizukiRenoLookMaxColour=0
+MochizukiRenoLookTone=1
+MochizukiRenoLookDetail=1
+MochizukiRenoLookDetailRadius=1
+MochizukiRenoLookHalo=0
+MochizukiRenoLookHaloBrightSide=0
+MochizukiRenoLookStabilize=0
+MochizukiRenoLookStabilizeMs=60
+MochizukiRenoLookStabilizeDetail=false
+MochizukiRenoSourceEncoding=0
+MochizukiRenoLinearUnitNits=0
+MochizukiRenoProxyAnchor=4
+MochizukiRenoPaperWhiteScale=2.5375
+MochizukiRenoDiffuseWhiteNits=203
+MochizukiRenoPQCalibration=1
+MochizukiRenoFeedMode=0
+MochizukiRenoNormGovernor=2
+MochizukiRenoNormCutAware=true
+MochizukiRenoNormAttackStops=4
+MochizukiRenoNormReleaseStops=0.5
+MochizukiRenoNormSlewStops=0.02
+MochizukiRenoMVecScaleX=1
+MochizukiRenoMVecScaleY=1
 AmdModelScale=1
 AmdDynamicScale=false
 AmdDynamicTargetFps=60
@@ -309,7 +371,7 @@ AmdNeuralLightingStrength=0.5
 ; auto: 0 and 2 with an upscaler, 0.8 and 4 on the final image (PresentWithoutUpscaler).
 AmdStabilizerStrength=auto
 AmdStabilizerThreshold=auto
-; RenoDX composition after the runtime, every runtime: off by default (RenoIntensity 0-2, RenoGuard
+; RenoDX composition after danielblnc and lmxxf (mochizuki has the RenoDX stage): off by default (RenoIntensity 0-2, RenoGuard
 ; 1-8x, RenoColour 0-1, RenoChromaClamp 0.25-2 stops, RenoPedestal takes off the black lift).
 RenoComposition=false
 RenoIntensity=1

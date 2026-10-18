@@ -245,6 +245,7 @@ static void ResetLmxxf(Config* c)
 
 static void ResetMochizuki(Config* c)
 {
+    // The keys the page no longer shows (no effect in the RenoDX stage) go back to their defaults too.
     Unset(c->MochizukiHistoryStrength, c->MochizukiStabilizerStrength, c->MochizukiStabilizerThreshold,
           c->MochizukiDetailStrength, c->MochizukiColourStrength, c->MochizukiPasses, c->MochizukiModelScale,
           c->MochizukiIntensity, c->MochizukiStyle, c->MochizukiLocalTone, c->MochizukiLocalStructure,
@@ -260,7 +261,6 @@ static void ResetMochizuki(Config* c)
           c->MochizukiPass3AutoMask);
     // Unset, it would fall back to LmxxfTemporal; its default is on.
     c->MochizukiTemporal = true;
-    UnsetReno(c);
 }
 
 static void ResetDaniel(Config* c)
@@ -360,6 +360,19 @@ void RenderMenu(Config* config, float menuResScale)
                 ImVec4(0.95f, 0.70f, 0.20f, 1.0f), "%s",
                 "This game has an upscaler, and NR runs inside it. NR without upscaling still sets XeFG's"
                 "\nmotion vector options for frame generation; turn it off for this game.");
+        // Up here beside the switches people try first, not under the mochizuki page's model controls.
+        if (DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Mochizuki)
+        {
+            const bool int4On = config->MochizukiInt4.value_or_default();
+            bool original = config->MochizukiOriginalModel.value_or_default() || int4On;
+            ImGui::BeginDisabled(int4On);
+            if (ImGui::Checkbox("Old model", &original))
+                config->MochizukiOriginalModel = original;
+            ImGui::EndDisabled();
+            HelpMarker("Off: the new model of NVIDIA's 310.9.16 DLL, faster, when dlssnr-amd\\dlssnr-small.bin"
+                       "\nis installed (without it the old one runs anyway)."
+                       "\nOn: the model of 310.8, which int4 mixed needs. Switching rebuilds the network.");
+        }
 
         // With more than one runtime installed, choose the one the next launch uses. This session keeps the
         // one it started with: each installs its own D3D12 hooks as the device is created.
@@ -521,9 +534,10 @@ void RenderMenu(Config* config, float menuResScale)
             return;
         }
 
-        // mochizuki's Vulkan network, with settings of its own (the Mochizuki* keys) in place of the controls below.
-        // Passes and the NR resolution rebuild the network, so they commit when the slider is released; everything
-        // else is a shader constant and applies on the next frame.
+        // mochizuki's Vulkan network inside upstream's RenoDX stage, with settings of its own (the Mochizuki* keys, and
+        // MochizukiReno* for the stage) in place of the controls below. Passes, the NR resolution and the source
+        // encoding rebuild the network, so they commit when the control is released; everything else applies on the
+        // next frame.
         if (DlssNr::AmdBridge::HasFiles() &&
             DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::Mochizuki)
         {
@@ -597,17 +611,9 @@ void RenderMenu(Config* config, float menuResScale)
                     option = value;
             };
 
-            ImGui::SeparatorText("Exposure");
-            bool gameExposure = config->MochizukiGameExposure.value_or_default();
-            if (ImGui::Checkbox("Game exposure", &gameExposure))
-                config->MochizukiGameExposure = gameExposure;
-            HelpMarker("Linear colour: shows the network the frame at the brightness the game shows"
-                       "\nit, from the exposure the game hands the upscaler, as danielblnc's runtime"
-                       "\ndoes. Without it a game whose light is on another scale (RE Engine) reaches"
-                       "\nthe network washed out or dark, and the effect stays in a few places."
-                       "\nNothing changes in a game that hands no exposure.");
-
-            ImGui::SeparatorText("Temporal");
+            // The network runs inside upstream's RenoDX stage: RenoDX encodes the frame for it and composes each
+            // pass back, with the MochizukiReno* settings drawn by group below.
+            const uint32_t renoPasses = config->MochizukiRenoPasses.value_or_default();
             // An INI without MochizukiTemporal follows LmxxfTemporal, as LmxxfBackend::Record does.
             bool temporal = config->MochizukiTemporal.has_value() ? config->MochizukiTemporal.value()
                                                                   : config->LmxxfTemporal.value_or_default();
@@ -739,39 +745,34 @@ void RenderMenu(Config* config, float menuResScale)
 
             if (ImGui::TreeNode("Pass 2/3"))
             {
-                ImGui::TextWrapped("Unset controls inherit pass 1, except local tone, which defaults to 0. Reset "
-                                   "restores that. Only the passes that run use them. Changes apply when you release "
-                                   "a slider.");
-                static const char* inheritedStyles[] = { "Auto (inherit pass 1)", "Standard", "Natural", "Cinematic" };
-                const auto passControls = [config](const char* name, auto& passStyle, auto& intensity, auto& tone,
-                                                   auto& structure, auto& skinStructure, auto& autoMask)
+                ScopedIndent indent {};
+                MochizukiRenoGroup(config, 1);
+            }
+            if (auto section = ScopedCollapsingHeader("Passes##mzsection", ImGuiTreeNodeFlags_DefaultOpen);
+                section.IsHeaderOpen())
+            {
+                ScopedIndent indent {};
+                MochizukiRenoGroup(config, 2);
+                if (renoPasses >= 2)
+                    MochizukiRenoTree(config, "Pass 2", 3);
+                if (renoPasses >= 3)
+                    MochizukiRenoTree(config, "Pass 3", 4);
+                if (renoPasses >= 4)
+                    MochizukiRenoTree(config, "Pass 4 and later", 5, "Passes 5 and later take these controls too.");
+            }
+            if (auto section = ScopedCollapsingHeader("Composition##mzsection", ImGuiTreeNodeFlags_DefaultOpen);
+                section.IsHeaderOpen())
+            {
+                ScopedIndent indent {};
+                MochizukiRenoGroup(config, 6);
+                MochizukiRenoGroup(config, 8, "MochizukiRenoLookMode");
+                if (ImGui::TreeNode("Look details"))
                 {
-                    if (!ImGui::TreeNodeEx(name, ImGuiTreeNodeFlags_DefaultOpen))
-                        return;
-                    InheritedProfileCombo("Style", &passStyle, inheritedStyles, IM_ARRAYSIZE(inheritedStyles));
-                    DeferredSlider("Intensity", &intensity, 0.0f, 2.0f, config->MochizukiIntensity.value_or_default(),
-                                   "%.2f", true);
-                    DeferredSlider("Local structure", &structure, 0.0f, 2.0f,
-                                   config->MochizukiLocalStructure.value_or_default(), "%.2f", true);
-                    DeferredSlider("Local tone", &tone, 0.0f, 2.0f, 0.0f, "%.2f", true);
-                    DeferredSlider("Skin structure", &skinStructure, -1.0f, 2.0f,
-                                   config->MochizukiSkinStructure.value_or_default(), "%.2f", true);
-                    bool passMask =
-                        autoMask.has_value() ? autoMask.value() : config->MochizukiAutoMask.value_or_default();
-                    if (ImGui::Checkbox("Auto skin mask", &passMask))
-                        autoMask = passMask;
-                    ImGui::SameLine();
-                    if (ImGui::SmallButton("Reset##mask"))
-                        autoMask = std::optional<bool> {};
+                    ImGui::BeginDisabled(!config->MochizukiRenoLookMode.value_or_default());
+                    MochizukiRenoGroup(config, 8, {}, "MochizukiRenoLookMode");
+                    ImGui::EndDisabled();
                     ImGui::TreePop();
-                };
-                passControls("Pass 2", config->MochizukiPass2Style, config->MochizukiPass2Intensity,
-                             config->MochizukiPass2LocalTone, config->MochizukiPass2LocalStructure,
-                             config->MochizukiPass2SkinStructure, config->MochizukiPass2AutoMask);
-                passControls("Pass 3", config->MochizukiPass3Style, config->MochizukiPass3Intensity,
-                             config->MochizukiPass3LocalTone, config->MochizukiPass3LocalStructure,
-                             config->MochizukiPass3SkinStructure, config->MochizukiPass3AutoMask);
-                ImGui::TreePop();
+                }
             }
 
             if (ImGui::TreeNode("Preprocess"))
@@ -798,50 +799,63 @@ void RenderMenu(Config* config, float menuResScale)
                 DeferredSlider("Contrast##prep", &config->MochizukiPreprocessContrast, 0.5f, 2.0f, 1.0f);
                 DeferredSlider("Saturation##prep", &config->MochizukiPreprocessSaturation, 0.05f, 2.0f, 1.0f);
                 ImGui::EndDisabled();
-                if (ImGui::SmallButton("Reset##prep"))
-                {
-                    config->MochizukiPreprocessExposure = 1u;
-                    config->MochizukiPreprocessBias = 0.0f;
-                    config->MochizukiPreprocessCurve = 3u;
-                    config->MochizukiPreprocessContrast = 1.0f;
-                    config->MochizukiPreprocessSaturation = 1.0f;
-                }
-                ImGui::TreePop();
+                bool noise = config->MochizukiNoiseEveryFrame.value_or_default();
+                if (ImGui::Checkbox("Vary noise without motion vectors", &noise))
+                    config->MochizukiNoiseEveryFrame = noise;
+                HelpMarker("Frames without motion vectors (or with temporal history off): the network's noise seed"
+                           "\nmoves every frame, as NVIDIA's DLL does. Off keeps it still, since without a history to"
+                           "\naverage it a moving seed shimmers on a still picture.");
+                liveSlider("Stabilizer", config->MochizukiStabilizerStrength, 0.0f, 1.0f);
+                HelpMarker("Smooths small frame-to-frame changes of the neural effect along the game's motion"
+                           "\nvectors, after the runtime and before the upscaler. Changes larger than the threshold"
+                           "\npass through, and the game's own image is untouched. 0 turns it off; higher values can"
+                           "\nsoften fine detail in motion.");
+                float stabilizerThreshold = config->MochizukiStabilizerThreshold.value_or_default();
+                if (ImGui::SliderFloat("Stabilizer threshold", &stabilizerThreshold, 0.5f, 8.0f, "%.1f / 255"))
+                    config->MochizukiStabilizerThreshold = stabilizerThreshold;
+                HelpMarker("Largest frame-to-frame change of the effect, in 1/255, that the stabilizer smooths.");
+                MochizukiRenoTree(config, "Guides", 10);
             }
-
-            ImGui::SeparatorText("Advanced");
-            int linear = int(std::min(config->MochizukiLinearInput.value_or_default(), 2u));
-            if (ImGui::Combo("Linear input", &linear, "Auto (float formats)\0On\0Off\0"))
-                config->MochizukiLinearInput = uint32_t(linear);
-            HelpMarker("Whether the game's colour is linear light, which the network encodes before it"
-                       "\nruns. Auto takes floating-point formats as linear; pick Off for a float buffer"
-                       "\nthe game has already tone mapped. A change rebuilds the network.");
-            // MochizukiDynamicResolution: exact, auto or always; anything else is auto, as the host sends it.
-            const std::string dynamicResolution = config->MochizukiDynamicResolution.value_or_default();
-            int drs = dynamicResolution == "exact" ? 1 : dynamicResolution == "always" ? 2 : 0;
-            if (ImGui::Combo("Dynamic resolution", &drs, "Auto\0Exact\0Always\0"))
-                config->MochizukiDynamicResolution = drs == 1 ? "exact" : drs == 2 ? "always" : "auto";
-            HelpMarker("For games that change their render resolution as they run. Auto: once it drops"
-                       "\nbelow the game's colour buffer, one network, built for the largest resolution"
-                       "\nseen, serves every frame, which moves inside it; the network then costs that"
-                       "\nlargest resolution's time. Exact: the network is rebuilt for each resolution, a"
-                       "\nsecond or two without NR every time. Always: as Auto from the first frame, also"
-                       "\nwhen the game makes its buffers again at another size.");
-            bool networkOnly = !config->MochizukiApplyModel.value_or_default();
-            if (ImGui::Checkbox("Network only (no effect)", &networkOnly))
-                config->MochizukiApplyModel = !networkOnly;
-            HelpMarker("Runs the network at its full cost but shows the frame as the game drew it, to"
-                       "\nmeasure the cost or compare with and without the effect.");
-            bool jitterHistory = config->MochizukiJitterHistory.value_or_default();
-            if (ImGui::Checkbox("Jitter-aligned history (experimental)", &jitterHistory))
-                config->MochizukiJitterHistory = jitterHistory;
-            HelpMarker("With an upscaler the frame NR sees moves by a fraction of a pixel every frame (the"
-                       "\ncamera jitter), which the game's motion vectors leave out. On, the history is"
-                       "\nfetched where the last frame's sample really was: finer detail may hold steadier."
-                       "\nNeeds Temporal history. No effect without an upscaler.");
-
-            if (ImGui::TreeNode("Info"))
+            if (auto section = ScopedCollapsingHeader("Performance and advanced##mzsection"); section.IsHeaderOpen())
             {
+                ScopedIndent indent {};
+                MochizukiRenoGroup(config, 7);
+                bool aco = config->MochizukiAco.value_or_default();
+                if (ImGui::Checkbox("ACO machine code (restart)", &aco))
+                    config->MochizukiAco = aco;
+                HelpMarker("Runs the network as machine code made in advance by ACO, the Linux driver's compiler,"
+                           "\ninstead of compiling it with AMD's Windows one: about a fifth faster, the same picture."
+                           "\nTested by its author on AMD Software 26.9.2 only; if the game crashes or the picture is"
+                           "\nwrong, turn it off. Save Settings and start the game again to apply it.");
+                ImGui::BeginDisabled(!aco);
+                bool int4 = config->MochizukiInt4.value_or_default();
+                if (ImGui::Checkbox("int4 mixed network (old model only)", &int4))
+                    config->MochizukiInt4 = int4;
+                ImGui::EndDisabled();
+                HelpMarker("Runs part of the network in 4-bit integers: about a tenth faster than ACO alone, the"
+                           "\npicture close to the default network's but not the same. Needs ACO. Switching builds"
+                           "\nthe other network in a few seconds while the current one keeps running; no restart."
+                           "\nMade from the old model only, so it runs that one while it is on.");
+                // MochizukiDynamicResolution: exact, auto or always; anything else is auto, as the host sends it.
+                const std::string dynamicResolution = config->MochizukiDynamicResolution.value_or_default();
+                int drs = dynamicResolution == "exact" ? 1 : dynamicResolution == "always" ? 2 : 0;
+                if (ImGui::Combo("Dynamic resolution", &drs, "Auto\0Exact\0Always\0"))
+                    config->MochizukiDynamicResolution = drs == 1 ? "exact" : drs == 2 ? "always" : "auto";
+                HelpMarker("For games that change their render resolution as they run. Auto: once it drops"
+                           "\nbelow the game's colour buffer, one network, built for the largest resolution"
+                           "\nseen, serves every frame, which moves inside it; the network then costs that"
+                           "\nlargest resolution's time. Exact: the network is rebuilt for each resolution, a"
+                           "\nsecond or two without NR every time. Always: as Auto from the first frame, also"
+                           "\nwhen the game makes its buffers again at another size.");
+                bool networkOnly = !config->MochizukiApplyModel.value_or_default();
+                if (ImGui::Checkbox("Network only (no effect)", &networkOnly))
+                    config->MochizukiApplyModel = !networkOnly;
+                HelpMarker("Runs the network at its full cost but shows the frame as the game drew it, to"
+                           "\nmeasure the cost or compare with and without the effect.");
+            }
+            if (auto section = ScopedCollapsingHeader("Info##mzsection"); section.IsHeaderOpen())
+            {
+                ScopedIndent indent {};
                 ImGui::TextWrapped("%s", DlssNr::AmdBridge::Status().c_str());
                 if (const auto runtimeStatus = DlssNr::AmdBridge::RuntimeStatus(); !runtimeStatus.empty())
                     ImGui::TextWrapped("%s", runtimeStatus.c_str());
@@ -857,13 +871,18 @@ void RenderMenu(Config* config, float menuResScale)
                                     info.gpu_ms_p95);
                     if (info.build_seconds > 0)
                         ImGui::Text("Last network build %.1f s", info.build_seconds);
-                    if (temporal && info.frames)
+                    if (temporalSet && info.frames)
                         ImGui::Text("History used on %u%% of recent frames", info.history_consumed_pct);
                     if (info.struct_size >= offsetof(MochizukiNrInfo, preprocess_ev) + sizeof info.preprocess_ev &&
                         std::isfinite(info.preprocess_ev))
                         ImGui::Text("Preprocess auto exposure %+.2f EV", info.preprocess_ev);
-                    if (info.struct_size >= offsetof(MochizukiNrInfo, white_point) + sizeof info.white_point)
-                        ImGui::Text("White point %.3f", info.white_point);
+                    // A runtime from before the stage was always on runs the network on its own, which the
+                    // settings above no longer reach.
+                    if (info.model_w && !(info.struct_size >= offsetof(MochizukiNrInfo, renodx_effective) +
+                                                                  sizeof info.renodx_effective &&
+                                          info.renodx_effective))
+                        ImGui::TextColored(warning, "This MochizukiNrRuntime.dll runs the network outside the RenoDX"
+                                                    "\nstage, so the settings above do not reach it: update it.");
                     if (info.motion_refused_dxgi)
                         ImGui::TextColored(warning,
                                            "The game's motion vectors (DXGI format %u) are not supported: running"
@@ -874,7 +893,6 @@ void RenderMenu(Config* config, float menuResScale)
                 }
                 ImGui::TextWrapped("Runs before Super Resolution only. The first start builds the network in about"
                                    " half a minute; later starts take a second or two.");
-                ImGui::TreePop();
             }
             return;
         }

@@ -86,11 +86,8 @@ float MzSetting(float v, float lo, float hi, float def) { return std::isfinite(v
 // What mochizuki takes with each frame in LmxxfNrFrameInfo.
 struct MochizukiFrameSettings
 {
-    float detail;
-    float colour;
-    float scale;
     uint32_t passes;
-    uint32_t flags; // LMXXF_NR_FRAME_FLAG_INT4
+    uint32_t flags; // LMXXF_NR_FRAME_FLAG_INT4, ORIGINAL_MODEL, ...
 };
 
 // From mochizuki's own keys only: never the danielblnc, lmxxf or NVIDIA ones, nor AmdNrScale with AmdDynamicScale's
@@ -98,36 +95,27 @@ struct MochizukiFrameSettings
 MochizukiFrameSettings MochizukiFrame(const Config& cfg)
 {
     MochizukiFrameSettings s {};
-    s.detail = MzSetting(cfg.MochizukiDetailStrength.value_or_default(), 0.f, 2.f, 1.f);
-    s.colour = MzSetting(cfg.MochizukiColourStrength.value_or_default(), 0.f, 4.f, 0.f);
-    s.scale = MzSetting(cfg.MochizukiModelScale.value_or_default(), .25f, 1.f, 1.f);
-    s.passes = std::clamp(cfg.MochizukiPasses.value_or_default(), 1u, 3u);
+    s.passes = std::clamp(cfg.MochizukiRenoPasses.value_or_default(), 1u,
+                          cfg.MochizukiRenoUnlockPasses.value_or_default() ? 30u : 4u);
     // int4 mixed runs as ACO's machine code only: without ACO the runtime would build the default network anyway.
     const bool int4 = cfg.MochizukiInt4.value_or_default() && cfg.MochizukiAco.value_or_default();
-    s.flags = (int4 ? LMXXF_NR_FRAME_FLAG_INT4 : 0) |
+    // int4 mixed is made from the 310.8 model only.
+    const bool original = int4 || cfg.MochizukiOriginalModel.value_or_default();
+    // Cascade detail, anti-halo and the pass 3 estimate do nothing in the RenoDX stage; they go as before.
+    s.flags = (int4 ? LMXXF_NR_FRAME_FLAG_INT4 : 0) | (original ? LMXXF_NR_FRAME_FLAG_ORIGINAL_MODEL : 0) |
               (cfg.MochizukiCascadeDetail.value_or_default() ? LMXXF_NR_FRAME_FLAG_CASCADE_DETAIL : 0) |
               (cfg.MochizukiAntiHalo.value_or_default() ? LMXXF_NR_FRAME_FLAG_ANTI_HALO : 0) |
               (cfg.MochizukiPassEstimate.value_or_default() ? LMXXF_NR_FRAME_FLAG_PASS3_ESTIMATE : 0);
     return s;
 }
 
-// mochizuki's model controls from its Mochizuki* keys, into c (the runtime's defaults, for the fields past these).
-// A later pass with none of its keys set is left unused, and inherits pass 1 with local tone 0; one with any set
-// takes the others from pass 1 the same way, so a single key changes only itself.
+// mochizuki's controls from its Mochizuki* keys, into c (the runtime's defaults, for every field not set here). The
+// network always runs in the RenoDX stage: the model, pass, resolution and composition controls are its reno_* ones,
+// and the native route's fields keep the runtime's defaults.
 void FillMochizukiControls(const Config& cfg, MochizukiNrControls& c)
 {
-    c.intensity = MzSetting(cfg.MochizukiIntensity.value_or_default(), 0.f, 2.f, 1.f);
-    c.style = std::min(cfg.MochizukiStyle.value_or_default(), 2u);
-    c.local_tone = MzSetting(cfg.MochizukiLocalTone.value_or_default(), 0.f, 2.f, 1.f);
-    c.local_structure = MzSetting(cfg.MochizukiLocalStructure.value_or_default(), 0.f, 2.f, 1.f);
-    c.skin_structure = MzSetting(cfg.MochizukiSkinStructure.value_or_default(), -1.f, 2.f, -1.f);
-    c.automatic_mask = cfg.MochizukiAutoMask.value_or_default() ? 1u : 0u;
-    c.max_ratio = MzSetting(cfg.MochizukiMaxRatio.value_or_default(), 1.f, 8.f, 2.f);
     c.history_strength = MzSetting(cfg.MochizukiHistoryStrength.value_or_default(), 0.f, 1.f, 1.f);
-    c.white_point = MzSetting(cfg.MochizukiWhitePoint.value_or_default(), .01f, 100.f, 1.f);
     c.apply_model = cfg.MochizukiApplyModel.value_or_default() ? 1u : 0u;
-    const uint32_t linear = cfg.MochizukiLinearInput.value_or_default();
-    c.linear_input = linear <= 2 ? linear : 0u;
     // Dynamic resolution: 0 exact, 1 auto (the key's default, and anything the key does not name), 2 always. The
     // runtime's own default is exact, for hosts that do not ask.
     const std::string drs = cfg.MochizukiDynamicResolution.value_or_default();
@@ -138,27 +126,21 @@ void FillMochizukiControls(const Config& cfg, MochizukiNrControls& c)
     c.preprocess_curve = std::min(cfg.MochizukiPreprocessCurve.value_or_default(), 6u);
     c.preprocess_contrast = MzSetting(cfg.MochizukiPreprocessContrast.value_or_default(), .5f, 2.f, 1.f);
     c.preprocess_saturation = MzSetting(cfg.MochizukiPreprocessSaturation.value_or_default(), .05f, 2.f, 1.f);
-    // Strength 0..1 in the menu: 1 holds a pixel to the first pass's range, 0 lets a quarter past it.
+    // Strength 0..1: 1 holds a pixel to the first pass's range, 0 lets a quarter past it (no effect in the stage).
     c.anti_halo_margin = .25f * (1.f - MzSetting(cfg.MochizukiAntiHaloStrength.value_or_default(), 0.f, 1.f, .8f));
-    const auto pass = [&c](MochizukiNrPassControls& p, const auto& style, const auto& intensity, const auto& tone,
-                           const auto& structure, const auto& skin, const auto& mask)
-    {
-        p.used = style.has_value() || intensity.has_value() || tone.has_value() || structure.has_value() ||
-                         skin.has_value() || mask.has_value()
-                     ? 1u
-                     : 0u;
-        p.style = style.has_value() ? std::min(style.value(), 2u) : c.style;
-        p.intensity = intensity.has_value() ? MzSetting(intensity.value(), 0.f, 2.f, c.intensity) : c.intensity;
-        p.local_tone = tone.has_value() ? MzSetting(tone.value(), 0.f, 2.f, 0.f) : 0.f;
-        p.local_structure =
-            structure.has_value() ? MzSetting(structure.value(), 0.f, 2.f, c.local_structure) : c.local_structure;
-        p.skin_structure = skin.has_value() ? MzSetting(skin.value(), -1.f, 2.f, c.skin_structure) : c.skin_structure;
-        p.automatic_mask = mask.has_value() ? (mask.value() ? 1u : 0u) : c.automatic_mask;
-    };
-    pass(c.pass[0], cfg.MochizukiPass2Style, cfg.MochizukiPass2Intensity, cfg.MochizukiPass2LocalTone,
-         cfg.MochizukiPass2LocalStructure, cfg.MochizukiPass2SkinStructure, cfg.MochizukiPass2AutoMask);
-    pass(c.pass[1], cfg.MochizukiPass3Style, cfg.MochizukiPass3Intensity, cfg.MochizukiPass3LocalTone,
-         cfg.MochizukiPass3LocalStructure, cfg.MochizukiPass3SkinStructure, cfg.MochizukiPass3AutoMask);
+    c.noise_every_frame = cfg.MochizukiNoiseEveryFrame.value_or_default() ? 1u : 0u;
+    c.renodx = 1u;
+    // RenoDX's NeuralUplift switch: Enable NR already turns the stage off, so it has no key of its own
+    c.reno_nr_enabled = 1u;
+#define MZR_F(name, def, lo, hi, group, label, member, help)                                                           \
+    c.member = MzSetting(cfg.name.value_or_default(), lo, hi, def);
+#define MZR_U(name, def, lo, hi, group, label, member, help)                                                           \
+    c.member = std::clamp(cfg.name.value_or_default(), uint32_t(lo), uint32_t(hi));
+#define MZR_B(name, def, lo, hi, group, label, member, help) c.member = cfg.name.value_or_default() ? 1u : 0u;
+#include "MochizukiRenoKeys.inc"
+#undef MZR_F
+#undef MZR_U
+#undef MZR_B
 }
 
 // The live mochizuki session's last MochizukiNrGetInfo, for the menu (LmxxfBackend::MochizukiInfo). The product
@@ -723,12 +705,13 @@ float ExposureTexel(const uint8_t* p, DXGI_FORMAT format)
 
 // The game's exposure as mochizuki takes it: what the frame's linear colour is multiplied by to be shown, the texel
 // times the exposure scale over the pre-exposure (as the danielblnc bridge hands it to its runtime). The texel is
-// read kExposureSlots - 1 frames late, which an auto exposure that eases over many frames does not notice. 0 when the
-// setting is off, the game hands no usable texture, or the ring is not full yet.
+// read kExposureSlots - 1 frames late, which an auto exposure that eases over many frames does not notice. It is the
+// RenoDX stage's feed (MochizukiRenoFeedMode decides whether the stage takes it). 0 when the game hands no usable
+// texture or the ring is not full yet.
 float LmxxfBackend::GameExposure(ID3D12GraphicsCommandList* cmd, const AmdPreSr::Frame& frame)
 {
     Api& a = *api;
-    if (!Config::Instance()->MochizukiGameExposure.value_or_default() || !frame.exposure)
+    if (!frame.exposure)
     {
         a.exposureFrames = 0;
         return 0.f;
@@ -824,10 +807,12 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
         ResetHistoryNow();
     bool previousPending = false;
     bool sameList = false;
+    ID3D12CommandList* pendingCmd = nullptr;
     {
         std::lock_guard lock(jobMutex);
         previousPending = pendingJobInfo.job != nullptr;
-        sameList = previousPending && pendingJobInfo.cmd == cmd;
+        pendingCmd = pendingJobInfo.cmd;
+        sameList = previousPending && pendingCmd == cmd;
     }
     if (sameList)
     {
@@ -926,11 +911,10 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
     }
     else
     {
-        // mochizuki's own keys; its network has no debug view, so debug_view stays 0.
+        // mochizuki's own keys; its network has no debug view, so debug_view stays 0. The RenoDX stage composes with
+        // its own strengths and scale: these fields keep the runtime's defaults.
         const MochizukiFrameSettings mz = MochizukiFrame(*Config::Instance());
-        fi.transfer_strength = mz.detail;
-        fi.color_strength = mz.colour;
-        fi.model_scale = mz.scale;
+        fi.transfer_strength = fi.color_strength = fi.model_scale = 1.0f;
         fi.passes = mz.passes;
         fi.flags |= mz.flags;
     }
@@ -941,12 +925,10 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
     const bool temporal = temporalOn && frame.motion;
     if (temporal)
     {
-        // mochizuki: the vectors with the jitter's step added (MochizukiJitterHistory) and a depth its runtime cannot
-        // copy read into R32F, both on this list (MochizukiGuides).
+        // mochizuki: the vectors with the jitter's step added (MochizukiJitterHistory), on this list
+        // (MochizukiGuides).
         ID3D12Resource* motion = frame.motion;
         D3D12_RESOURCE_STATES motionState = frame.motionState;
-        ID3D12Resource* depth = frame.depth;
-        D3D12_RESOURCE_STATES depthState = frame.depthState;
         if (!Lmxxf())
         {
             // The step from this frame's jitter to the last one's, in render pixels, as the stabilizer takes it; in
@@ -956,7 +938,7 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
                                (frame.jitterX != lastJitterX || frame.jitterY != lastJitterY) &&
                                frame.motionScaleX != 0.f && frame.motionScaleY != 0.f && frame.width && frame.height;
             float offsetX = 0.f, offsetY = 0.f;
-            if (shift)
+            if (shift && haveJitter)
             {
                 const float mw = float(frame.motionWidth ? frame.motionWidth : frame.width);
                 const float mh = float(frame.motionHeight ? frame.motionHeight : frame.height);
@@ -970,11 +952,13 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
             {
                 if (!guides)
                     guides = std::make_unique<MochizukiGuides>(device);
-                const MochizukiGuides::Out g = guides->Prepare(cmd, frame, shift, offsetX, offsetY);
+                // No depth reaches the guides or the runtime: the RenoDX stage's network reads the vectors at the
+                // pixel, so nothing is copied for it (MochizukiUseDepth is kept for a network outside the stage).
+                AmdPreSr::Frame in = frame;
+                in.depth = nullptr;
+                const MochizukiGuides::Out g = guides->Prepare(cmd, in, shift, offsetX, offsetY);
                 motion = g.motion;
                 motionState = g.motionState;
-                depth = g.depth;
-                depthState = g.depthState;
             }
             catch (const std::exception& e)
             {
@@ -991,12 +975,6 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
         fi.motion_scale_x = frame.motionScaleX;
         fi.motion_scale_y = frame.motionScaleY;
         fi.reset = frame.reset ? 1u : 0u;
-        if (!Lmxxf() && depth)
-        {
-            fi.depth = depth;
-            fi.depth_state = static_cast<uint32_t>(depthState);
-            fi.depth_inverted = frame.depthInverted ? 1u : 0u;
-        }
         fi.smooth_threshold =
             std::clamp(Config::Instance()->LmxxfSmoothThreshold.value_or_default(), 0.f, 255.f) / 255.f;
         fi.smooth_strength = std::clamp(Config::Instance()->LmxxfSmoothStrength.value_or_default(), 0.f, 1.f);
@@ -1213,10 +1191,8 @@ ID3D12Resource* LmxxfBackend::RecordDiagnostic(ID3D12GraphicsCommandList* cmd, c
                 }
                 else
                 {
-                    const MochizukiFrameSettings mz = MochizukiFrame(*Config::Instance());
-                    fi.transfer_strength = mz.detail;
-                    fi.color_strength = mz.colour;
-                    fi.flags |= mz.flags; // the same network as the frames around it
+                    fi.transfer_strength = fi.color_strength = 1.0f;
+                    fi.flags |= MochizukiFrame(*Config::Instance()).flags; // the same network as the frames around it
                 }
                 fi.model_scale = 1.0f;
 
