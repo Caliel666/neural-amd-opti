@@ -148,6 +148,8 @@ extern "C"
         uint32_t struct_size;
         void* handle;
         void* private_output; /* ID3D12Resource* for SR; null until PrepareFrame succeeds */
+        /* ID3D12Resource*, with LMXXF_NR_FRAME_FLAG_FIRST_PASS. A host without it sends the struct_size up to here. */
+        void* first_pass_output;
     } LmxxfNrJob;
 
     typedef struct LmxxfNrApi

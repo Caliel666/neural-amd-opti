@@ -327,6 +327,16 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="dlssnr\backend\DanielBackend.h" />
     <ClInclude Include="dlssnr\backend\LmxxfBackend.h" />
     <ClInclude Include="dlssnr\backend\LmxxfEvaluateCut.h" />
+    <ClInclude Include="dlssnr\person\FaceModel.h" />
+    <ClInclude Include="dlssnr\person\PersonCapture.h" />
+    <ClInclude Include="dlssnr\person\PersonDiagnostics.h" />
+    <ClInclude Include="dlssnr\person\PersonInference.h" />
+    <ClInclude Include="dlssnr\person\PersonIpc.h" />
+    <ClInclude Include="dlssnr\person\PersonModel.h" />
+    <ClInclude Include="dlssnr\person\PersonPartition.h" />
+    <ClInclude Include="dlssnr\person\PersonSettings.h" />
+    <ClInclude Include="dlssnr\person\PersonShader.h" />
+    <ClInclude Include="dlssnr\person\WorkerPolicy.h" />
     <ClInclude Include="dlssnr\submission\LogicalList.h" />
     <ClInclude Include="dlssnr\submission\CommandListProxy.h" />
     <ClInclude Include="dlssnr\submission\SubmissionHooks.h" />

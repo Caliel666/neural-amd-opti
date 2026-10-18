@@ -8,6 +8,7 @@
 #include "ResidualStabilizer.h"
 #include "DynamicScale.h"
 #include "PresentExperimental.h"
+#include "../person/PersonPartition.h"
 #include "../backend/DanielBackend.h"
 #include "../backend/LmxxfBackend.h"
 #include "../backend/Selector.h"
@@ -97,12 +98,19 @@ std::unique_ptr<AmdPreSr::ResidualStabilizer> stabilizer;
 uint64_t lastStabilizedSerial = 0;
 ULONGLONG lastStabilizedTick = 0;
 bool stabilizerFailed = false;
-// RenoDX's composition after the runtime and the stabilizer (pre-SR, every runtime), made with the backend; the last
-// Run it composed and when, for its divisor's rate limits. Used under frameMutex.
+// RenoDX's composition after the runtime and the stabilizer (pre-SR, danielblnc and lmxxf; mochizuki runs inside
+// upstream's RenoDX stage in its runtime), made with the backend; the last Run it composed and when, for its
+// divisor's rate limits. Used under frameMutex.
 std::unique_ptr<AmdPreSr::RenoComposition> composition;
 uint64_t lastComposedSerial = 0;
 ULONGLONG lastComposedTick = 0;
 bool compositionFailed = false;
+// Person protection (NrPersonPartition) between the runtime and the stabilizer, lmxxf and mochizuki before SR, made
+// with the backend; the last Run it composed and when. Record and Idle under frameMutex; Submitted on the submitting
+// thread.
+std::unique_ptr<DlssNr::Person::Partition> person;
+uint64_t lastPersonSerial = 0;
+ULONGLONG lastPersonTick = 0;
 
 thread_local uint64_t submitOrdinal = 0; // Monotonic per-thread submission counter.
 
@@ -194,6 +202,9 @@ void ExecuteBatch(ID3D12CommandQueue* q, UINT n, ID3D12CommandList* const* c)
     }
     else
         executeOriginal(q, n, c);
+    // Published before the backend: a capture person protection recorded on one of these lists reads back after this.
+    if (b && person)
+        person->Submitted(q, n, c);
     {
         std::lock_guard guard(observedMutex);
         if (observedLists.size() > 256)
@@ -650,6 +661,7 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
         // Before the backend is published: InvalidateHistory reaches the stabilizer through it.
         stabilizer = std::make_unique<AmdPreSr::ResidualStabilizer>(device);
         composition = std::make_unique<AmdPreSr::RenoComposition>(device);
+        person = std::make_unique<DlssNr::Person::Partition>(device);
         backend.store(b);
         neuralTimer = std::make_unique<GpuTime_Dx12>(device);
     }
@@ -945,9 +957,53 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
     // The original colour goes to SR.
     if (StandDownIfTripped())
         return true;
+    // Person protection (NrPersonPartition, from TheAutomatic/dlss-5-amd-project): lmxxf and mochizuki before SR. With
+    // more than one pass the runtime also hands over its first pass (mochizuki: the RenoDX stage's, in the frame's
+    // encoding); in single pass it does something only with Strength or DetailGain below 1, as theirs.
+    const auto personSettings =
+        DlssNr::Person::Settings { cfg.NrPersonStrength.value_or_default(), cfg.NrPersonDetailGain.value_or_default(),
+                                   cfg.NrPersonDebugMask.value_or_default() }
+            .Bounded();
+    const UINT personPasses = mochizuki ? std::clamp(cfg.MochizukiRenoPasses.value_or_default(), 1u,
+                                                     cfg.MochizukiRenoUnlockPasses.value_or_default() ? 30u : 4u)
+                                        : s.passes;
+    const bool personWanted = cfg.NrPersonPartition.value_or_default() && !afterUpscale &&
+                              active != DlssNr::Backend::Kind::Daniel &&
+                              (personPasses > 1 || personSettings.ChangesSinglePass());
+    const int personModel = std::clamp(cfg.NrPersonModel.value_or_default(), 0, 2);
+    const unsigned faceSize = DlssNr::Person::Face::BoundedSize(cfg.NrFaceInputSize.value_or_default());
+    {
+        // Another model or setting: the masks and the stabilizer's history of the old composite go.
+        static DlssNr::Person::Settings lastSettings;
+        static int lastModel = -1;
+        static unsigned lastFaceSize = 320;
+        if (!(lastSettings == personSettings) || lastModel != personModel || lastFaceSize != faceSize)
+        {
+            person->Invalidate();
+            stabilizer->Invalidate();
+        }
+        lastSettings = personSettings;
+        lastModel = personModel;
+        lastFaceSize = faceSize;
+    }
+    const bool personReady = DlssNr::Person::Prepare(personWanted, Directory(), personModel, faceSize);
+    s.firstPass = personWanted && personPasses > 1;
     if (neuralTimer)
         neuralTimer->Start(cmd);
     auto replacement = b->Record(cmd, f, s);
+    if (replacement && personWanted && personReady)
+    {
+        ID3D12Resource* first = personPasses > 1 ? b->FirstPass() : replacement;
+        const bool continuous = lastPersonSerial == runSerial - 1 && now - lastPersonTick < 250;
+        replacement = person->Record(cmd, f, first, replacement, jitteredMotion, continuous,
+                                     DlssNr::Person::Worker().Latest(), personSettings);
+        lastPersonSerial = runSerial;
+        lastPersonTick = now;
+        if (const auto report = person->DiagnosticReport(); !report.empty())
+            LOG_INFO("{}", report);
+    }
+    else
+        person->Idle();
     // lmxxf smooths inside its runtime and has no stabilizer key.
     float stabilizerStrength = 0, stabilizerThreshold = 2;
     if (mochizuki)
@@ -993,7 +1049,8 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
     }
     else
         stabilizer->Idle();
-    if (replacement && !afterUpscale && cfg.DlssNrRenoComposition.value_or_default() && !compositionFailed)
+    if (replacement && !afterUpscale && active != DlssNr::Backend::Kind::Mochizuki &&
+        cfg.DlssNrRenoComposition.value_or_default() && !compositionFailed)
     {
         // The divisor moves at a rate per second; a gap, a reset or the first frame takes this frame's estimate.
         const bool continuous = lastComposedSerial == runSerial - 1 && now - lastComposedTick < 250 && !f.reset;
@@ -1073,7 +1130,16 @@ void InvalidateHistory()
     {
         b->InvalidateHistory();
         stabilizer->Invalidate();
+        person->Invalidate();
     }
+}
+std::string PersonStatus()
+{
+    std::string text;
+    if (backend.load())
+        text = person->Status();
+    const std::string worker = DlssNr::Person::Worker().Status();
+    return text.empty() ? worker : text + " | " + worker;
 }
 void TraceContextRelease(unsigned int handle, bool after)
 {

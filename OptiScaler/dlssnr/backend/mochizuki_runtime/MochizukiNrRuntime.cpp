@@ -1387,6 +1387,7 @@ struct Job
     MotionPath motionPath = Uploaded;
     float motionScaleX = 0, motionScaleY = 0;
     bool reset = false;
+    bool firstPass = false;           // the first pass goes out too (LMXXF_NR_FRAME_FLAG_FIRST_PASS), PrepareFrame
     nr::Controls controls;            // the frame's, sanitised: validate() cannot refuse them
     float history = 1.f, white = 1.f; // set on the runtime before the frame is recorded
     nr::renodx::Settings reno;        // for a network in the RenoDX stage (ProductRuntime::reno), in place of controls
@@ -1410,6 +1411,7 @@ struct Geometry
     UINT motionWidth = 0, motionHeight = 0;
     bool bucketed = false; // the motion buffer is the allocation's, and a bucket-sized motion image is made too
     DXGI_FORMAT depthFormat = DXGI_FORMAT_UNKNOWN; // the game's depth, its buffers at (width, height)
+    bool firstPass = false;                        // LMXXF_NR_FRAME_FLAG_FIRST_PASS: pass 1's answer has buffers too
     bool operator==(const Geometry&) const = default;
 };
 
@@ -1422,10 +1424,61 @@ struct NetworkKey
     float scale = 1.f;
     uint32_t maxPasses = 1;
     bool linear = false;
-    bool prep = false;    // RuntimeConfig::preprocess
-    bool int4 = false;    // RuntimeConfig::int4_mixed (LMXXF_NR_FRAME_FLAG_INT4)
-    bool cascade = false; // RuntimeConfig::cascade_detail_only (LMXXF_NR_FRAME_FLAG_CASCADE_DETAIL), with passes
+    bool prep = false;      // RuntimeConfig::preprocess
+    bool int4 = false;      // RuntimeConfig::int4_mixed (LMXXF_NR_FRAME_FLAG_INT4)
+    bool cascade = false;   // RuntimeConfig::cascade_detail_only (LMXXF_NR_FRAME_FLAG_CASCADE_DETAIL), with passes
+    bool original = false;  // RuntimeConfig::network 0, the 310.8 model (LMXXF_NR_FRAME_FLAG_ORIGINAL_MODEL)
+    bool firstPass = false; // RuntimeConfig::first_pass_output (LMXXF_NR_FRAME_FLAG_FIRST_PASS), with passes
+    // MochizukiNrControls::renodx: the network runs inside the RenoDX stage (ProductRuntime::reno), at the stage's
+    // extent (renoWidth x renoHeight), one pass at a time, maxPasses being the stage's pass count. The source encoding
+    // and the linear unit decide the stage's units for its life.
+    bool renodx = false;
+    UINT renoWidth = 0, renoHeight = 0;
+    uint32_t sourceEncoding = 0;
+    float linearNits = 0.f;
     bool operator==(const NetworkKey&) const = default;
+};
+
+// A network and, with the RenoDX stage, the stage around it, whose images go with the network's: the stage and its 1x1
+// image of the game's exposure (RenoDX's feed), which each frame's recording clears to the value it was given.
+struct ProductRuntime : nr::Runtime
+{
+    std::unique_ptr<nr::renodx::Stage> reno;
+    uint32_t renoPasses = 0; // the stage's passes on the last frame: a pass past them drops its history
+    Image exposure;
+    // With NetworkKey::firstPass: the stage's pass 1 (StageFrame::first), RGBA32F at the frame's extent, as the
+    // core's first_pass_output() is; null where the stage cannot write it.
+    Image first;
+    VkDevice device {};
+    ProductRuntime(const nr::HostDevice& host, const nr::RuntimeConfig& config, const nr::TemporalConfig& temporal,
+                   const NetworkKey& key, Vulkan& vk)
+        : nr::Runtime(host, config, nr::ControlMaskConfig {}, temporal)
+    {
+        if (!key.renodx)
+            return;
+        nr::renodx::StageConfig sc;
+        sc.shaders = config.root + "/dlssnr-amd/shaders/renodx";
+        sc.width = key.width;
+        sc.height = key.height;
+        sc.nr_width = key.renoWidth;
+        sc.nr_height = key.renoHeight;
+        sc.frame_format = key.format;
+        sc.hdr_flag = key.linear;
+        sc.settings.source_encoding = key.sourceEncoding;
+        sc.settings.linear_unit_nits = key.linearNits;
+        if (key.firstPass)
+            sc.first_format = VK_FORMAT_R32G32B32A32_SFLOAT;
+        reno = std::make_unique<nr::renodx::Stage>(host, sc);
+        device = host.device;
+        exposure.Create(vk, VK_FORMAT_R32_SFLOAT, 1, 1);
+        if (key.firstPass && reno->exports_first())
+            first.Create(vk, VK_FORMAT_R32G32B32A32_SFLOAT, key.width, key.height);
+    }
+    ~ProductRuntime()
+    {
+        exposure.Release(device);
+        first.Release(device);
+    }
 };
 
 // Super Resolution's texture for a frame whose colour is `colour`: its extent and format, one mip, UAV.
@@ -1460,6 +1513,10 @@ struct FrameBuffers
     Image colourImage, motionImage, depthImage;
     Image motionScaled; // bucketed geometry with motion: the vectors laid over the subrect, at the bucket's extent
     ID3D12Resource* result {};
+    // Geometry::firstPass: the core's RGBA32F first pass, through a buffer of its own into an RGBA32F texture.
+    Footprint firstFootprint;
+    SharedBuffer firstOutput;
+    ID3D12Resource* firstResult {};
 
     void Release(VkDevice device)
     {
@@ -1733,6 +1790,10 @@ struct Session
     Image colourImage, motionImage, motionScaled, depthImage;
     std::atomic<uint32_t> depthRefused { 0 }; // the DXGI format of a depth the runtime cannot take, logged once
     ID3D12Resource* result {};                // what Super Resolution gets in place of the game's colour
+    // Geometry::firstPass: the core's first pass on its way out, and the texture person protection reads.
+    Footprint firstFootprint;
+    SharedBuffer firstOutput;
+    ID3D12Resource* firstResult {};
 
     // Dynamic resolution (DrsExtent), render thread only: the bucket, and what it has seen.
     struct Bucket
@@ -2505,7 +2566,12 @@ struct Session
         const UINT64 width = key.renodx ? key.renoWidth : key.width, height = key.renodx ? key.renoHeight : key.height;
         const UINT64 activations = UINT64(double(kModelPixelBytes * model(UINT(width)) * model(UINT(height))) * passes);
         const UINT64 scaled = key.scale < 1.f ? kScaledFramePixelBytes * key.width * key.height : 0;
-        return kNetworkFixedBytes + activations + scaled;
+        // The stage's own images, after TheAutomatic/dlss-5-amd-project's bound: its codec and look intermediates at
+        // the frame's extent, and the proxy, the answer and a history per pass at the network's.
+        const UINT64 reno =
+            key.renodx ? UINT64(key.width) * key.height * 128 + width * height * (64 + 48 * key.maxPasses) : 0;
+        const UINT64 first = key.firstPass ? UINT64(16) * key.width * key.height : 0; // the core's first_full
+        return kNetworkFixedBytes + activations + scaled + reno + first;
     }
 
     // What the network for `key` costs in VRAM: the estimate, or what building or releasing it measured when that was
@@ -2520,7 +2586,8 @@ struct Session
     static UINT64 FrameBytes(const Geometry& g)
     {
         const UINT64 scaled = g.bucketed ? MotionFormat(g.motionFormat).bytes : 0;
-        return (kFramePixelBytes + scaled + 2 * DepthFormat(g.depthFormat).bytes) * g.width * g.height;
+        const UINT64 first = g.firstPass ? 32 : 0; // its buffer and texture, RGBA32F
+        return (kFramePixelBytes + scaled + first + 2 * DepthFormat(g.depthFormat).bytes) * g.width * g.height;
     }
 
     // A network measured: `bytes` is what it took, or gave back, in this process's VRAM.
@@ -2628,6 +2695,17 @@ struct Session
                                               D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, nullptr,
                                               IID_PPV_ARGS(&b.result)),
               "output texture");
+        if (g.firstPass)
+        {
+            b.firstFootprint = Footprint(DXGI_FORMAT_R32G32B32A32_FLOAT, 16, g.width, g.height);
+            b.firstOutput.Create(device, vk, b.firstFootprint.bytes);
+            D3D12_RESOURCE_DESC fd = desc;
+            fd.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+            Check(device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &fd,
+                                                  D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, nullptr,
+                                                  IID_PPV_ARGS(&b.firstResult)),
+                  "first pass texture");
+        }
     }
 
     // The frames take b over (there is no geometry now); its passthrough is recorded when first used. Render thread.
@@ -2978,6 +3056,7 @@ struct Session
             // The new model goes back to the 310.8 one by itself when dlssnr-small.bin is missing, and logs it.
             config.network = key.original ? 0 : 1;
             config.cascade_detail_only = key.cascade;
+            config.first_pass_output = key.firstPass;
             // The linear path's frame is a proxy made with the soft knee, which the preprocess undoes first.
             config.preprocess_unknee = key.linear;
             // The RenoDX stage hands the network its own RGBA16F proxy at the stage's extent, one pass at a time, and
@@ -3525,6 +3604,113 @@ struct Session
         resetPending = true;
     }
 
+    // The frame through the RenoDX stage (TheAutomatic/dlss-5-amd-project's MochizukiNrRuntime): RenoDX encodes the
+    // frame into the network's proxy and composes each pass's answer back, the network running once per pass of its
+    // stack with that pass's own controls and history (feature pass + 1). In place, in the frame's image. Whether a
+    // pass used its history.
+    bool RecordReno(VkCommandBuffer c, nr::EngineFrame& frame)
+    {
+        const nr::renodx::Settings& rs = job.reno;
+        const uint32_t count = nr::renodx::stack_passes(rs);
+        for (uint32_t k = count; k < runtime->renoPasses; ++k)
+            runtime->release_feature(k + 1);
+        runtime->renoPasses = count;
+        runtime->reno->set(rs);
+        nr::renodx::StageFrame sf;
+        sf.colour = sf.output = frame.colour;
+        sf.reset = job.reset;
+        sf.after_upscale = false; // this runtime runs before Super Resolution only
+        sf.motion = frame.motion;
+        frame.motion_scale_x *= rs.mvec_scale_x;
+        frame.motion_scale_y *= rs.mvec_scale_y;
+        sf.motion_scale_x = frame.motion_scale_x;
+        sf.motion_scale_y = frame.motion_scale_y;
+        sf.preprocess = job.controls.preprocess;
+        if (job.firstPass)
+            sf.first = runtime->first.image;
+        // The game's exposure, cleared into the image by this recording, so a later value cannot reach a frame already
+        // recorded. Without one RenoDX meters the content itself.
+        sf.create_flags_known = job.renoExposure > 0.f;
+        if (sf.create_flags_known)
+        {
+            const VkImage image = runtime->exposure.image;
+            ImageBarrier(c, image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_ACCESS_TRANSFER_WRITE_BIT);
+            VkClearColorValue value {};
+            value.float32[0] = job.renoExposure;
+            const VkImageSubresourceRange range { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+            vkCmdClearColorImage(c, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &value, 1, &range);
+            ImageBarrier(c, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+            sf.exposure.image = image;
+            sf.exposure.format = VK_FORMAT_R32_SFLOAT;
+            sf.exposure.width = sf.exposure.height = 1;
+            sf.exposure.usage = kImageUsage;
+        }
+        uint32_t calls = 0;
+        bool consumed = false;
+        const nr::renodx::Stage::Network network =
+            [&](uint32_t pass, const nr::ColourFrame& proxy, const nr::ColourFrame& neural, bool reset)
+        {
+            // The game's depth is at the frame's extent, not the stage's: the history reads the vectors at the pixel.
+            nr::EngineFrame e = frame;
+            e.depth = {};
+            e.colour = proxy;
+            e.target = neural;
+            e.reset = reset;
+            e.feature = pass + 1;
+            nr::Controls ck = job.controls;
+            ck.preprocess = {};
+            ck.per_pass.clear();
+            ck.passes = 1;
+            ck.enabled = ck.apply_model = true;
+            ck.anti_halo = ck.pass3_estimate = false;
+            // Passes 2..4 have their own controls once "Same as pass 1" is off; later ones take pass 4's.
+            const uint32_t k = std::min(pass, 3u);
+            const bool own = k && !rs.pass_follow[k - 1];
+            ck.intensity = k ? rs.pass_intensity[k - 1] : rs.intensity;
+            ck.style = int(own ? rs.pass_style[k - 1] : rs.style);
+            ck.local_tone = own ? rs.pass_local_tone[k - 1] : rs.local_tone;
+            ck.local_structure = own ? rs.pass_local_structure[k - 1] : rs.local_structure;
+            ck.skin_structure = own ? rs.pass_skin_structure[k - 1] : rs.skin_structure;
+            ck.automatic_mask = own ? rs.pass_auto_mask[k - 1] : rs.auto_mask;
+            if (rs.skin_independent && ck.automatic_mask)
+            {
+                ck.local_structure = std::min(ck.local_structure, 1.f);
+                if (ck.skin_structure < 0.f)
+                    ck.skin_structure = 1.f;
+            }
+            if (frame.motion.image)
+            {
+                const nr::EngineResult r = runtime->record_engine(c, e, ck);
+                calls += r.frame.network_dispatches;
+                consumed |= r.history_consumed;
+                return;
+            }
+            // No vectors (temporal history off, a menu, a cut): the network without a history, in place on a copy of
+            // the proxy, as record_engine would write its answer.
+            VkMemoryBarrier mb { VK_STRUCTURE_TYPE_MEMORY_BARRIER };
+            mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            mb.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+            vkCmdPipelineBarrier(c, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &mb, 0,
+                                 nullptr, 0, nullptr);
+            VkImageCopy region {};
+            region.srcSubresource = region.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+            region.extent = { proxy.width, proxy.height, 1 };
+            vkCmdCopyImage(c, proxy.image, VK_IMAGE_LAYOUT_GENERAL, neural.image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+            mb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT;
+            vkCmdPipelineBarrier(c, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &mb, 0,
+                                 nullptr, 0, nullptr);
+            calls += runtime->record(c, neural, ck, reset).network_dispatches;
+        };
+        runtime->reno->record(c, sf, network);
+        dispatches.store(calls, std::memory_order_relaxed);
+        return consumed;
+    }
+
     void RunNetwork(ID3D12CommandQueue* producer, uint64_t call, Submission& sub)
     {
         if (!runtime)
@@ -3727,9 +3913,37 @@ struct Session
         ImageBarrier(c, colour.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                      VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                      VK_ACCESS_TRANSFER_READ_BIT);
-        VkBufferImageCopy out = colourFootprint.vk;
-        out.imageExtent = { w, h, 1 };
-        vkCmdCopyImageToBuffer(c, colour.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, output.buffer, 1, &out);
+        // The RenoDX stage writes the frame in place whatever apply_model says: without the model the frame goes out
+        // as it came, from the upload buffer.
+        if (runtime->reno && !job.controls.apply_model)
+        {
+            const VkBufferCopy whole { 0, 0, colourFootprint.bytes };
+            vkCmdCopyBuffer(c, input.buffer, output.buffer, 1, &whole);
+        }
+        else
+        {
+            VkBufferImageCopy out = colourFootprint.vk;
+            out.imageExtent = { w, h, 1 };
+            vkCmdCopyImageToBuffer(c, colour.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, output.buffer, 1, &out);
+        }
+        // Person protection's first pass, when the core or the RenoDX stage wrote it (in GENERAL). The barrier after
+        // the copy keeps the next frame's write behind it.
+        if (job.firstPass && firstOutput.buffer)
+        {
+            const VkImage first = runtime->reno ? runtime->first.image : runtime->first_pass_output();
+            if (first && (runtime->reno ? runtime->reno->first_written() : runtime->first_pass_written()))
+            {
+                ImageBarrier(c, first, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+                             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_WRITE_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+                VkBufferImageCopy fc = firstFootprint.vk;
+                fc.imageExtent = { w, h, 1 };
+                vkCmdCopyImageToBuffer(c, first, VK_IMAGE_LAYOUT_GENERAL, firstOutput.buffer, 1, &fc);
+                ImageBarrier(c, first, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_ACCESS_SHADER_WRITE_BIT);
+            }
+        }
         VkCheck(vkEndCommandBuffer(c), "vkEndCommandBuffer");
 
         // The producer half is already on the game queue: after Follow, its signal releases our submit, ours releases
@@ -3957,10 +4171,15 @@ int32_t PrepareSession(void* context)
 int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* job)
 {
     auto* s = static_cast<Session*>(context);
-    if (!s || !info || !job || job->struct_size != sizeof(LmxxfNrJob) || info->struct_size < 64)
+    // A host from before LMXXF_NR_FRAME_FLAG_FIRST_PASS sends the job without first_pass_output.
+    const bool fullJob = job && job->struct_size == sizeof(LmxxfNrJob);
+    if (!s || !info || !job || (!fullJob && job->struct_size != offsetof(LmxxfNrJob, first_pass_output)) ||
+        info->struct_size < 64)
         return Fail(LMXXF_NR_INVALID_ARGUMENT, "PrepareFrame: bad arguments");
     job->handle = nullptr;
     job->private_output = nullptr;
+    if (fullJob)
+        job->first_pass_output = nullptr;
     return Guard(
         s,
         [&]
@@ -4106,7 +4325,27 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
             const bool int4 = (info->flags & LMXXF_NR_FRAME_FLAG_INT4) != 0;
             // One pass has no later pass to change: the flag alone does not rebuild its network.
             const bool cascade = (info->flags & LMXXF_NR_FRAME_FLAG_CASCADE_DETAIL) != 0 && maxPasses > 1;
-            const NetworkKey key { g.width, g.height, cf.vk, scale, maxPasses, linear, s->prepWanted, int4, cascade };
+            const bool original = (info->flags & LMXXF_NR_FRAME_FLAG_ORIGINAL_MODEL) != 0;
+            // Person protection's first pass: its own buffers and a network that keeps it, with two or more passes
+            // (the RenoDX stage's: its pass 1, StageFrame::first).
+            const bool firstPass =
+                fullJob && (info->flags & LMXXF_NR_FRAME_FLAG_FIRST_PASS) && (renodx ? passes : maxPasses) > 1;
+            g.firstPass = firstPass;
+            NetworkKey key { g.width,       g.height, cf.vk,   scale,    maxPasses, linear,
+                             s->prepWanted, int4,     cascade, original, firstPass };
+            // The RenoDX stage: its own extent, pass count, preprocess and units; the model scale and the pass extras
+            // are the native route's.
+            if (renodx)
+            {
+                key.renodx = true;
+                nr::renodx::working_resolution(reno, g.width, g.height, motionW, motionH, &key.renoWidth,
+                                               &key.renoHeight);
+                key.sourceEncoding = reno.source_encoding;
+                key.linearNits = reno.linear_unit_nits;
+                key.maxPasses = nr::renodx::stack_passes(reno);
+                key.scale = 1.f;
+                key.prep = key.cascade = false;
+            }
             std::string why;
             if (!s->EnsureNetwork(key, g, colour, why))
                 return Fail(LMXXF_NR_UNAVAILABLE, why.c_str());
@@ -4212,6 +4451,16 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
                 job->handle = JobHandle(++s->jobGen);
             }
             job->private_output = s->result;
+            // Only where the core writes it this frame (the network running now keeps it, more than one pass, no
+            // preprocess, the model applied), or the RenoDX stage does (it can, and the model is applied); else the
+            // host composes without it.
+            const bool written =
+                s->net.renodx ? s->runtime && s->runtime->first.image : !s->job.controls.preprocess.active();
+            if (firstPass && s->net.firstPass && served > 1 && written && s->job.controls.apply_model && s->firstResult)
+            {
+                job->first_pass_output = s->firstResult;
+                s->job.firstPass = true;
+            }
             SetError("");
             return int32_t(LMXXF_NR_OK);
         });
@@ -4310,6 +4559,21 @@ int32_t RecordOutputs(void* context, void* job, void* command_list)
             c->CopyTextureRegion(&dst, 0, 0, 0, &src, whole ? nullptr : &box);
             Transition(c, s->result, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
             Transition(c, s->output.resource, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
+            if (j.firstPass && s->firstResult)
+            {
+                Transition(c, s->firstOutput.resource, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE);
+                Transition(c, s->firstResult, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                           D3D12_RESOURCE_STATE_COPY_DEST);
+                D3D12_TEXTURE_COPY_LOCATION fdst { s->firstResult, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, {} };
+                D3D12_TEXTURE_COPY_LOCATION fsrc { s->firstOutput.resource,
+                                                   D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+                                                   {} };
+                fsrc.PlacedFootprint = s->firstFootprint.d3d;
+                c->CopyTextureRegion(&fdst, 0, 0, 0, &fsrc, whole ? nullptr : &box);
+                Transition(c, s->firstResult, D3D12_RESOURCE_STATE_COPY_DEST,
+                           D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                Transition(c, s->firstOutput.resource, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
+            }
             if (j.state == LMXXF_NR_JOB_PRODUCER_SUBMITTED)
                 j.state = LMXXF_NR_JOB_CONSUMER_COMPLETE;
             return int32_t(LMXXF_NR_OK);

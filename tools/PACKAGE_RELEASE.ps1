@@ -379,6 +379,14 @@ RenoGuard=2
 RenoColour=1
 RenoChromaClamp=1
 RenoPedestal=false
+; Person protection, lmxxf and mochizuki: people keep the first pass with 2+ passes; needs person-model\ (installer).
+; Model 0 PP-HumanSeg, 1 YOLO11n-seg, 2 YuNet (faces, input 320/384/416/448); strength and detail 0-1.
+NrPersonPartition=false
+NrPersonModel=0
+NrFaceInputSize=320
+NrPersonStrength=1
+NrPersonDetailGain=1
+NrPersonDebugMask=false
 Passes=1
 LocalTone=0
 LocalStructure=1

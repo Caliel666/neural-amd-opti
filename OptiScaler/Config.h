@@ -320,6 +320,17 @@ class Config
     CustomOptional<float> DlssNrRenoColour { 1.0f };
     CustomOptional<float> DlssNrRenoChromaClamp { 1.0f };
     CustomOptional<bool> DlssNrRenoPedestal { false };
+    // Person protection (NrPersonPartition, from TheAutomatic/dlss-5-amd-project), lmxxf and mochizuki before SR, off
+    // by default: a person mask from person-worker.exe (person-model\ beside the DLL's folder) keeps the first pass's
+    // answer on people when two or more passes run, the last one elsewhere. Strength and DetailGain (0-1) scale the
+    // person's correction and its fine detail; below 1 they apply in single pass too. Model: 0 PP-HumanSeg, 1
+    // YOLO11n-seg, 2 YuNet (faces only; FaceInputSize 320, 384, 416 or 448). DebugMask tints the mask and logs it.
+    CustomOptional<bool> NrPersonPartition { false };
+    CustomOptional<int> NrPersonModel { 0 };
+    CustomOptional<int> NrFaceInputSize { 320 };
+    CustomOptional<float> NrPersonStrength { 1.0f };
+    CustomOptional<float> NrPersonDetailGain { 1.0f };
+    CustomOptional<bool> NrPersonDebugMask { false };
     // The runtime's arithmetic: 0 fast (its default, about 13% faster on RX 9000), 1 quality
     // (NVIDIA's reference arithmetic). danielblnc 0.4.2 and later.
     CustomOptional<int> AmdQuality { 0 };

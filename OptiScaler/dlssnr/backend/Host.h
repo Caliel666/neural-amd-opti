@@ -21,6 +21,9 @@ class Host
     virtual void OnProcessExit() { Shutdown(); }
     virtual void InvalidateHistory() = 0;
     virtual std::string Status() const = 0;
+    // The first pass's answer of the last Record that asked for it (Settings::firstPass), readable as its result is;
+    // null when the runtime gave none.
+    virtual ID3D12Resource* FirstPass() const { return nullptr; }
     // The runtime's own status line (network time, build state), or empty when the host has none.
     virtual std::string RuntimeStatus() const { return {}; }
     virtual bool GraphicsRestartNeeded(UINT activePasses) const = 0;

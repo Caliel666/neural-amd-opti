@@ -83,7 +83,8 @@ std::filesystem::path ResolveModulesDir(const std::filesystem::path& directory)
 // runtime sanitises again; doing it here keeps what the log shows equal to what runs.
 float MzSetting(float v, float lo, float hi, float def) { return std::isfinite(v) ? std::clamp(v, lo, hi) : def; }
 
-// What mochizuki takes with each frame in LmxxfNrFrameInfo.
+// What mochizuki takes with each frame in LmxxfNrFrameInfo: the RenoDX stage's pass count (which the runtime takes
+// from the stage's settings; here for person protection's first pass) and the network's flags.
 struct MochizukiFrameSettings
 {
     uint32_t passes;
@@ -789,6 +790,7 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
                                      const AmdPreSr::Settings& settings)
 {
     std::lock_guard recordLock(recordMutex);
+    firstPass = nullptr;
     if (exiting.load(std::memory_order_acquire))
         return nullptr;
     // A queue change seen by Submitted is acted on here, where no other Record can be inside the session.
@@ -982,9 +984,24 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
             fi.flags |= LMXXF_NR_FRAME_FLAG_SMOOTH_RESIDUAL;
     }
 
+    // Person protection's first pass. A runtime from before it refuses the flag; the frame then goes again without.
+    const bool wantFirst = settings.firstPass && fi.passes > 1 && !firstPassRefused;
+    if (wantFirst)
+        fi.flags |= LMXXF_NR_FRAME_FLAG_FIRST_PASS;
     LmxxfNrJob job {};
-    job.struct_size = sizeof(job);
-    const int32_t frameRc = api->table.PrepareFrame(session, &fi, &job);
+    job.struct_size = wantFirst ? uint32_t(sizeof(job)) : uint32_t(offsetof(LmxxfNrJob, first_pass_output));
+    int32_t frameRc = api->table.PrepareFrame(session, &fi, &job);
+    if (wantFirst && frameRc == LMXXF_NR_INVALID_ARGUMENT)
+    {
+        firstPassRefused = true;
+        LOG_WARN("{}: the runtime gives no first pass (older than this OptiScaler); person protection stays off with "
+                 "more than one pass",
+                 Lmxxf() ? "lmxxf" : "mochizuki");
+        fi.flags &= ~LMXXF_NR_FRAME_FLAG_FIRST_PASS;
+        job = {};
+        job.struct_size = uint32_t(offsetof(LmxxfNrJob, first_pass_output));
+        frameRc = api->table.PrepareFrame(session, &fi, &job);
+    }
     if (frameRc == LMXXF_NR_UNAVAILABLE && !Lmxxf())
     {
         // Building its network, or declining this frame; the reason goes to the menu, the details to its own log.
@@ -1075,6 +1092,8 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
     if (ownLists)
         return RecordProducer(cmd, job.handle, job.private_output);
     ID3D12Resource* result = FinishRecord(cmd, job.handle, job.private_output);
+    if (result && wantFirst)
+        firstPass = static_cast<ID3D12Resource*>(job.first_pass_output);
     static uint64_t recordEvalCount = 0;
     const auto rEval = ++recordEvalCount;
     auto& p = LmxxfCut::Pending();
@@ -1197,7 +1216,7 @@ ID3D12Resource* LmxxfBackend::RecordDiagnostic(ID3D12GraphicsCommandList* cmd, c
                 fi.model_scale = 1.0f;
 
                 LmxxfNrJob job {};
-                job.struct_size = sizeof(job);
+                job.struct_size = uint32_t(offsetof(LmxxfNrJob, first_pass_output));
                 const int32_t frameRc = api->table.PrepareFrame(session, &fi, &job);
                 if (frameRc != LMXXF_NR_OK || !job.handle || !job.private_output)
                 {

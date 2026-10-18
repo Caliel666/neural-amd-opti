@@ -22,6 +22,8 @@ bool After(ID3D12GraphicsCommandList*, NVSDK_NGX_Parameter*, ID3D12CommandQueue*
 void Restore(NVSDK_NGX_Parameter*);
 bool HasReplacement(NVSDK_NGX_Parameter*);
 void InvalidateHistory();
+// Person protection's state and its worker's (model loaded, CPU time of the last mask), for the menu.
+std::string PersonStatus();
 void TraceContextRelease(unsigned int handle, bool after);
 std::string Status();
 // When the stall watch (StallWatch.h) tripped: NR goes off for this session (the INI keeps it), the note below says

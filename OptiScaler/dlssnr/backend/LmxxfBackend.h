@@ -106,6 +106,7 @@ class LmxxfBackend final : public Host
     void InvalidateHistory() override;
     std::string Status() const override;
     std::string RuntimeStatus() const override;
+    ID3D12Resource* FirstPass() const override { return firstPass; }
     bool GraphicsRestartNeeded(UINT activePasses) const override;
     // What mochizuki's MochizukiNrGetInfo said when the render thread last asked (at most every 500 ms, with the
     // runtime status), for the menu. False while no mochizuki session runs. Never waits on a frame being recorded.

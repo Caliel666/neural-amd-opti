@@ -5,6 +5,8 @@
 #include "backend/Selector.h"
 #include "backend/LmxxfBackend.h"
 #include "backend/mochizuki_runtime/MochizukiNrControls.h"
+#include "person/PersonSettings.h"
+#include "person/FaceModel.h"
 #include "DlssNrFeature_Vk.h"
 
 #include "DlssNr.h"
@@ -220,6 +222,158 @@ static void RenoCompositionControls(Config* config, bool withIntensity = true)
     ImGui::EndDisabled();
 }
 
+// Person protection (NrPersonPartition, person/), drawn in the lmxxf and mochizuki pages: passes are the page's.
+static void PersonProtectionControls(Config* config, UINT passes)
+{
+    bool on = config->NrPersonPartition.value_or_default();
+    if (ImGui::Checkbox("Person protection", &on))
+    {
+        config->NrPersonPartition = on;
+        DlssNr::AmdBridge::InvalidateHistory();
+    }
+    HelpMarker("Experimental. Finds people in the frame on the CPU, in a process of its own, and with two or more"
+               "\npasses keeps the first pass's result on them; the rest of the frame takes every pass. With one pass"
+               "\nonly the strength and detail below act. Needs the person-model folder beside OptiScaler (models"
+               "\nand ONNX Runtime). Where the mask is missing, late or the game's motion and depth are unusable, the"
+               "\nframe keeps NR as it is. Off by default.");
+    if (!on)
+        return;
+    int model = std::clamp(config->NrPersonModel.value_or_default(), 0, 2);
+    if (ImGui::Combo("Person model", &model, "PP-HumanSeg\0YOLO11n-seg\0YuNet (faces only)\0"))
+    {
+        config->NrPersonModel = model;
+        DlssNr::AmdBridge::InvalidateHistory();
+    }
+    HelpMarker("Only the chosen model runs. PP-HumanSeg (default) and YOLO11n-seg cover the whole body; YuNet"
+               "\nkeeps a soft oval on each face it finds, so hair and clothes take every pass. Small, turned or"
+               "\nhidden faces can be missed. CPU time per mask, measured on an 8-core desktop CPU: about 6 ms,"
+               "\n40 ms and 2 ms. A change restarts the model.");
+    if (model == 2)
+    {
+        const unsigned size = DlssNr::Person::Face::BoundedSize(config->NrFaceInputSize.value_or_default());
+        int choice = size == 384 ? 1 : size == 416 ? 2 : size == 448 ? 3 : 0;
+        static const char* sizes[] = { "320", "384", "416", "448" };
+        if (ImGui::Combo("Face input size", &choice, sizes, 4))
+        {
+            config->NrFaceInputSize = choice == 1 ? 384 : choice == 2 ? 416 : choice == 3 ? 448 : 320;
+            DlssNr::AmdBridge::InvalidateHistory();
+        }
+        HelpMarker("The size YuNet sees the whole frame at. Larger finds smaller faces and costs more CPU time."
+                   "\n320 by default.");
+    }
+    const auto bounded = DlssNr::Person::Settings { config->NrPersonStrength.value_or_default(),
+                                                    config->NrPersonDetailGain.value_or_default(),
+                                                    config->NrPersonDebugMask.value_or_default() }
+                             .Bounded();
+    float strength = bounded.strength, detail = bounded.detail;
+    if (ImGui::SliderFloat("Person strength", &strength, 0.0f, 1.0f, "%.2f"))
+        config->NrPersonStrength = strength;
+    HelpMarker("How much of NR's change reaches the people in the mask: 1 the pass they keep, 0 the game's own"
+               "\npicture there. Before the stabilizer and RenoDX's composition, which still act on the result.");
+    if (ImGui::SliderFloat("Person detail", &detail, 0.0f, 1.0f, "%.2f"))
+        config->NrPersonDetailGain = detail;
+    HelpMarker("Lowers only the fine detail NR adds to people; its broader light and colour stay. 1 leaves it."
+               "\nThe whole person mask, not skin or faces.");
+    bool overlay = bounded.debugMask;
+    if (ImGui::Checkbox("Show person mask", &overlay))
+        config->NrPersonDebugMask = overlay;
+    HelpMarker("Tints the mask green, to see what is found and how it follows motion. While on, the log gets a"
+               "\nline about the masks every two seconds.");
+    if (passes < 2 && strength == 1.f && detail == 1.f && !overlay)
+        ImGui::TextWrapped("One pass: lower the strength or the detail for the protection to do anything.");
+    if (const auto status = DlssNr::AmdBridge::PersonStatus(); !status.empty())
+        ImGui::TextDisabled("%s", status.c_str());
+}
+
+// mochizuki's RenoDX stage (backend/MochizukiRenoKeys.inc): RenoDX's own settings, drawn a group at a time where the
+// page puts them. Passes, resolution and encoding rebuild the network, so they commit when the control is released;
+// the rest apply on the next frame.
+static bool RenoChoice(std::string_view key, const char* label, int* v, int lo, int hi)
+{
+    if (key.ends_with("Style"))
+        return ImGui::Combo(label, v, "Standard\0Natural\0Cinematic\0");
+    static const std::pair<std::string_view, const char*> combos[] = {
+        { "MochizukiRenoTransferMode", "Bounded ratio\0Consistent\0" },
+        { "MochizukiRenoDetailStability", "Auto\0Off\0Always\0" },
+        { "MochizukiRenoLookUpsample", "Auto\0Edge-aware\0Classic\0Area input\0" },
+        { "MochizukiRenoLookStabilize", "Off\0Static\0Motion\0" },
+        { "MochizukiRenoSdrBlackRestore", "Auto\0Every block\0Smooth\0" },
+        { "MochizukiRenoDisplayPedestal", "Auto\0Always\0Smooth\0" },
+        { "MochizukiRenoCodecMode", "Classic\0Anchored\0Auto\0Display\0" },
+        { "MochizukiRenoSourceEncoding", "From the format\0SDR\0Linear\0PQ\0" },
+        { "MochizukiRenoFeedMode", "Auto\0Content meter\0Game exposure\0" },
+        { "MochizukiRenoNormGovernor", "Off\0Slew\0Stable\0" },
+    };
+    for (const auto& [name, items] : combos)
+        if (key == name)
+            return ImGui::Combo(label, v, items);
+    // The pass count: released, not dragged, since every count rebuilds the network.
+    static std::unordered_map<ImGuiID, int> editing;
+    const ImGuiID id = ImGui::GetID(label);
+    int shown = editing.contains(id) ? editing[id] : *v;
+    ImGui::SliderInt(label, &shown, lo, hi);
+    if (ImGui::IsItemActive())
+        editing[id] = shown;
+    if (!ImGui::IsItemDeactivatedAfterEdit())
+        return false;
+    editing.erase(id);
+    *v = shown;
+    return true;
+}
+
+// The settings of one MochizukiRenoKeys.inc group, or the key `only` alone; `skip` leaves one key out.
+static void MochizukiRenoGroup(Config* config, int wanted, std::string_view only = {}, std::string_view skip = {})
+{
+    const bool unlock = config->MochizukiRenoUnlockPasses.value_or_default();
+    const auto shown = [&](std::string_view key, int group)
+    { return only.empty() ? group == wanted && key != skip : key == only; };
+    const auto rebuilds = [](std::string_view key)
+    { return key == "MochizukiRenoResolutionScale" || key == "MochizukiRenoLinearUnitNits"; };
+#define MZR_F(name, def, lo, hi, group, label, member, help)                                                           \
+    if (shown(#name, group))                                                                                           \
+    {                                                                                                                  \
+        if (rebuilds(#name))                                                                                           \
+            DeferredSlider(label, &config->name, lo, hi, def);                                                         \
+        else if (float v = config->name.value_or_default(); ImGui::SliderFloat(label, &v, lo, hi, "%.2f"))             \
+            config->name = v;                                                                                          \
+        HelpMarker(help);                                                                                              \
+    }
+#define MZR_U(name, def, lo, hi, group, label, member, help)                                                           \
+    if (shown(#name, group))                                                                                           \
+    {                                                                                                                  \
+        int v = int(std::min(config->name.value_or_default(), uint32_t(hi)));                                          \
+        const int top = std::string_view(#name) == "MochizukiRenoPasses" && !unlock ? 4 : hi;                          \
+        if (RenoChoice(#name, label, &v, lo, top))                                                                     \
+            config->name = uint32_t(std::clamp(v, int(lo), top));                                                      \
+        HelpMarker(help);                                                                                              \
+    }
+#define MZR_B(name, def, lo, hi, group, label, member, help)                                                           \
+    if (shown(#name, group))                                                                                           \
+    {                                                                                                                  \
+        if (bool v = config->name.value_or_default(); ImGui::Checkbox(label, &v))                                      \
+            config->name = v;                                                                                          \
+        HelpMarker(help);                                                                                              \
+    }
+#include "backend/MochizukiRenoKeys.inc"
+#undef MZR_F
+#undef MZR_U
+#undef MZR_B
+    // Locked again, the stack goes back to RenoDX's own four passes at most.
+    if (!config->MochizukiRenoUnlockPasses.value_or_default() && config->MochizukiRenoPasses.value_or_default() > 4)
+        config->MochizukiRenoPasses = 4u;
+}
+
+// A group in a tree node of its own, closed until opened.
+static void MochizukiRenoTree(Config* config, const char* title, int group, const char* note = nullptr)
+{
+    if (!ImGui::TreeNode(title))
+        return;
+    MochizukiRenoGroup(config, group);
+    if (note)
+        ImGui::TextWrapped("%s", note);
+    ImGui::TreePop();
+}
+
 // Back to the default: the key is unset, so Save Settings drops it from the INI.
 template <class... Option> static void Unset(Option&... opts)
 {
@@ -232,6 +386,12 @@ static void UnsetReno(Config* c)
           c->DlssNrRenoChromaClamp, c->DlssNrRenoPedestal);
 }
 
+static void UnsetPerson(Config* c)
+{
+    Unset(c->NrPersonPartition, c->NrPersonModel, c->NrFaceInputSize, c->NrPersonStrength, c->NrPersonDetailGain,
+          c->NrPersonDebugMask);
+}
+
 // Every control a runtime's page shows, except where NR runs (Enable, NR without upscaling, the placement before or
 // after SR and RR, the runtime choice), what the installer sets (AmdAsync), what needs a restart (MochizukiAco) and
 // the exposure anchors captured in this game.
@@ -241,24 +401,26 @@ static void ResetLmxxf(Config* c)
           c->LmxxfSmoothStrength, c->LmxxfSmoothThreshold, c->LmxxfSmoothResidual, c->LmxxfStyle, c->LmxxfVitReuse,
           c->LmxxfCompact1080, c->LmxxfPassEstimate, c->LmxxfSkinProtect);
     UnsetReno(c);
+    UnsetPerson(c);
 }
 
 static void ResetMochizuki(Config* c)
 {
     // The keys the page no longer shows (no effect in the RenoDX stage) go back to their defaults too.
     Unset(c->MochizukiHistoryStrength, c->MochizukiStabilizerStrength, c->MochizukiStabilizerThreshold,
-          c->MochizukiDetailStrength, c->MochizukiColourStrength, c->MochizukiPasses, c->MochizukiModelScale,
-          c->MochizukiIntensity, c->MochizukiStyle, c->MochizukiLocalTone, c->MochizukiLocalStructure,
-          c->MochizukiSkinStructure, c->MochizukiAutoMask, c->MochizukiInt4, c->MochizukiCascadeDetail,
-          c->MochizukiAntiHalo, c->MochizukiJitterHistory, c->MochizukiAntiHaloStrength, c->MochizukiPassEstimate,
-          c->MochizukiMaxRatio, c->MochizukiWhitePoint, c->MochizukiApplyModel, c->MochizukiLinearInput,
-          c->MochizukiGameExposure, c->MochizukiDynamicResolution, c->MochizukiPreprocess,
-          c->MochizukiPreprocessExposure, c->MochizukiPreprocessBias, c->MochizukiPreprocessCurve,
-          c->MochizukiPreprocessContrast, c->MochizukiPreprocessSaturation, c->MochizukiPass2Style,
-          c->MochizukiPass2Intensity, c->MochizukiPass2LocalTone, c->MochizukiPass2LocalStructure,
-          c->MochizukiPass2SkinStructure, c->MochizukiPass2AutoMask, c->MochizukiPass3Style, c->MochizukiPass3Intensity,
-          c->MochizukiPass3LocalTone, c->MochizukiPass3LocalStructure, c->MochizukiPass3SkinStructure,
-          c->MochizukiPass3AutoMask);
+          c->MochizukiInt4, c->MochizukiOriginalModel, c->MochizukiCascadeDetail, c->MochizukiAntiHalo,
+          c->MochizukiJitterHistory, c->MochizukiAntiHaloStrength, c->MochizukiPassEstimate, c->MochizukiApplyModel,
+          c->MochizukiUseDepth, c->MochizukiDynamicResolution, c->MochizukiPreprocess, c->MochizukiPreprocessExposure,
+          c->MochizukiPreprocessBias, c->MochizukiPreprocessCurve, c->MochizukiPreprocessContrast,
+          c->MochizukiPreprocessSaturation, c->MochizukiLayerMode, c->MochizukiNoiseEveryFrame);
+#define MZR_F(name, def, lo, hi, group, label, member, help) Unset(c->name);
+#define MZR_U MZR_F
+#define MZR_B MZR_F
+#include "backend/MochizukiRenoKeys.inc"
+#undef MZR_F
+#undef MZR_U
+#undef MZR_B
+    UnsetPerson(c);
     // Unset, it would fall back to LmxxfTemporal; its default is on.
     c->MochizukiTemporal = true;
 }
@@ -506,6 +668,9 @@ void RenderMenu(Config* config, float menuResScale)
             HelpMarker("How much of the model's colour change reaches the frame. Above 1 it is"
                        "\nexaggerated, up to twice its size at 2.");
             RenoCompositionControls(config);
+            // Async runs one pass whatever the slider says.
+            ImGui::SeparatorText("Person protection");
+            PersonProtectionControls(config, DlssNr::AmdBridge::AsyncSession() ? 1u : UINT(passes));
             ImGui::SeparatorText("Speed");
             bool vitReuse = config->LmxxfVitReuse.value_or_default();
             if (ImGui::Checkbox("Reuse on still scenes", &vitReuse))
@@ -774,30 +939,73 @@ void RenderMenu(Config* config, float menuResScale)
                     ImGui::TreePop();
                 }
             }
-
-            if (ImGui::TreeNode("Preprocess"))
+            if (auto section = ScopedCollapsingHeader("Person protection##mzsection"); section.IsHeaderOpen())
             {
-                bool prep = config->MochizukiPreprocess.value_or_default();
-                if (ImGui::Checkbox("Enable##prep", &prep))
-                    config->MochizukiPreprocess = prep;
-                HelpMarker("Changes the picture the network is shown (exposure, display curve, contrast,"
-                           "\nsaturation) and takes every change back out of its answer, so it changes how"
-                           "\nthe network edits the frame, not the frame itself."
-                           "\n\nAuto exposure helps games that do not hand their exposure to the upscaler"
-                           "\n(a frame that turns green or grainy). The first time it is on the network is"
-                           "\nrebuilt once. mochizuki0323's Preprocess.");
-                ImGui::BeginDisabled(!prep);
-                int exposure = int(std::min(config->MochizukiPreprocessExposure.value_or_default(), 2u));
-                if (ImGui::Combo("Exposure##prep", &exposure, "Off\0Auto\0Fixed (bias only)\0"))
-                    config->MochizukiPreprocessExposure = uint32_t(exposure);
-                // -3..3 here: far from 0 the network sees a frame near black or white and its answer comes back
-                // blotchy. MochizukiPreprocessBias in the INI still takes -8..8.
-                DeferredSlider("Exposure bias (EV)##prep", &config->MochizukiPreprocessBias, -3.0f, 3.0f, 0.0f);
-                int curve = int(std::min(config->MochizukiPreprocessCurve.value_or_default(), 6u));
-                if (ImGui::Combo("Curve##prep", &curve, "None\0Neutral\0Reinhard\0Filmic\0GT\0ACES\0AgX\0"))
-                    config->MochizukiPreprocessCurve = uint32_t(curve);
-                DeferredSlider("Contrast##prep", &config->MochizukiPreprocessContrast, 0.5f, 2.0f, 1.0f);
-                DeferredSlider("Saturation##prep", &config->MochizukiPreprocessSaturation, 0.05f, 2.0f, 1.0f);
+                ScopedIndent indent {};
+                PersonProtectionControls(config, UINT(std::clamp(renoPasses, 1u, 30u)));
+            }
+            if (auto section = ScopedCollapsingHeader("Encoding and exposure##mzsection"); section.IsHeaderOpen())
+            {
+                ScopedIndent indent {};
+                MochizukiRenoTree(config, "Encoding", 9);
+                if (ImGui::TreeNode("Preprocess"))
+                {
+                    bool prep = config->MochizukiPreprocess.value_or_default();
+                    if (ImGui::Checkbox("Enable##prep", &prep))
+                        config->MochizukiPreprocess = prep;
+                    HelpMarker(
+                        "Changes the picture the network is shown (exposure, display curve, contrast,"
+                        "\nsaturation) and takes every change back out of its answer, so it changes how"
+                        "\nthe network edits the frame, not the frame itself."
+                        "\n\nAuto exposure helps games that do not hand their exposure to the upscaler"
+                        "\n(a frame that turns green or grainy). The first time it is on the network is"
+                        "\nrebuilt once. Auto or fixed exposure replaces the RenoDX stage's divisor, and a curve its"
+                        "\nencoding curve. mochizuki0323's Preprocess.");
+                    ImGui::BeginDisabled(!prep);
+                    int exposure = int(std::min(config->MochizukiPreprocessExposure.value_or_default(), 2u));
+                    if (ImGui::Combo("Exposure##prep", &exposure, "Off\0Auto\0Fixed (bias only)\0"))
+                        config->MochizukiPreprocessExposure = uint32_t(exposure);
+                    // -3..3 here: far from 0 the network sees a frame near black or white and its answer comes back
+                    // blotchy. MochizukiPreprocessBias in the INI still takes -8..8.
+                    DeferredSlider("Exposure bias (EV)##prep", &config->MochizukiPreprocessBias, -3.0f, 3.0f, 0.0f);
+                    int curve = int(std::min(config->MochizukiPreprocessCurve.value_or_default(), 6u));
+                    if (ImGui::Combo("Curve##prep", &curve, "None\0Neutral\0Reinhard\0Filmic\0GT\0ACES\0AgX\0"))
+                        config->MochizukiPreprocessCurve = uint32_t(curve);
+                    DeferredSlider("Contrast##prep", &config->MochizukiPreprocessContrast, 0.5f, 2.0f, 1.0f);
+                    DeferredSlider("Saturation##prep", &config->MochizukiPreprocessSaturation, 0.05f, 2.0f, 1.0f);
+                    ImGui::EndDisabled();
+                    if (ImGui::SmallButton("Reset##prep"))
+                    {
+                        config->MochizukiPreprocessExposure = 1u;
+                        config->MochizukiPreprocessBias = 0.0f;
+                        config->MochizukiPreprocessCurve = 3u;
+                        config->MochizukiPreprocessContrast = 1.0f;
+                        config->MochizukiPreprocessSaturation = 1.0f;
+                    }
+                    ImGui::TreePop();
+                }
+            }
+            if (auto section = ScopedCollapsingHeader("Temporal##mzsection"); section.IsHeaderOpen())
+            {
+                ScopedIndent indent {};
+                bool temporal = temporalSet;
+                if (ImGui::Checkbox("Temporal history", &temporal))
+                    config->MochizukiTemporal = temporal;
+                HelpMarker("The network also reads its own result from the previous frame, moved along the"
+                           "\ngame's motion vectors. Keeps the effect steadier in motion. Off runs every frame"
+                           "\non its own.");
+                ImGui::BeginDisabled(!temporal);
+                liveSlider("History strength", config->MochizukiHistoryStrength, 0.0f, 1.0f);
+                HelpMarker("How much of the previous frame's result the network's last block blends into this"
+                           "\none. Lower follows changes faster and steadies less. Even at 0 the network still"
+                           "\nreads the history; turn Temporal history off to drop it.");
+                bool jitterHistory = config->MochizukiJitterHistory.value_or_default();
+                if (ImGui::Checkbox("Jitter-aligned history (experimental)", &jitterHistory))
+                    config->MochizukiJitterHistory = jitterHistory;
+                HelpMarker("With an upscaler the frame NR sees moves by a fraction of a pixel every frame (the"
+                           "\ncamera jitter), which the game's motion vectors leave out. On, the history is"
+                           "\nfetched where the last frame's sample really was: finer detail may hold steadier."
+                           "\nNeeds Temporal history. No effect without an upscaler.");
                 ImGui::EndDisabled();
                 bool noise = config->MochizukiNoiseEveryFrame.value_or_default();
                 if (ImGui::Checkbox("Vary noise without motion vectors", &noise))

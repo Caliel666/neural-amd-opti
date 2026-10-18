@@ -70,6 +70,9 @@ struct Settings
     bool toneChannels = false;
     float modelScale = 1;
     UINT passes = 1;
+    // Person protection: the first pass's answer as well (Host::FirstPass), lmxxf and mochizuki with two or more
+    // passes.
+    bool firstPass = false;
     // Graphics preference from the bridge; each Record still requires admission.
     int spinDraw = 0;
     float tone = 0, structure = 1, skin = 1;

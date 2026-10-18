@@ -542,6 +542,12 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrRenoColour.set_from_config(readFloat("DlssNr", "RenoColour"));
             DlssNrRenoChromaClamp.set_from_config(readFloat("DlssNr", "RenoChromaClamp"));
             DlssNrRenoPedestal.set_from_config(readBool("DlssNr", "RenoPedestal"));
+            NrPersonPartition.set_from_config(readBool("DlssNr", "NrPersonPartition"));
+            NrPersonModel.set_from_config(readInt("DlssNr", "NrPersonModel"));
+            NrFaceInputSize.set_from_config(readInt("DlssNr", "NrFaceInputSize"));
+            NrPersonStrength.set_from_config(readFloat("DlssNr", "NrPersonStrength"));
+            NrPersonDetailGain.set_from_config(readFloat("DlssNr", "NrPersonDetailGain"));
+            NrPersonDebugMask.set_from_config(readBool("DlssNr", "NrPersonDebugMask"));
             AmdQuality.set_from_config(readInt("DlssNr", "AmdQuality"));
             AmdToneCurve.set_from_config(readInt("DlssNr", "AmdToneCurve"));
             AmdToneLift.set_from_config(readFloat("DlssNr", "AmdToneLift"));
@@ -1721,6 +1727,16 @@ bool Config::SaveIni()
         ini.SetValue("DlssNr", "RenoChromaClamp",
                      GetFloatValue(Instance()->DlssNrRenoChromaClamp.value_for_config()).c_str());
         ini.SetValue("DlssNr", "RenoPedestal", GetBoolValue(Instance()->DlssNrRenoPedestal.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "NrPersonPartition",
+                     GetBoolValue(Instance()->NrPersonPartition.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "NrPersonModel", GetIntValue(Instance()->NrPersonModel.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "NrFaceInputSize", GetIntValue(Instance()->NrFaceInputSize.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "NrPersonStrength",
+                     GetFloatValue(Instance()->NrPersonStrength.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "NrPersonDetailGain",
+                     GetFloatValue(Instance()->NrPersonDetailGain.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "NrPersonDebugMask",
+                     GetBoolValue(Instance()->NrPersonDebugMask.value_for_config()).c_str());
         ini.SetValue("DlssNr", "AmdQuality", GetIntValue(Instance()->AmdQuality.value_for_config()).c_str());
         ini.SetValue("DlssNr", "AmdToneCurve", GetIntValue(Instance()->AmdToneCurve.value_for_config()).c_str());
         ini.SetValue("DlssNr", "AmdToneLift", GetFloatValue(Instance()->AmdToneLift.value_for_config()).c_str());

@@ -65,18 +65,22 @@ always 1 from this host), so the model, pass stack, resolution, composition, loo
 the stage's `MochizukiReno*` keys (`MochizukiRenoKeys.inc`). `LmxxfBackend::Record` sends them two ways, both
 only when the backend is not lmxxf:
 
-- In `LmxxfNrFrameInfo`: `MochizukiDetailStrength` and `MochizukiColourStrength` (0 to 4 here, 0 to 2
-  for lmxxf; the host's default is 0, the game's own colour at the network's luminance, where the
-  runtime's own default is 1), `MochizukiModelScale` and `MochizukiPasses`. The last two rebuild the
-  network, so the menu commits them when the slider is released.
+- In `LmxxfNrFrameInfo`: the stage's pass count (`MochizukiRenoPasses`, for the first pass person protection
+  asks for; the runtime takes the count from the stage's settings), the network's flags (int4, the 310.8
+  model) and the game's motion vectors. No depth: the stage's network reads the vectors at the pixel.
 - Through the runtime's own `MochizukiNrSetControls` export (`mochizuki_runtime/MochizukiNrControls.h`):
   the `reno_*` fields, history strength, apply model, dynamic resolution, the preprocess and the noise
   seed. They go only when they change or the session is new, starting from the runtime's
   `MochizukiNrGetControlDefaults`, and apply on the next frame (`RenoPasses`, `RenoResolutionScale` and
   `RenoSourceEncoding` rebuild the network, so the menu commits them when the control is released).
 
-`MochizukiTemporal` switches the history (without the key, `LmxxfTemporal` does). Every default is the
-network's own, so an INI without these keys runs as before. `AmdModelScale` and `AmdDynamicScale` do
+The game's exposure (`MochizukiNrSetExposure`) is the stage's feed. Person protection's first pass
+(`LMXXF_NR_FRAME_FLAG_FIRST_PASS`) is the stage's pass 1 in the frame's own encoding, blitted to RGBA32F
+before pass 2 runs (`StageFrame::first`). `MochizukiCascadeDetail`, `MochizukiAntiHalo(Strength)`,
+`MochizukiPassEstimate` and `MochizukiUseDepth` do nothing in the stage and are out of the menu and the INI.
+
+`MochizukiTemporal` switches the history (without the key, `LmxxfTemporal` does). Every default is
+RenoDX's own. `AmdModelScale` and `AmdDynamicScale` do
 not reach mochizuki: the settle gate in `AmdBridge::Run` ignores both for it.
 `MochizukiDynamicResolution` is the runtime's `drs_mode`. With `auto` (the default), once the render
 subrect is smaller than the colour texture, the network runs at a bucket: per axis the largest subrect

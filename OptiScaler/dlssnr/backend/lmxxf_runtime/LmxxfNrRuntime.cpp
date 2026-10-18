@@ -586,6 +586,13 @@ struct Session
     NativeRgbTexture* rgbTex = nullptr;
     NativeGameCodec* decode = nullptr;
     ID3D12Resource* decodeDisplay = nullptr;
+    // LMXXF_NR_FRAME_FLAG_FIRST_PASS: pass 1's output (the bridge's PassOutput(0), firstSource) through a codec of
+    // its own, made on the first frame that keeps it and gone with the codec.
+    NativeRgbTexture* firstTex = nullptr;
+    NativeGameCodec* firstDecode = nullptr;
+    ID3D12Resource* firstDisplay = nullptr;
+    ID3D12Resource* firstSource = nullptr; // compared only
+    bool firstFailed = false;              // its codec could not be made: no first pass in this session
     TemporalChain* temporal = nullptr;
     std::string temporalError; // why the chain could not be built; frames then run without history
     uint64_t lastFrameId = 0;
@@ -630,6 +637,7 @@ struct Session
         }
         delete temporal;
         temporal = nullptr;
+        TeardownFirstPass();
         if (decodeDisplay)
         {
             decodeDisplay->Release();
@@ -644,6 +652,19 @@ struct Session
         delete encode;
         encode = nullptr;
         colorFormat = DXGI_FORMAT_UNKNOWN;
+    }
+
+    // The first pass's codec; only once the GPU is done with it, as the rest of the codec.
+    void TeardownFirstPass()
+    {
+        if (firstDisplay)
+            firstDisplay->Release();
+        firstDisplay = nullptr;
+        delete firstDecode;
+        firstDecode = nullptr;
+        delete firstTex;
+        firstTex = nullptr;
+        firstSource = nullptr;
     }
 
     // Wait until queue work that may touch encode/rgb/bridge shared resources is done.
@@ -718,6 +739,9 @@ struct Session
         decodeDisplay = nullptr;
         decode = nullptr;
         rgbTex = nullptr;
+        firstDisplay = nullptr;
+        firstDecode = nullptr;
+        firstTex = nullptr;
         rgbInput = nullptr;
         encode = nullptr;
         // The queue may still own GPU work. Keep our reference on fail-closed teardown.
@@ -767,6 +791,7 @@ struct Session
         bridge = nullptr;
         delete temporal;
         temporal = nullptr;
+        TeardownFirstPass();
         if (decodeDisplay)
         {
             decodeDisplay->Release();
@@ -1133,14 +1158,16 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
             const uint32_t noStyleSize = offsetof(LmxxfNrFrameInfo, style);
             const uint32_t noDepthSize = offsetof(LmxxfNrFrameInfo, depth); // the depth fields are mochizuki's
             if ((info->struct_size != sizeof(LmxxfNrFrameInfo) && info->struct_size != noDepthSize &&
-                 info->struct_size != noStyleSize &&
-                 info->struct_size != noSmoothSize &&
+                 info->struct_size != noStyleSize && info->struct_size != noSmoothSize &&
                  info->struct_size != noTemporalSize && info->struct_size != noPassesSize &&
                  info->struct_size != legacySize) ||
-                job->struct_size != sizeof(LmxxfNrJob))
+                (job->struct_size != sizeof(LmxxfNrJob) && job->struct_size != offsetof(LmxxfNrJob, first_pass_output)))
                 return Fail(LMXXF_NR_INVALID_ARGUMENT, "PrepareFrame: struct_size mismatch");
             job->handle = nullptr;
             job->private_output = nullptr;
+            const bool fullJob = job->struct_size == sizeof(LmxxfNrJob);
+            if (fullJob)
+                job->first_pass_output = nullptr;
             if (session->fallbackConsumerQueue && FAILED(session->DrainGpu()))
             {
                 session->failed = true;
@@ -1397,7 +1424,8 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
             else if (pointerChanged)
             {
                 const bool needDrain = session->encode->RebindNeedsCompletion(0, color) ||
-                                       (session->decode && session->decode->RebindNeedsCompletion(2, color));
+                                       (session->decode && session->decode->RebindNeedsCompletion(2, color)) ||
+                                       (session->firstDecode && session->firstDecode->RebindNeedsCompletion(2, color));
                 if (needDrain && FAILED(session->DrainGpu()))
                     return Fail(LMXXF_NR_UNAVAILABLE,
                                 "PrepareFrame: color rebind needs GPU completion (drain failed; host rebuild)");
@@ -1406,6 +1434,8 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
                     session->encode->RebindInputAfterCompletion(0, color);
                     if (session->decode)
                         session->decode->RebindInputAfterCompletion(2, color);
+                    if (session->firstDecode)
+                        session->firstDecode->RebindInputAfterCompletion(2, color);
                 }
                 catch (const std::exception& ex)
                 {
@@ -1480,6 +1510,11 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
                 return Fail(LMXXF_NR_FAILED, "PrepareFrame: decode missing");
             job->private_output = session->decode->BufferOutput() ? static_cast<void*>(session->decodeDisplay)
                                                                   : static_cast<void*>(session->decode->Output());
+            // The first frame that asks for it makes that codec (RecordOutputs) and goes without.
+            if (session->job.firstPass && session->firstDecode)
+                job->first_pass_output = session->firstDecode->BufferOutput()
+                                             ? static_cast<void*>(session->firstDisplay)
+                                             : static_cast<void*>(session->firstDecode->Output());
             SetError("");
             return static_cast<int32_t>(LMXXF_NR_OK);
         });
@@ -1564,6 +1599,12 @@ int32_t RecordInputs(void* context, void* job, void* command_list)
                     j->histories |= 1u << k;
                 }
                 session->bridge->RecordPassInputCopy(list, session->rgbInput->PostBase(), histories, j->passes);
+            }
+            else if (j->firstPass)
+            {
+                // Pass 1's output is kept (PassOutput(0)) for its own codec in RecordOutputs.
+                ID3D12Resource* none[3] {};
+                session->bridge->RecordPassInputCopy(list, session->rgbInput->PostBase(), none, j->passes);
             }
             else
             {
@@ -1686,6 +1727,85 @@ int32_t EnqueueHip(void* context, void* job, void* command_queue)
         });
 }
 
+// LMXXF_NR_FRAME_FLAG_FIRST_PASS: pass 1's output, kept by the bridge, through the same codec as the last pass's, into
+// the texture PrepareFrame handed out. The codec is made here on the first frame that keeps pass 1 (that frame's
+// PrepareFrame had none to hand out); a bridge rebuilt since leaves it unused until the codec goes.
+void RecordFirstPass(Session* session, ID3D12GraphicsCommandList* list, const Job& j,
+                     const NativeCodecParameters& codecParams)
+{
+    ID3D12Resource* source = session->bridge->PassOutput(0);
+    if (session->firstTex && session->firstSource != source)
+        return;
+    if (!session->firstTex)
+    {
+        const DXGI_FORMAT cfmt = session->colorFormat;
+        const bool privateFloatOutput =
+            cfmt == DXGI_FORMAT_R9G9B9E5_SHAREDEXP || NativeFallbackColor(cfmt) != DXGI_FORMAT_UNKNOWN;
+        auto* tex = new NativeRgbTexture();
+        auto* dec = new NativeGameCodec();
+        ID3D12Resource* disp = nullptr;
+        try
+        {
+            tex->Create(session->device, source, session->shaderDir);
+            dec->Create(session->device, { session->encode->Output(), tex->Output(), j.color }, session->shaderDir,
+                        privateFloatOutput);
+            if (dec->BufferOutput())
+            {
+                D3D12_RESOURCE_DESC td = j.color->GetDesc();
+                td.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+                D3D12_HEAP_PROPERTIES hp {};
+                hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+                if (FAILED(session->device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &td,
+                                                                    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                                                                    nullptr, IID_PPV_ARGS(&disp))) ||
+                    !disp)
+                    throw std::runtime_error("first pass display texture create failed");
+            }
+        }
+        catch (...)
+        {
+            if (disp)
+                disp->Release();
+            delete dec;
+            delete tex;
+            throw;
+        }
+        session->firstTex = tex;
+        session->firstDecode = dec;
+        session->firstDisplay = disp;
+        session->firstSource = source;
+        OutputDebugStringA("lmxxf: first pass output ready\n");
+    }
+    session->firstTex->Record(list);
+    session->firstDecode->Record(list,
+                                 { D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                                   D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, j.colorState },
+                                 1.f, codecParams);
+    if (!session->firstDecode->BufferOutput())
+        return;
+    ID3D12Resource* src = session->firstDecode->Output();
+    ID3D12Resource* dst = session->firstDisplay;
+    D3D12_RESOURCE_BARRIER barriers[2] {};
+    barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barriers[0].Transition = { src, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                               D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_SOURCE };
+    barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barriers[1].Transition = { dst, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                               D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST };
+    list->ResourceBarrier(2, barriers);
+    D3D12_TEXTURE_COPY_LOCATION dstLoc {};
+    dstLoc.pResource = dst;
+    dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    D3D12_TEXTURE_COPY_LOCATION srcLoc {};
+    srcLoc.pResource = src;
+    srcLoc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    srcLoc.PlacedFootprint.Footprint = session->firstDecode->BufferFootprint();
+    list->CopyTextureRegion(&dstLoc, 0, 0, 0, &srcLoc, nullptr);
+    std::swap(barriers[0].Transition.StateBefore, barriers[0].Transition.StateAfter);
+    std::swap(barriers[1].Transition.StateBefore, barriers[1].Transition.StateAfter);
+    list->ResourceBarrier(2, barriers);
+}
+
 int32_t RecordOutputs(void* context, void* job, void* command_list)
 {
     auto* session = static_cast<Session*>(context);
@@ -1782,6 +1902,16 @@ int32_t RecordOutputs(void* context, void* job, void* command_list)
                 std::swap(barriers[1].Transition.StateBefore, barriers[1].Transition.StateAfter);
                 list->ResourceBarrier(2, barriers);
             }
+            if (j->firstPass)
+                try
+                {
+                    RecordFirstPass(session, list, *j, codecParams);
+                }
+                catch (const std::exception& ex)
+                {
+                    session->firstFailed = true;
+                    OutputDebugStringA((std::string("lmxxf: first pass output off: ") + ex.what() + "\n").c_str());
+                }
             j->state = LMXXF_NR_JOB_CONSUMER_COMPLETE;
             SetError("");
             return static_cast<int32_t>(LMXXF_NR_OK);

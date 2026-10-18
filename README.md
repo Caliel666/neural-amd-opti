@@ -105,7 +105,11 @@ All in `OptiScaler.ini`, section `[DlssNr]`, and in the **Neural** tab of the ov
 | `MochizukiOriginalModel` | The 310.8 model (`dlssnr-amd\dlssnr.bin`) instead of the new model of NVIDIA's 310.9.16 DLL (`dlssnr-amd\dlssnr-small.bin`), which runs by default when it is installed: about a third faster (1080p 9.8 to 6.3 ms, 4K 36 to 23 ms), a slightly lighter edit. int4 mixed exists for the 310.8 model only and turns this on by itself. Off by default; a change rebuilds the network |
 | `MochizukiApplyModel` | `false` runs the network at full cost but shows the original frame (on by default) |
 | `MochizukiDynamicResolution` | For games that change their render resolution as they run: `auto` (default) keeps one network, built for the largest resolution seen, once the render resolution drops below the colour buffer, and the frame moves inside it; `exact` rebuilds the network for every resolution (a second or two without NR each time); `always` is `auto` from the first frame, also across buffer reallocations |
-| `MochizukiPass2*`, `MochizukiPass3*` | `Style`, `Intensity`, `LocalTone`, `LocalStructure`, `SkinStructure` and `AutoMask` for passes 2 and 3; `auto` inherits pass 1, with local tone 0 |
+| `MochizukiPreprocess*` | mochizuki0323's Preprocess: the picture the network is shown, changed before it runs and taken back out of its answer; its auto or fixed exposure replaces the RenoDX stage's divisor, and its curve the stage's. Off by default |
+| `MochizukiNoiseEveryFrame`, `MochizukiLayerMode` | Frames without motion vectors move the network's noise seed every frame, as NVIDIA's DLL does (off by default). `LayerMode` is read and ignored, as in TheAutomatic's fork |
+| `NrPersonPartition` | Person protection, lmxxf and mochizuki before SR (TheAutomatic's): a person mask made on the CPU by `person-worker.exe`, from `person-model\` beside OptiScaler, keeps the first pass's result on people with two or more passes (mochizuki: `MochizukiRenoPasses`, the RenoDX stage's pass 1), the last pass's elsewhere. Off by default |
+| `NrPersonModel`, `NrFaceInputSize` | The mask's model: 0 PP-HumanSeg (default), 1 YOLO11n-seg, 2 YuNet (faces only, its input 320 by default, or 384, 416, 448) |
+| `NrPersonStrength`, `NrPersonDetailGain`, `NrPersonDebugMask` | How much of NR's change, and of its fine detail, reaches people (0 to 1, 1 by default; below 1 they act in single pass too); the mask tinted green, with a log line every two seconds (off) |
 
 mochizuki's tuning comes only from its own `Mochizuki*` keys, so it and the other runtimes' stay apart.
 One leftover: without `MochizukiTemporal`, `LmxxfTemporal` decides.
@@ -119,7 +123,8 @@ Visual Studio with the v143 toolset, `Release|x64`, after `git submodule update 
 `tools/` beside the solution: a pre-build step runs from it. `tools\build-lmxxf-runtime.cmd
 exports\lmxxf-runtime` builds the lmxxf runtime, `tools\build-mochizuki-runtime.cmd
 exports\mochizuki-runtime` the mochizuki one (from an MSVC prompt, with the Vulkan SDK 1.4.357 or
-newer and Python), and `tools/PACKAGE_RELEASE.ps1` makes the release zip. CI checks formatting with
+newer and Python), `tools\build-person-worker.cmd` the person protection worker into
+`exports\release-local\person-model`, and `tools/PACKAGE_RELEASE.ps1` makes the release zip. CI checks formatting with
 clang-format 20 under `OptiScaler/`.
 
 ## Credits
@@ -147,6 +152,10 @@ clang-format 20 under `OptiScaler/`.
   vendored under `third_party/mochizuki`.
 - [RenoDX](https://github.com/clshortfuse/renodx) by clshortfuse: the colour composition in
   `dlssnr.hlsl`.
+- [TheAutomatic/dlss-5-amd-project](https://github.com/TheAutomatic/dlss-5-amd-project): person
+  protection (`OptiScaler/dlssnr/person/`). Its models are PP-HumanSeg (Apache-2.0) and YuNet (MIT)
+  from the OpenCV Zoo and Ultralytics YOLO11n-seg (AGPL-3.0), run by Microsoft ONNX Runtime (MIT);
+  the installer ships them, see `third_party/onnxruntime/README.md`.
 
 NVIDIA's DLSS binaries and model weights are not redistributed. FidelityFX, XeSS and the DirectX
 Agility SDK keep their own licences, in `Licenses/`.
