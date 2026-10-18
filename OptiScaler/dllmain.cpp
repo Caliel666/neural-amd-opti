@@ -215,9 +215,14 @@ static void RunAgilityUpgrade(HMODULE dx12Module)
 void LoadAsiPlugins()
 {
     std::filesystem::path pluginPath(Config::Instance()->PluginPath.value_or(L"plugins"));
+
+    // A relative path follows OptiScaler's own folder, not the working directory the launcher left
+    if (pluginPath.is_relative())
+        pluginPath = Util::DllPath().parent_path() / pluginPath;
+
     auto folderPath = pluginPath.wstring();
 
-    LOG_DEBUG(L"Checking {} for *.asi", folderPath);
+    LOG_INFO(L"Checking {} for *.asi", folderPath);
 
     if (!std::filesystem::exists(pluginPath))
         return;
@@ -1991,8 +1996,15 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             (!std::filesystem::exists(Config::Instance()->PluginPath.value()) ||
              !std::filesystem::is_directory(Config::Instance()->PluginPath.value())))
         {
-            Config::Instance()->PluginPath.set_volatile_value(
-                std::filesystem::path(Config::Instance()->MainDllPath.value()) / L"plugins");
+            auto plugins = std::filesystem::path(Config::Instance()->MainDllPath.value()) / L"plugins";
+
+            // The fork keeps its files in .\OptiScaler, upstream next to the dll; mods built for
+            // upstream put their plugins beside the dll
+            if (!std::filesystem::is_directory(plugins) &&
+                std::filesystem::is_directory(Util::DllPath().parent_path() / L"plugins"))
+                plugins = Util::DllPath().parent_path() / L"plugins";
+
+            Config::Instance()->PluginPath.set_volatile_value(plugins);
         }
 
         CheckForExcludedProcess();

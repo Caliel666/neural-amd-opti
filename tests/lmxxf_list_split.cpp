@@ -345,6 +345,64 @@ int main()
         a->Release();
     }
 
+    // Enhanced barriers (Forza Horizon 6) permit the cut; only a split barrier open across it refuses.
+    D3D12_FEATURE_DATA_D3D12_OPTIONS12 o12 {};
+    if (SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS12, &o12, sizeof(o12))) &&
+        o12.EnhancedBarriersSupported)
+    {
+        constexpr UINT64 kBytes = 256;
+        ID3D12Resource *upload = MakeBuffer(device, kBytes, D3D12_HEAP_TYPE_UPLOAD,
+                                             D3D12_RESOURCE_STATE_GENERIC_READ);
+        ID3D12Resource *mid = MakeBuffer(device, kBytes, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_COMMON);
+        ID3D12Resource *readback = MakeBuffer(device, kBytes, D3D12_HEAP_TYPE_READBACK,
+                                               D3D12_RESOURCE_STATE_COPY_DEST);
+        void *mapped = nullptr;
+        Check(upload->Map(0, nullptr, &mapped), "eb upload map");
+        std::memset(mapped, 0x3C, kBytes);
+        upload->Unmap(0, nullptr);
+        ID3D12CommandAllocator *a = nullptr;
+        Check(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&a)), "eb_a");
+        ID3D12GraphicsCommandList *raw = nullptr;
+        Check(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, a, nullptr, IID_PPV_ARGS(&raw)), "eb_raw");
+        DlssNr::Submission::CommandListProxy *px = nullptr;
+        Check(DlssNr::Submission::CommandListProxy::Create(device, a, raw, &px), "eb_proxy");
+        auto barrier = [&](D3D12_BARRIER_SYNC before, D3D12_BARRIER_ACCESS accessBefore, D3D12_BARRIER_SYNC after,
+                           D3D12_BARRIER_ACCESS accessAfter) {
+            D3D12_BUFFER_BARRIER bb {before, after, accessBefore, accessAfter, mid, 0, UINT64_MAX};
+            D3D12_BARRIER_GROUP g {};
+            g.Type = D3D12_BARRIER_TYPE_BUFFER;
+            g.NumBarriers = 1;
+            g.pBufferBarriers = &bb;
+            px->Barrier(1, &g);
+        };
+        px->CopyBufferRegion(mid, 0, upload, 0, kBytes);
+        barrier(D3D12_BARRIER_SYNC_COPY, D3D12_BARRIER_ACCESS_COPY_DEST, D3D12_BARRIER_SYNC_SPLIT,
+                D3D12_BARRIER_ACCESS_COPY_SOURCE);
+        Require(px->IsSplitIneligible(), "open enhanced split barrier blocks split");
+        Require(std::strcmp(px->SplitRejectionReason(), "open_enhanced_split_barrier") == 0,
+                "open enhanced split barrier reason");
+        barrier(D3D12_BARRIER_SYNC_SPLIT, D3D12_BARRIER_ACCESS_COPY_DEST, D3D12_BARRIER_SYNC_COPY,
+                D3D12_BARRIER_ACCESS_COPY_SOURCE);
+        Require(!px->IsSplitIneligible(), "completed enhanced barriers permit split");
+        Check(px->SplitSegments(), "split after enhanced barriers");
+        px->CopyBufferRegion(readback, 0, mid, 0, kBytes);
+        Check(px->ExecuteOn(queue), "execute enhanced barrier split");
+        WaitIdle(device, queue);
+        D3D12_RANGE range {0, kBytes};
+        Check(readback->Map(0, &range, &mapped), "eb readback map");
+        const auto *bytes = static_cast<const uint8_t *>(mapped);
+        for (UINT i = 0; i < kBytes; ++i)
+            Require(bytes[i] == 0x3C, "enhanced barrier split contents");
+        readback->Unmap(0, nullptr);
+        px->Release();
+        raw->Release();
+        a->Release();
+        readback->Release();
+        mid->Release();
+        upload->Release();
+    }
+    else
+        std::printf("enhanced barriers not supported: skipped\n");
 
     // Plan D: IA capture survives into Split seed; Execute decay on book.
     {

@@ -344,6 +344,29 @@ std::string VramUsage(LUID luid)
                         });
     return text;
 }
+// "14.4/12.5 GB" while this process uses more of the adapter's local memory than its budget, else empty.
+std::string VramOverBudget(LUID luid)
+{
+    std::string text;
+    WithPhysicalAdapter(luid,
+                        [&](IDXGIAdapter1* a)
+                        {
+                            IDXGIAdapter3* a3 = nullptr;
+                            DXGI_QUERY_VIDEO_MEMORY_INFO info {};
+                            if (FAILED(a->QueryInterface(IID_PPV_ARGS(&a3))))
+                                return;
+                            if (SUCCEEDED(a3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info)) &&
+                                info.Budget && info.CurrentUsage > info.Budget)
+                            {
+                                char gb[48];
+                                std::snprintf(gb, sizeof(gb), "%.1f/%.1f GB", info.CurrentUsage / 1073741824.0,
+                                              info.Budget / 1073741824.0);
+                                text = gb;
+                            }
+                            a3->Release();
+                        });
+    return text;
+}
 } // namespace
 bool Exiting() { return DlssNr::Backend::LmxxfCut::g_exiting.load(std::memory_order_acquire); }
 void UpdateConfirmedRenderQueue(ID3D12CommandQueue* q) { SetConfirmedRenderQueueInternal(q); }
@@ -1219,8 +1242,10 @@ bool StandDownIfTripped()
     }
     char seconds[16];
     std::snprintf(seconds, sizeof(seconds), "%.1f", static_cast<double>(held) / 1000.0);
-    standDown = std::string("Turned off: the GPU held one NR job for ") + seconds +
-                " s, the warning before a freeze that can lock the PC. Turn NR on again to retry, or "
+    const std::string over = VramOverBudget(backendAdapter);
+    standDown = std::string("Turned off: the GPU held one NR job for ") + seconds + " s" +
+                (over.empty() ? std::string() : "; VRAM was over budget (" + over + ")") +
+                ", the warning before a freeze that can lock the PC. Turn NR on again to retry, or "
                 "try another runtime. AmdStallStandDownMs=0 turns this check off.";
     LOG_WARN("AMD neural: {}", standDown);
     Message(standDown.c_str());

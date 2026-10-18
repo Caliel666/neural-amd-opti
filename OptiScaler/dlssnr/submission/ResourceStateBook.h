@@ -13,6 +13,8 @@ class ResourceStateBook
     // Last known state after barriers on this logical recording.
     std::unordered_map<ID3D12Resource*, D3D12_RESOURCE_STATES> states;
     bool openSplitBarrier = false;
+    // Enhanced split barriers begun (SyncAfter SPLIT) and not yet ended (SyncBefore SPLIT).
+    uint32_t openEnhancedSplits = 0;
     bool sawUnorderedAccess = false;
 
   public:
@@ -20,6 +22,7 @@ class ResourceStateBook
     {
         states.clear();
         openSplitBarrier = false;
+        openEnhancedSplits = 0;
         sawUnorderedAccess = false;
     }
 
@@ -45,6 +48,7 @@ class ResourceStateBook
                 kv.second = D3D12_RESOURCE_STATE_COMMON;
         }
         openSplitBarrier = false;
+        openEnhancedSplits = 0;
         // UAV flag is informational; leave sawUnorderedAccess as-is for diagnostics.
     }
 
@@ -110,6 +114,54 @@ class ResourceStateBook
         return true;
     }
 
+    // Enhanced barriers: layouts survive ExecuteCommandLists and every access before the boundary is complete
+    // after it, so a cut is safe unless a split barrier is open across it.
+    bool OnEnhancedBarriers(UINT32 numGroups, const D3D12_BARRIER_GROUP* groups, const char** reasonOut)
+    {
+        if (reasonOut)
+            *reasonOut = nullptr;
+        for (UINT32 g = 0; groups && g < numGroups; ++g)
+        {
+            const D3D12_BARRIER_GROUP& group = groups[g];
+            for (UINT32 i = 0; i < group.NumBarriers; ++i)
+            {
+                D3D12_BARRIER_SYNC before, after;
+                switch (group.Type)
+                {
+                case D3D12_BARRIER_TYPE_GLOBAL:
+                    before = group.pGlobalBarriers[i].SyncBefore;
+                    after = group.pGlobalBarriers[i].SyncAfter;
+                    break;
+                case D3D12_BARRIER_TYPE_TEXTURE:
+                    before = group.pTextureBarriers[i].SyncBefore;
+                    after = group.pTextureBarriers[i].SyncAfter;
+                    break;
+                case D3D12_BARRIER_TYPE_BUFFER:
+                    before = group.pBufferBarriers[i].SyncBefore;
+                    after = group.pBufferBarriers[i].SyncAfter;
+                    break;
+                default:
+                    if (reasonOut)
+                        *reasonOut = "enhanced_barrier_unknown_type";
+                    return false;
+                }
+                if (before == D3D12_BARRIER_SYNC_SPLIT)
+                {
+                    if (!openEnhancedSplits)
+                    {
+                        if (reasonOut)
+                            *reasonOut = "enhanced_split_end_without_begin";
+                        return false;
+                    }
+                    --openEnhancedSplits;
+                }
+                if (after == D3D12_BARRIER_SYNC_SPLIT)
+                    ++openEnhancedSplits;
+            }
+        }
+        return true;
+    }
+
     // Call before Split: open BEGIN_ONLY without END must refuse the cut.
     bool CanSplit(const char** reasonOut) const
     {
@@ -119,6 +171,12 @@ class ResourceStateBook
         {
             if (reasonOut)
                 *reasonOut = "open_split_barrier";
+            return false;
+        }
+        if (openEnhancedSplits)
+        {
+            if (reasonOut)
+                *reasonOut = "open_enhanced_split_barrier";
             return false;
         }
         return true;

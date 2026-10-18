@@ -597,6 +597,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             LmxxfCompact1080.set_from_config(readBool("DlssNr", "LmxxfCompact1080"));
             LmxxfPassEstimate.set_from_config(readBool("DlssNr", "LmxxfPassEstimate"));
             LmxxfSkinProtect.set_from_config(readBool("DlssNr", "LmxxfSkinProtect"));
+            LmxxfAutoExposure.set_from_config(readBool("DlssNr", "LmxxfAutoExposure"));
             MochizukiTemporal.set_from_config(readBool("DlssNr", "MochizukiTemporal"));
             MochizukiHistoryStrength.set_from_config(readFloat("DlssNr", "MochizukiHistoryStrength"));
             MochizukiStabilizerStrength.set_from_config(readFloat("DlssNr", "MochizukiStabilizerStrength"));
@@ -1793,6 +1794,8 @@ bool Config::SaveIni()
                      GetBoolValue(Instance()->LmxxfPassEstimate.value_for_config()).c_str());
         ini.SetValue("DlssNr", "LmxxfSkinProtect",
                      GetBoolValue(Instance()->LmxxfSkinProtect.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "LmxxfAutoExposure",
+                     GetBoolValue(Instance()->LmxxfAutoExposure.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiTemporal",
                      GetBoolValue(Instance()->MochizukiTemporal.value_for_config()).c_str());
         ini.SetValue("DlssNr", "MochizukiHistoryStrength",

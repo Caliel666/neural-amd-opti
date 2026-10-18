@@ -2067,6 +2067,8 @@ static HRESULT hkD3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL Minimum
         return o_D3D12CreateDevice(pAdapter, MinimumFeatureLevel, riid, ppDevice);
     }
 
+    DlssNr::Submission::Hooks::NoteDeviceCaller(_ReturnAddress());
+
 #ifdef ENABLE_DEBUG_LAYER_DX12
     LOG_WARN("Debug layers active!");
     if (debugController == nullptr && D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)) == S_OK)
@@ -2227,6 +2229,8 @@ static HRESULT hkCreateDevice(ID3D12DeviceFactory* pFactory, IUnknown* pAdapter,
         LOG_DEBUG("Calling from hkD3D12CreateDevice, calling original CreateDevice");
         return o_CreateDevice(pFactory, pAdapter, MinimumFeatureLevel, riid, ppDevice);
     }
+
+    DlssNr::Submission::Hooks::NoteDeviceCaller(_ReturnAddress());
 
 #ifdef ENABLE_DEBUG_LAYER_DX12
     LOG_WARN("Debug layers active!");
@@ -3013,7 +3017,8 @@ static void HookToDevice(ID3D12Device* InDevice)
             {
                 LOG_INFO("lmxxf ArmCreate ok; CreateCommandList ProxyWrap deferred until swapchain (graphics tracker "
                          "skipped)");
-                if (State::Instance().gameEngine == GameEngineType::Unreal)
+                // Lists the game makes before its swapchain stay proxies (UE, KCD2), from the exe or the module
+                // that created the device only
                 {
                     D3D12_COMMAND_QUEUE_DESC queueDesc {};
                     queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
@@ -3023,7 +3028,8 @@ static void HookToDevice(ID3D12Device* InDevice)
                     if (earlyQueue)
                         earlyQueue->Release();
                     DlssNr::Submission::Hooks::SetEarlyExeWrap(ready);
-                    LOG_INFO("lmxxf Unreal early executable proxy: {} (submission hook ready={})", ready, ready);
+                    LOG_INFO("lmxxf early game-module proxy: {} (device module {:X})", ready,
+                             reinterpret_cast<size_t>(DlssNr::Submission::Hooks::g_deviceModule.load()));
                 }
             }
         }

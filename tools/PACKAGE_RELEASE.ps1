@@ -223,11 +223,12 @@ LmxxfCompact1080=false
 ; (by colour, so brown and orange surfaces too).
 LmxxfPassEstimate=true
 LmxxfSkinProtect=false
-; mochizuki's tuning comes only from its own keys below, never the danielblnc, lmxxf or NVIDIA ones;
-; every default is the network's own, except MochizukiColourStrength=0: the game's own colour at the
-; network's brightness (1 applies the network's colour change in full). MochizukiPasses (1-3),
-; MochizukiModelScale (0.25-1, share of the render resolution in steps of 0.05) and
-; MochizukiLinearInput (0 auto, 1 on, 2 off) rebuild the network; the rest apply on the next frame.
+; lmxxf: give the model a white point measured from the frame instead of a fixed one, for games that
+; hand very dark linear colour (KCD2 at night) where the model shows grain or a green tint.
+LmxxfAutoExposure=false
+; mochizuki's tuning comes only from its own keys below, never the danielblnc, lmxxf or NVIDIA ones.
+; Its network always runs inside upstream's RenoDX stage, whose MochizukiReno* settings (RenoDX's own,
+; its defaults) further down hold the model, pass, resolution, composition, look and encoding controls.
 ; MochizukiTemporal=auto follows LmxxfTemporal.
 MochizukiTemporal=true
 MochizukiHistoryStrength=1

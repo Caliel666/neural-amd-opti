@@ -62,6 +62,21 @@ class LmxxfBackend final : public Host
     std::unique_ptr<class MochizukiGuides> guides;
     float lastJitterX = 0.f, lastJitterY = 0.f;
     bool haveJitter = false;
+    // The last frame that reached PrepareFrame, to tell a second Evaluate of that same frame (NBA 2K27 sends one
+    // before the first list is executed) from a new one while its job is pending. Render thread, under recordMutex.
+    struct LastFrame
+    {
+        ID3D12Resource* colour = nullptr;
+        UINT width = 0, height = 0;
+        float jitterX = 0.f, jitterY = 0.f;
+        ULONGLONG tick = 0;     // GetTickCount64 when it was recorded
+        ULONGLONG interval = 0; // from the frame before it, 0 when unknown
+    } lastFrame;
+    bool repeatLogged = false;
+    // Person protection: the last Record's first pass (LMXXF_NR_FRAME_FLAG_FIRST_PASS), and whether the runtime
+    // refused the flag (one from before it), which then is not asked again.
+    ID3D12Resource* firstPass = nullptr;
+    bool firstPassRefused = false;
     LmxxfProbe::StagingProbe stagingProbe;
     uint64_t probeEvaluateId = 0;   // Host ordinal, NOT an engine frame ID or GPU completion.
     uint64_t evaluateSequence_ = 0; // Monotonic sequence across all Evaluate calls including bypassed.

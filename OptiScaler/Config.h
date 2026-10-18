@@ -413,6 +413,9 @@ class Config
     // Two or three passes: skin-coloured areas go back toward pass 1's result, so faces do not take the extra passes.
     // By colour (upstream's mask), so brown and orange surfaces are protected too.
     CustomOptional<bool> LmxxfSkinProtect { false };
+    // The codec's white point measured from the frame's mean luminance instead of a fixed 1.0, for games that hand
+    // very dark linear colour (KCD2 at night: grain, a green tint). Off by default.
+    CustomOptional<bool> LmxxfAutoExposure { false };
     // mochizuki's settings, the INI key being the member's name. Its tuning comes from these keys only, never from
     // the danielblnc, lmxxf or NVIDIA ones, so each runtime keeps its own. The network always runs inside upstream's
     // RenoDX stage, whose MochizukiReno* settings (MochizukiRenoKeys.inc, RenoDX's own, with its defaults) hold the

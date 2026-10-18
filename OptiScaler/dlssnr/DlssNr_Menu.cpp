@@ -399,7 +399,7 @@ static void ResetLmxxf(Config* c)
 {
     Unset(c->DlssNrPasses, c->DlssNrTransferStrength, c->DlssNrColourStrength, c->DlssNrDebugView, c->LmxxfTemporal,
           c->LmxxfSmoothStrength, c->LmxxfSmoothThreshold, c->LmxxfSmoothResidual, c->LmxxfStyle, c->LmxxfVitReuse,
-          c->LmxxfCompact1080, c->LmxxfPassEstimate, c->LmxxfSkinProtect);
+          c->LmxxfCompact1080, c->LmxxfPassEstimate, c->LmxxfSkinProtect, c->LmxxfAutoExposure);
     UnsetReno(c);
     UnsetPerson(c);
 }
@@ -660,6 +660,12 @@ void RenderMenu(Config* config, float menuResScale)
             HelpMarker("The model's own processing profiles. Standard is NVIDIA's default; Natural is"
                        "\nthe one lmxxf's kernels had built in before. Changing it rebuilds the model,"
                        "\na pause of a second or two.");
+            bool autoExposure = config->LmxxfAutoExposure.value_or_default();
+            if (ImGui::Checkbox("Auto exposure", &autoExposure))
+                config->LmxxfAutoExposure = autoExposure;
+            HelpMarker("Auto exposure: gives the model a white point measured from the frame, for games that"
+                       "\nhand very dark linear colour (KCD2 at night) where the model shows grain or a green"
+                       "\ntint. Off by default.");
             float transfer = config->DlssNrTransferStrength.value_or_default();
             if (ImGui::SliderFloat("Detail strength", &transfer, 0.0f, 2.0f, "%.2f"))
                 config->DlssNrTransferStrength = transfer;
@@ -783,135 +789,12 @@ void RenderMenu(Config* config, float menuResScale)
             // pass back, with the MochizukiReno* settings drawn by group below.
             const uint32_t renoPasses = config->MochizukiRenoPasses.value_or_default();
             // An INI without MochizukiTemporal follows LmxxfTemporal, as LmxxfBackend::Record does.
-            bool temporal = config->MochizukiTemporal.has_value() ? config->MochizukiTemporal.value()
-                                                                  : config->LmxxfTemporal.value_or_default();
-            if (ImGui::Checkbox("Temporal history", &temporal))
-                config->MochizukiTemporal = temporal;
-            HelpMarker("The network also reads its own result from the previous frame, moved along the"
-                       "\ngame's motion vectors. Keeps the effect steadier in motion. Off runs every frame"
-                       "\non its own.");
-            ImGui::BeginDisabled(!temporal);
-            liveSlider("History strength", config->MochizukiHistoryStrength, 0.0f, 1.0f);
-            HelpMarker("How much of the previous frame's result the network's last block blends into this"
-                       "\none. Lower follows changes faster and steadies less. Even at 0 the network still"
-                       "\nreads the history; turn Temporal history off to drop it.");
-            ImGui::EndDisabled();
-            liveSlider("Stabilizer", config->MochizukiStabilizerStrength, 0.0f, 1.0f);
-            HelpMarker("Smooths small frame-to-frame changes of the neural effect along the game's motion"
-                       "\nvectors, after the runtime and before the upscaler. Changes larger than the threshold"
-                       "\npass through, and the game's own image is untouched. 0 turns it off; higher values can"
-                       "\nsoften fine detail in motion.");
-            float stabilizerThreshold = config->MochizukiStabilizerThreshold.value_or_default();
-            if (ImGui::SliderFloat("Stabilizer threshold", &stabilizerThreshold, 0.5f, 8.0f, "%.1f / 255"))
-                config->MochizukiStabilizerThreshold = stabilizerThreshold;
-            HelpMarker("Largest frame-to-frame change of the effect, in 1/255, that the stabilizer smooths.");
-
-            ImGui::SeparatorText("Effect");
-            static int mzPasses = 1;
-            static bool editingMzPasses = false;
-            if (!editingMzPasses)
-                mzPasses = int(std::clamp(config->MochizukiPasses.value_or_default(), 1u, 3u));
-            ImGui::SliderInt("Passes", &mzPasses, 1, 3);
-            editingMzPasses = ImGui::IsItemActive();
-            if (ImGui::IsItemDeactivatedAfterEdit())
-                config->MochizukiPasses = uint32_t(std::clamp(mzPasses, 1, 3));
-            HelpMarker("Runs the network again on its own output, for a stronger effect. Each pass adds the"
-                       "\nnetwork's whole GPU time to every frame, and some VRAM."
-                       "\n\nA change rebuilds the network, a second or two without NR, so it applies when"
-                       "\nyou release the slider.");
-            ImGui::BeginDisabled(mzPasses < 2);
-            bool cascade = config->MochizukiCascadeDetail.value_or_default();
-            if (ImGui::Checkbox("Later passes add detail only", &cascade))
-                config->MochizukiCascadeDetail = cascade;
-            ImGui::EndDisabled();
-            HelpMarker("With 2 or 3 passes: each later pass is shown the original frame carrying only the"
-                       "\nprevious pass's detail, so the passes sharpen without stacking the network's"
-                       "\nbrightness and colour shift. A change rebuilds the network.");
-            ImGui::BeginDisabled(mzPasses < 2);
-            bool antiHalo = config->MochizukiAntiHalo.value_or_default();
-            if (ImGui::Checkbox("Anti-halo", &antiHalo))
-                config->MochizukiAntiHalo = antiHalo;
-            ImGui::EndDisabled();
-            HelpMarker("With 2 or 3 passes: keeps each pixel's brightness inside what the first pass made"
-                       "\naround it, so thin edges such as wires do not take a light or dark rim that grows"
-                       "\nwith every pass.");
-            ImGui::BeginDisabled(mzPasses < 2 || !antiHalo);
-            liveSlider("Anti-halo strength", config->MochizukiAntiHaloStrength, 0.0f, 1.0f);
-            ImGui::EndDisabled();
-            HelpMarker("1 holds each pixel to the first pass's range around it; lower lets more of the later"
-                       "\npasses' sharpening through. 0.8 by default.");
-            ImGui::BeginDisabled(mzPasses < 3);
-            bool estimate = config->MochizukiPassEstimate.value_or_default();
-            if (ImGui::Checkbox("Estimate pass 3##mz", &estimate))
-                config->MochizukiPassEstimate = estimate;
-            ImGui::EndDisabled();
-            HelpMarker("With 3 passes: runs two and estimates the third from how the second changed the"
-                       "\nfirst, in 16x16 blocks. About a third less GPU time, close to a real third pass.");
-            static float mzScale = 100.f;
-            static bool editingMzScale = false;
-            if (!editingMzScale)
-                mzScale = std::clamp(config->MochizukiModelScale.value_or_default(), .25f, 1.f) * 100.f;
-            ImGui::SliderFloat("NR resolution (% of render)", &mzScale, 25, 100, "%.0f%%");
-            editingMzScale = ImGui::IsItemActive();
-            // The runtime builds in steps of 5%; committing the step it will use keeps the slider honest.
-            if (ImGui::IsItemDeactivatedAfterEdit())
-                config->MochizukiModelScale = std::round(std::clamp(mzScale, 25.f, 100.f) / 5.f) * 5.f / 100.f;
-            HelpMarker("The resolution the network runs at, as a share of the render resolution, in steps"
-                       "\nof 5%. Lower is faster, and the result is enlarged back to the frame, so fine"
-                       "\ndetail softens and slow pans can shimmer. 100% is the network's own."
-                       "\n\nA change rebuilds the network, a second or two without NR, so it applies when"
-                       "\nyou release the slider.");
-            liveSlider("Detail strength", config->MochizukiDetailStrength, 0.0f, 2.0f);
-            HelpMarker("How much of the network's detail reaches the frame. Above 1 it is exaggerated,"
-                       "\nup to twice its size at 2.");
-            liveSlider("Colour strength", config->MochizukiColourStrength, 0.0f, 4.0f);
-            HelpMarker("How much of the network's colour change reaches the frame. 0 keeps the frame's own"
-                       "\ncolour at the new brightness; above 1 the change is exaggerated.");
-            liveSlider("Highlight guard", config->MochizukiMaxRatio, 1.0f, 8.0f);
-            HelpMarker("The most the result may multiply or divide a pixel's brightness by. Keeps the"
-                       "\nnetwork from restyling light sources. 2 by default.");
-            RenoCompositionControls(config);
-
-            ImGui::SeparatorText("Model");
-            int style = int(std::min(config->MochizukiStyle.value_or_default(), 2u));
-            if (ImGui::Combo("Style", &style, "Standard\0Natural\0Cinematic\0"))
-                config->MochizukiStyle = uint32_t(style);
-            HelpMarker("The model's own processing profiles, fed to the network as it runs.");
-            liveSlider("Intensity", config->MochizukiIntensity, 0.0f, 2.0f);
-            HelpMarker("How strongly the network applies its change, before detail and colour strength."
-                       "\nBelow 1 it blends toward the original; above 1 it is exaggerated, on the last"
-                       "\npass only when several run.");
-            liveSlider("Local structure", config->MochizukiLocalStructure, 0.0f, 2.0f);
-            HelpMarker("The model's structure strength. With the automatic skin mask, the strength for"
-                       "\neverything but skin.");
-            liveSlider("Local tone", config->MochizukiLocalTone, 0.0f, 2.0f);
-            HelpMarker("The model's local lighting. Pass 1 only, unless a later pass sets its own:"
-                       "\napplied again on every pass it compounds.");
-            float skin = config->MochizukiSkinStructure.value_or_default();
-            if (ImGui::SliderFloat("Skin structure", &skin, -1.0f, 2.0f, "%.2f"))
-                config->MochizukiSkinStructure = skin;
-            HelpMarker("-1 follows local structure. Needs the automatic skin mask.");
-            bool mask = config->MochizukiAutoMask.value_or_default();
-            if (ImGui::Checkbox("Auto skin mask", &mask))
-                config->MochizukiAutoMask = mask;
-            HelpMarker("The model's own mask, which lets skin get its own structure strength.");
-            bool aco = config->MochizukiAco.value_or_default();
-            if (ImGui::Checkbox("ACO machine code (restart)", &aco))
-                config->MochizukiAco = aco;
-            HelpMarker("Runs the network as machine code made in advance by ACO, the Linux driver's compiler,"
-                       "\ninstead of compiling it with AMD's Windows one: about a fifth faster, the same picture."
-                       "\nTested by its author on AMD Software 26.9.2 only; if the game crashes or the picture is"
-                       "\nwrong, turn it off. Save Settings and start the game again to apply it.");
-            ImGui::BeginDisabled(!aco);
-            bool int4 = config->MochizukiInt4.value_or_default();
-            if (ImGui::Checkbox("int4 mixed network", &int4))
-                config->MochizukiInt4 = int4;
-            ImGui::EndDisabled();
-            HelpMarker("Runs part of the network in 4-bit integers: about a tenth faster than ACO alone, the"
-                       "\npicture close to the default network's but not the same. Needs ACO. Switching builds"
-                       "\nthe other network in a few seconds while the current one keeps running; no restart.");
-
-            if (ImGui::TreeNode("Pass 2/3"))
+            const bool temporalSet = config->MochizukiTemporal.has_value() ? config->MochizukiTemporal.value()
+                                                                           : config->LmxxfTemporal.value_or_default();
+            // Each part of the page is a header of its own, the finer groups inside it as tree nodes. "##mzsection"
+            // keeps a header's ID apart from a control of the same name inside it (Passes, Person protection).
+            if (auto section = ScopedCollapsingHeader("Model##mzsection", ImGuiTreeNodeFlags_DefaultOpen);
+                section.IsHeaderOpen())
             {
                 ScopedIndent indent {};
                 MochizukiRenoGroup(config, 1);

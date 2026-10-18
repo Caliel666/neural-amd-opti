@@ -803,8 +803,9 @@ class CommandListProxy final : public ID3D12GraphicsCommandList10, public ILogic
     // --- ID3D12GraphicsCommandList7 ---
     void STDMETHODCALLTYPE Barrier(UINT32 numGroups, const D3D12_BARRIER_GROUP* groups) override
     {
-        // Enhanced barriers: fail-closed admission until we can classify groups.
-        MarkSplitIneligible("enhanced_barrier");
+        const char* why = nullptr;
+        if (!resBook.OnEnhancedBarriers(numGroups, groups, &why))
+            MarkSplitIneligible(why ? why : "enhanced_barrier");
         if (auto* c = CurAs<ID3D12GraphicsCommandList7>())
         {
             c->Barrier(numGroups, groups);

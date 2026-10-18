@@ -401,6 +401,8 @@ struct Job
     uint32_t passes = 1;
     bool passEstimate = false, skinProtect = false; // LMXXF_NR_FRAME_FLAG_PASS3_ESTIMATE, _SKIN_PROTECT
     bool codec_passthrough = false;
+    bool autoWhite = false; // LMXXF_NR_FRAME_FLAG_AUTO_WHITE
+    bool firstPass = false; // LMXXF_NR_FRAME_FLAG_FIRST_PASS with two or more passes
     bool temporal = false;
     UINT histories = 0; // bit k: pass k+1 was given a history this frame
     float smoothThreshold = 0, smoothStrength = 0;
@@ -1190,11 +1192,11 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
                     return Fail(LMXXF_NR_UNAVAILABLE,
                                 "PrepareFrame: previous frame consumer not yet submitted (bridge not Ready)");
             }
-            const uint32_t allowedFlags = LMXXF_NR_FRAME_FLAG_STRENGTH | LMXXF_NR_FRAME_FLAG_DEBUG_VIEW |
-                                          LMXXF_NR_FRAME_FLAG_CODEC_PASSTHROUGH | LMXXF_NR_FRAME_FLAG_TEMPORAL |
-                                          LMXXF_NR_FRAME_FLAG_SMOOTH_RESIDUAL | LMXXF_NR_FRAME_FLAG_STYLE |
-                                          LMXXF_NR_FRAME_FLAG_VIT_REUSE | LMXXF_NR_FRAME_FLAG_COMPACT_1080 |
-                                          LMXXF_NR_FRAME_FLAG_PASS3_ESTIMATE | LMXXF_NR_FRAME_FLAG_SKIN_PROTECT;
+            const uint32_t allowedFlags =
+                LMXXF_NR_FRAME_FLAG_STRENGTH | LMXXF_NR_FRAME_FLAG_DEBUG_VIEW | LMXXF_NR_FRAME_FLAG_CODEC_PASSTHROUGH |
+                LMXXF_NR_FRAME_FLAG_TEMPORAL | LMXXF_NR_FRAME_FLAG_SMOOTH_RESIDUAL | LMXXF_NR_FRAME_FLAG_STYLE |
+                LMXXF_NR_FRAME_FLAG_VIT_REUSE | LMXXF_NR_FRAME_FLAG_COMPACT_1080 | LMXXF_NR_FRAME_FLAG_PASS3_ESTIMATE |
+                LMXXF_NR_FRAME_FLAG_SKIN_PROTECT | LMXXF_NR_FRAME_FLAG_FIRST_PASS | LMXXF_NR_FRAME_FLAG_AUTO_WHITE;
             if ((info->flags & ~allowedFlags) != 0)
                 return Fail(LMXXF_NR_INVALID_ARGUMENT, "PrepareFrame: unknown flags");
             if (session->shaderDir.empty())
@@ -1461,6 +1463,9 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
             session->job.passEstimate = (info->flags & LMXXF_NR_FRAME_FLAG_PASS3_ESTIMATE) != 0;
             session->job.skinProtect = (info->flags & LMXXF_NR_FRAME_FLAG_SKIN_PROTECT) != 0;
             session->job.codec_passthrough = (info->flags & LMXXF_NR_FRAME_FLAG_CODEC_PASSTHROUGH) != 0;
+            session->job.autoWhite = (info->flags & LMXXF_NR_FRAME_FLAG_AUTO_WHITE) != 0;
+            session->job.firstPass = fullJob && (info->flags & LMXXF_NR_FRAME_FLAG_FIRST_PASS) && passes > 1 &&
+                                     !session->job.codec_passthrough && !session->firstFailed;
             session->colorFormat = cfmt;
             session->job.seed = 1;
 
@@ -1540,7 +1545,15 @@ int32_t RecordInputs(void* context, void* job, void* command_list)
                 return Fail(LMXXF_NR_INVALID_ARGUMENT, "RecordInputs: job not in PREPARED state");
             ListContract(session, list);
 
-            session->encode->Record(list, { j->colorState }, 1.f);
+            if (j->autoWhite)
+            {
+                // The decode measures the same frame (the game's colour), so both sides take one white point.
+                NativeCodecParameters p = NativeGameCodec::LegacyParameters();
+                p.auto_white = true;
+                session->encode->Record(list, { j->colorState }, 1.f, p);
+            }
+            else
+                session->encode->Record(list, { j->colorState }, 1.f);
             if (j->codec_passthrough)
             {
                 // Bypass HIP: Copy encoder output directly to rgbTex output so decoder receives it as
@@ -1870,6 +1883,7 @@ int32_t RecordOutputs(void* context, void* job, void* command_list)
             codecParams.transfer_strength = j->transfer_strength;
             codecParams.color_strength = j->color_strength;
             codecParams.debug_view = static_cast<NativeCodecDebugView>(j->debug_view);
+            codecParams.auto_white = j->autoWhite;
             session->decode->Record(list,
                                     { D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
                                       D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, j->colorState },

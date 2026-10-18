@@ -101,6 +101,16 @@ extern "C"
 /* mochizuki, two or three passes: after the last, each pixel's luminance is held inside the range the first pass's
    answer has around it, so thin edges do not gain a rim that grows every pass. Per frame, no rebuild. */
 #define LMXXF_NR_FRAME_FLAG_ANTI_HALO (1u << 12)
+/* mochizuki: the 310.8 model (dlssnr-amd\dlssnr.bin) instead of 310.9's new one (dlssnr-small.bin, about a third
+   faster, the default when it is there). int4 mixed exists for the 310.8 model only. A change rebuilds the network. */
+#define LMXXF_NR_FRAME_FLAG_ORIGINAL_MODEL (1u << 13)
+/* Two or more passes: the first pass's answer as well, in LmxxfNrJob::first_pass_output, for person protection. A
+   texture of the frame's size, readable after RecordOutputs as private_output is. Needs the job's full size; a runtime
+   that has none this frame leaves it null. */
+#define LMXXF_NR_FRAME_FLAG_FIRST_PASS (1u << 14)
+/* lmxxf: the codec's white point measured from the frame's mean luminance (auto_white) instead of a fixed 1.0, on the
+   encode and every decode, for games that hand very dark linear colour. Per frame, no rebuild. */
+#define LMXXF_NR_FRAME_FLAG_AUTO_WHITE (1u << 15)
 
     typedef struct LmxxfNrFrameInfo
     {

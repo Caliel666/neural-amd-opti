@@ -841,6 +841,27 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
         // The previous Evaluate already returned its output to SR. Cancelling its
         // job here would leave that recorded continuation consuming invalid data.
         // It clears when its list is executed (Submitted), or Reset or released unexecuted (ListRecycled).
+        // A second Evaluate of that same frame on another list (NBA 2K27, ~5 ms later) keeps the history: the next
+        // frame follows the pending one. Same colour, extent and jitter, and, when the game hands no jitter, well
+        // inside one frame interval; anything else may be a new frame and resets as before.
+        const LastFrame& lf = lastFrame;
+        const bool jittered = frame.jitterX != 0.f || frame.jitterY != 0.f;
+        const ULONGLONG elapsed = GetTickCount64() - lf.tick;
+        const bool sameFrame = !frame.reset && frame.colour == lf.colour && frame.width == lf.width &&
+                               frame.height == lf.height && frame.jitterX == lf.jitterX &&
+                               frame.jitterY == lf.jitterY && (jittered || (lf.interval && elapsed * 2 < lf.interval));
+        if (sameFrame)
+        {
+            if (!repeatLogged)
+            {
+                repeatLogged = true;
+                LOG_INFO("lmxxf: second Evaluate of the pending frame on cmd {:X} (pending cmd {:X}, {} ms later); "
+                         "declined, history kept (logged once)",
+                         (size_t) cmd, (size_t) pendingCmd, elapsed);
+            }
+            SetStatus("lmxxf: previous frame not submitted (original Color; NO NR)");
+            return nullptr;
+        }
         return declineFrame("lmxxf: previous frame not submitted (original Color; NO NR)");
     }
     // Crucially before EnsureSession: controls do not load the runtime, prepare HIP,
@@ -887,6 +908,16 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
     fi.struct_size = FrameInfoSize();
     // Only frames that reach PrepareFrame count, so a duplicate Evaluate cannot break the history's continuity.
     fi.frame_id = ++frameId;
+    {
+        const ULONGLONG now = GetTickCount64();
+        lastFrame = { frame.colour,
+                      frame.width,
+                      frame.height,
+                      frame.jitterX,
+                      frame.jitterY,
+                      now,
+                      lastFrame.tick ? now - lastFrame.tick : 0 };
+    }
     fi.command_list = cmd;
     fi.color_width = frame.width ? frame.width : static_cast<uint32_t>(desc.Width);
     fi.color_height = frame.height ? frame.height : static_cast<uint32_t>(desc.Height);
@@ -910,6 +941,8 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
             fi.flags |= LMXXF_NR_FRAME_FLAG_PASS3_ESTIMATE;
         if (Config::Instance()->LmxxfSkinProtect.value_or_default())
             fi.flags |= LMXXF_NR_FRAME_FLAG_SKIN_PROTECT;
+        if (Config::Instance()->LmxxfAutoExposure.value_or_default())
+            fi.flags |= LMXXF_NR_FRAME_FLAG_AUTO_WHITE;
     }
     else
     {
@@ -936,9 +969,10 @@ ID3D12Resource* LmxxfBackend::Record(ID3D12GraphicsCommandList* cmd, const AmdPr
             // The step from this frame's jitter to the last one's, in render pixels, as the stabilizer takes it; in
             // the vectors' own units it is that over their extent's share of the render grid and their scale.
             const bool jitterOn = Config::Instance()->MochizukiJitterHistory.value_or_default();
-            const bool shift = jitterOn && haveJitter && !frame.afterUpscale &&
-                               (frame.jitterX != lastJitterX || frame.jitterY != lastJitterY) &&
-                               frame.motionScaleX != 0.f && frame.motionScaleY != 0.f && frame.width && frame.height;
+            // Every frame goes through the shift while it is on, a zero step included: the vectors change format
+            // there, and a frame that skipped it would make the runtime rebuild its buffers and drop the history.
+            const bool shift = jitterOn && !frame.afterUpscale && frame.motionScaleX != 0.f &&
+                               frame.motionScaleY != 0.f && frame.width && frame.height;
             float offsetX = 0.f, offsetY = 0.f;
             if (shift && haveJitter)
             {

@@ -27,9 +27,10 @@ inline std::atomic<bool> g_expandEnabled { false };
 // Product: ProxyWrap starts OFF; swapchain ctor enables it (Streamline-safe). Harness: SetProxyWrap(true) after Arm.
 // Harnesses can SetProxyWrap(true) after Arm.
 inline std::atomic<bool> g_proxyWrap { false };
-// UE can retain lists created before the first swapchain. Wrap only calls from
-// the host executable during boot; Streamline and vendor modules stay native.
+// Games can retain lists created before the first swapchain (UE, KCD2's CryEngine). Wrap only calls from the host
+// executable, or the game module that created the device, during boot; Streamline and vendor modules stay native.
 inline std::atomic<bool> g_earlyExeWrap { false };
+inline std::atomic<HMODULE> g_deviceModule { nullptr };
 inline std::atomic<uint32_t> g_earlyWrappedLists { 0 };
 inline std::atomic<bool> g_wrapOpenLists { false };
 inline std::mutex g_executeMu;
@@ -56,12 +57,49 @@ inline void SetProxyWrap(bool on) { g_proxyWrap.store(on, std::memory_order_rele
 inline void SetEarlyExeWrap(bool on) { g_earlyExeWrap.store(on, std::memory_order_release); }
 inline void SetWrapOpenLists(bool on) { g_wrapOpenLists.store(on, std::memory_order_release); }
 
+inline HMODULE ModuleOf(void* address)
+{
+    HMODULE module = nullptr;
+    return GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                              reinterpret_cast<LPCWSTR>(address), &module)
+               ? module
+               : nullptr;
+}
+
+// The module that called D3D12CreateDevice, when it is the game's own: in the game's folder, neither OptiScaler nor
+// one of the vendor libraries that ship beside games (Streamline, NGX, FidelityFX, XeSS).
+inline void NoteDeviceCaller(void* address)
+{
+    const HMODULE module = ModuleOf(address);
+    if (!module || module == GetModuleHandleW(nullptr))
+        return;
+    wchar_t path[MAX_PATH] {}, exe[MAX_PATH] {};
+    if (!GetModuleFileNameW(module, path, MAX_PATH) || !GetModuleFileNameW(nullptr, exe, MAX_PATH) ||
+        module == ModuleOf(reinterpret_cast<void*>(&NoteDeviceCaller)))
+        return;
+    std::wstring file = path, game = exe;
+    for (auto* s : { &file, &game })
+        for (auto& c : *s)
+            c = towlower(c);
+    const auto cut = game.find_last_of(L"\\/");
+    // The exe's folder, or the one above it (KCD2: Bin\Win64...\WHGame.DLL beside the exe)
+    auto root = game.substr(0, cut == std::wstring::npos ? 0 : cut);
+    if (const auto up = root.find_last_of(L"\\/"); up != std::wstring::npos)
+        root.resize(up);
+    const auto name = file.substr(file.find_last_of(L"\\/") + 1);
+    if (root.empty() || file.rfind(root, 0) != 0)
+        return;
+    for (const wchar_t* vendor :
+         { L"sl.", L"nvngx", L"_nvngx", L"amd_fidelityfx", L"ffx", L"libxess", L"dxgi", L"d3d" })
+        if (name.rfind(vendor, 0) == 0)
+            return;
+    g_deviceModule.store(module, std::memory_order_release);
+}
+
 inline bool IsHostExecutableCaller(void* address)
 {
-    HMODULE caller = nullptr;
-    return GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                              reinterpret_cast<LPCWSTR>(address), &caller) &&
-           caller == GetModuleHandleW(nullptr);
+    const HMODULE caller = ModuleOf(address);
+    return caller && (caller == GetModuleHandleW(nullptr) || caller == g_deviceModule.load(std::memory_order_acquire));
 }
 
 inline bool ShouldWrapCreate(void* caller)

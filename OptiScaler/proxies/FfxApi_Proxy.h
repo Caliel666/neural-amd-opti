@@ -140,7 +140,8 @@ class FfxApiProxy
     }
 
     static bool LoadFfxModuleDx12(FfxModule& proxyModule, const std::span<const std::wstring> dllNames,
-                                  HMODULE module = nullptr, void (*loadCallback)(HMODULE) = nullptr)
+                                  HMODULE module = nullptr, void (*loadCallback)(HMODULE) = nullptr,
+                                  const std::wstring& overridePath = L"")
     {
         // Early exit if already loaded
         if (proxyModule.dll != nullptr && proxyModule.CreateContext != nullptr)
@@ -161,7 +162,7 @@ class FfxApiProxy
                 WLOG_DEBUG(L"Trying to load {}", name);
 
                 HMODULE memModule = nullptr;
-                Util::LoadProxyLibrary(name, optiPath, L"", &memModule, &proxyModule.dll);
+                Util::LoadProxyLibrary(name, optiPath, overridePath, &memModule, &proxyModule.dll);
 
                 if (proxyModule.dll != nullptr)
                 {
@@ -421,20 +422,27 @@ class FfxApiProxy
 
     static bool InitFfxDx12_SR(HMODULE module = nullptr)
     {
-        return LoadFfxModuleDx12(upscaling_dx12, ffxDx12UpscalerNamesW, module,
-                                 [](HMODULE hMod) { FSR4ModelSelection::Hook(hMod, FSR4Source::SDK); });
+        return LoadFfxModuleDx12(
+            upscaling_dx12, ffxDx12UpscalerNamesW, module, [](HMODULE hMod)
+            { FSR4ModelSelection::Hook(hMod, FSR4Source::SDK); }, Config::Instance()->FfxDx12SRPath.value_or(L""));
     }
 
-    static bool InitFfxDx12_FG(HMODULE module = nullptr) { return LoadFfxModuleDx12(fg_dx12, ffxDx12FGNamesW, module); }
+    static bool InitFfxDx12_FG(HMODULE module = nullptr)
+    {
+        return LoadFfxModuleDx12(fg_dx12, ffxDx12FGNamesW, module, nullptr,
+                                 Config::Instance()->FfxDx12FGPath.value_or(L""));
+    }
 
     static bool InitFfxDx12_Denoiser(HMODULE module = nullptr)
     {
-        return LoadFfxModuleDx12(denoiser_dx12, ffxDx12DenoiserNamesW, module);
+        return LoadFfxModuleDx12(denoiser_dx12, ffxDx12DenoiserNamesW, module, nullptr,
+                                 Config::Instance()->FfxDx12RRPath.value_or(L""));
     }
 
     static bool InitFfxDx12_Radiance(HMODULE module = nullptr)
     {
-        return LoadFfxModuleDx12(radiance_dx12, ffxDx12RadianceNamesW, module);
+        return LoadFfxModuleDx12(radiance_dx12, ffxDx12RadianceNamesW, module, nullptr,
+                                 Config::Instance()->FfxDx12RCPath.value_or(L""));
     }
 
     static feature_version VersionDx12()

@@ -909,31 +909,21 @@ struct Vulkan
         }
         if (!chosen)
         {
-            VkBool32 wanted, offered;
-            const char* name;
-        } features[] = {
-            { coop.cooperativeMatrix, hasCoop.cooperativeMatrix, "cooperativeMatrix" },
-            { fp8.shaderFloat8, hasFp8.shaderFloat8, "shaderFloat8" },
-            { fp8.shaderFloat8CooperativeMatrix, hasFp8.shaderFloat8CooperativeMatrix,
-              "shaderFloat8CooperativeMatrix" },
-            { f11.storageBuffer16BitAccess, has11.storageBuffer16BitAccess, "storageBuffer16BitAccess" },
-            { f12.storageBuffer8BitAccess, has12.storageBuffer8BitAccess, "storageBuffer8BitAccess" },
-            { f12.shaderFloat16, has12.shaderFloat16, "shaderFloat16" },
-            { f12.shaderInt8, has12.shaderInt8, "shaderInt8" },
-            { f12.vulkanMemoryModel, has12.vulkanMemoryModel, "vulkanMemoryModel" },
-            { f12.timelineSemaphore, has12.timelineSemaphore, "timelineSemaphore" },
-            { f13.subgroupSizeControl, has13.subgroupSizeControl, "subgroupSizeControl" },
-            { f13.synchronization2, has13.synchronization2, "synchronization2" },
-            { wml.workgroupMemoryExplicitLayout, hasWml.workgroupMemoryExplicitLayout,
-              "workgroupMemoryExplicitLayout" },
-            { wml.workgroupMemoryExplicitLayout8BitAccess, hasWml.workgroupMemoryExplicitLayout8BitAccess,
-              "workgroupMemoryExplicitLayout8BitAccess" },
-            { wml.workgroupMemoryExplicitLayout16BitAccess, hasWml.workgroupMemoryExplicitLayout16BitAccess,
-              "workgroupMemoryExplicitLayout16BitAccess" },
-        };
-        for (const auto& f : features)
-            if (f.wanted && !f.offered)
-                throw std::runtime_error(std::string("[unsupported] the driver lacks the Vulkan feature ") + f.name);
+            if (matches.size() > 1)
+                refused += " (" + std::to_string(matches.size()) +
+                           " Vulkan devices share this adapter, none passes: a duplicate or stale driver may be "
+                           "installed)";
+            throw std::runtime_error(refused);
+        }
+        physical = chosen->device;
+        name = chosen->name;
+        if (matches.size() > 1)
+        {
+            // The check runs again on the one taken, so the queue families and extensions below are its own.
+            nr::logf("[mochizuki] %zu Vulkan devices share this adapter (a duplicate driver); using device %zu",
+                     matches.size(), size_t(chosen - matches.data()));
+            check(physical);
+        }
         // Optional: without it the network takes its descriptor reads.
         bufferDeviceAddress = deviceAddress;
         f12.bufferDeviceAddress = bufferDeviceAddress ? VK_TRUE : VK_FALSE;
