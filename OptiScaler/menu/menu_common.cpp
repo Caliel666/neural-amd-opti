@@ -11,6 +11,9 @@
 #include <dlssnr/backend/Selector.h>
 
 #include "input/input_system.h"
+#include "input/shortcut_keys.h"
+#include <shellapi.h>
+#include <misc/Screenshot.h>
 
 #include "font/Hack_Compressed.h"
 
@@ -177,6 +180,7 @@ static float lastMenuScale = 0.0f;
 static CustomOptional<uint32_t> comboPreset { 0 };
 static int lastKey = 0;
 static bool inputDlssNr = false;
+static bool inputScreenshot = false;
 static bool capturingKey = false;
 
 template <typename T, size_t N> struct RingBuffer
@@ -262,47 +266,103 @@ inline std::string StrFmt(const char* fmt, ...)
     return out;
 }
 
+// The modifiers held now, as ShortcutKeys flags.
+static int HeldModifiers()
+{
+    int held = 0;
+    auto down = [](int a, int b, int c)
+    { return OptiInput::IsKeyDown(a) || OptiInput::IsKeyDown(b) || OptiInput::IsKeyDown(c); };
+
+    if (down(VK_CONTROL, VK_LCONTROL, VK_RCONTROL))
+        held |= ShortcutKeys::Ctrl;
+    if (down(VK_SHIFT, VK_LSHIFT, VK_RSHIFT))
+        held |= ShortcutKeys::Shift;
+    if (down(VK_MENU, VK_LMENU, VK_RMENU))
+        held |= ShortcutKeys::Alt;
+    if (OptiInput::IsKeyDown(VK_TAB))
+        held |= ShortcutKeys::Tab;
+
+    return held;
+}
+
+// The text for a binding, e.g. "Ctrl+Shift+Home".
+static std::string ShortcutName(int binding);
+
 void MenuCommon::UpdateManualInput(HWND targetHwnd)
 {
     OptiInput::BeginFrame(targetHwnd);
 
     const auto config = Config::Instance();
+    const int held = HeldModifiers();
 
-    auto CheckShortcut = [&](int vk, bool& inputFlag, const char* logMessage)
+    // The modifiers held when each key went down: a chord still counts when a modifier is let go before the key.
+    static std::array<int, 256> pressModifiers = []
     {
-        if (inputFlag)
+        std::array<int, 256> a;
+        a.fill(-1);
+        return a;
+    }();
+
+    std::vector<int> released;
+
+    auto CheckShortcut = [&](int binding, bool& inputFlag, const char* logMessage)
+    {
+        if (!ShortcutKeys::Bound(binding))
             return;
 
-        if (vk <= 0 || vk >= 256)
+        const int vk = ShortcutKeys::Key(binding);
+
+        if (OptiInput::IsKeyPressed(vk))
+            pressModifiers[vk] = held;
+
+        if (!OptiInput::IsKeyReleased(vk))
             return;
 
-        if (OptiInput::IsKeyReleased(vk))
-        {
-            lastKey = vk;
-            // receivingWmInputs = false;
-            inputFlag = true;
-            // The same release can arrive by message and by polling; without this the menu toggles twice.
-            lastInputTick = GetTickCount64();
-            LOG_DEBUG("{}", logMessage);
-        }
+        // Print Screen may come as a key-up alone; then the modifiers held now count.
+        const int modifiers = pressModifiers[vk] >= 0 ? pressModifiers[vk] : held;
+        released.push_back(vk);
+
+        if (inputFlag || capturingKey || lastInputTick + debounceThreshold >= GetTickCount64() ||
+            !ShortcutKeys::Matches(binding, vk, modifiers))
+            return;
+
+        lastKey = vk;
+        // receivingWmInputs = false;
+        inputFlag = true;
+        // The same release can arrive by message and by polling; without this the menu toggles twice.
+        lastInputTick = GetTickCount64();
+        LOG_DEBUG("{}", logMessage);
     };
 
-    const auto currentTick = GetTickCount64();
-    const bool canAcceptInputs = lastInputTick + debounceThreshold < currentTick;
+    CheckShortcut(config->ShortcutKey.value_or_default(), inputMenu, "Menu key pressed, will be switching menu");
+    CheckShortcut(config->FpsShortcutKey.value_or_default(), inputFps, "Menu key pressed, will be switching FPS");
+    CheckShortcut(config->FGShortcutKey.value_or_default(), inputFG, "Menu key pressed, will be switching FG mode");
+    CheckShortcut(config->FpsCycleShortcutKey.value_or_default(), inputFpsCycle,
+                  "Menu key pressed, will be switching FPS mode");
+    CheckShortcut(config->DlssNrToggleKey.value_or_default(), inputDlssNr,
+                  "Neural Rendering key pressed, will be toggling the pass");
+    CheckShortcut(config->ScreenshotKey.value_or_default(), inputScreenshot,
+                  "Screenshot key pressed, will be saving the next frame");
 
-    if (!capturingKey && canAcceptInputs)
+    for (int vk : released)
+        pressModifiers[vk] = -1;
+
+    if (capturingKey)
+        lastInputTick = GetTickCount64();
+
+    // Taken here rather than with the other keys in the menu frame: the capture point of the next present comes
+    // before OptiScaler's overlay is drawn on it.
+    if (inputScreenshot)
     {
-        CheckShortcut(config->ShortcutKey.value_or_default(), inputMenu, "Menu key pressed, will be switching menu");
-        CheckShortcut(config->FpsShortcutKey.value_or_default(), inputFps, "Menu key pressed, will be switching FPS");
-        CheckShortcut(config->FGShortcutKey.value_or_default(), inputFG, "Menu key pressed, will be switching FG mode");
-        CheckShortcut(config->FpsCycleShortcutKey.value_or_default(), inputFpsCycle,
-                      "Menu key pressed, will be switching FPS mode");
-        CheckShortcut(config->DlssNrToggleKey.value_or_default(), inputDlssNr,
-                      "Neural Rendering key pressed, will be toggling the pass");
+        inputScreenshot = false;
+        Screenshot::Request();
     }
-    else if (capturingKey)
+
+    // The folder chosen in the picker, which runs on a thread of its own.
+    if (auto picked = Screenshot::Picked())
     {
-        lastInputTick = currentTick;
+        config->ScreenshotPath = *picked;
+        LOG_INFO("Screenshot folder: {}", wstring_to_string(*picked));
     }
 
     lastKey = OptiInput::GetLastPressedKey();
@@ -366,6 +426,8 @@ class Keybind
     std::string name;
     int id;
     bool waitingForKey = false;
+    // A modifier pressed while recording: let go with no other key, it is bound alone.
+    int pendingModifier = 0;
 
   public:
     Keybind(std::string name, int id) : name(name), id(id) {}
@@ -416,36 +478,57 @@ class Keybind
         {
             waitingForKey = true;
             capturingKey = true;
+            pendingModifier = 0;
             lastKey = 0;
         }
         ImGui::PopID();
 
         if (waitingForKey)
         {
+            const int held = HeldModifiers();
             ImGui::SameLine();
-            ImGui::Text("Press any key...");
+            ImGui::Text("%sPress any key...", ShortcutKeys::ModifierText(held).c_str());
 
             if (lastKey == 0 || lastKey == VK_LBUTTON || lastKey == VK_RBUTTON || lastKey == VK_MBUTTON)
+            {
+                if (pendingModifier != 0 && OptiInput::IsKeyReleased(pendingModifier))
+                {
+                    configKey = pendingModifier;
+                    waitingForKey = false;
+                    capturingKey = false;
+                    pendingModifier = 0;
+                }
                 return;
+            }
 
             if (lastKey == VK_ESCAPE)
             {
                 waitingForKey = false;
                 capturingKey = false;
+                pendingModifier = 0;
+                return;
+            }
+
+            // Ctrl, Shift, Alt and Tab wait for the key they go with.
+            if (ShortcutKeys::ModifierOf(lastKey) != 0)
+            {
+                pendingModifier = lastKey;
                 return;
             }
 
             if (lastKey == VK_BACK)
-                lastKey = UnboundKey;
+                configKey = UnboundKey;
+            else
+                configKey = lastKey | held;
 
-            configKey = lastKey;
             waitingForKey = false;
             capturingKey = false;
+            pendingModifier = 0;
             return;
         }
 
         ImGui::SameLine();
-        ImGui::Text(KeyNameFromVirtualKeyCode(configKey.value_or_default()).c_str());
+        ImGui::Text(ShortcutName(configKey.value_or_default()).c_str());
 
         ImGui::SameLine();
         ImGui::PushID(id);
@@ -456,6 +539,15 @@ class Keybind
         ImGui::PopID();
     }
 };
+
+static std::string ShortcutName(int binding)
+{
+    if (!ShortcutKeys::Bound(binding))
+        return "Unbound";
+
+    return ShortcutKeys::ModifierText(ShortcutKeys::Modifiers(binding)) +
+           Keybind::KeyNameFromVirtualKeyCode(static_cast<USHORT>(ShortcutKeys::Key(binding)));
+}
 
 Upscaler MenuCommon::GetBackendCode(const API api)
 {
@@ -1625,9 +1717,8 @@ void MenuCommon::UpdateVersionAndStartupNotifications(RenderMenuContext& ctx)
             {
                 ImGuiToast updateNotification { ImGuiToastType::Error, updateNoticeTime };
                 updateNotification.setTitle("OptiScaler Update available");
-                updateNotification.setContent(
-                    "Press %s for more info",
-                    Keybind::KeyNameFromVirtualKeyCode(config->ShortcutKey.value_or_default()).c_str());
+                updateNotification.setContent("Press %s for more info",
+                                              ShortcutName(config->ShortcutKey.value_or_default()).c_str());
                 ImGui::InsertNotification(updateNotification);
                 return true;
             };
@@ -1762,8 +1853,7 @@ void MenuCommon::RenderSplashWindow(RenderMenuContext& ctx)
                 else
                     ImGui::SetWindowFontScale(splashScale);
 
-                ImGui::Text("OptiScaler - %s for menu",
-                            Keybind::KeyNameFromVirtualKeyCode(config->ShortcutKey.value_or_default()).c_str());
+                ImGui::Text("OptiScaler - %s for menu", ShortcutName(config->ShortcutKey.value_or_default()).c_str());
                 ImGui::TextColored(toneMapColor(ImVec4(1.0f, 1.0f, 1.0f, 0.7f)), splashMessage.c_str());
 
                 splashSize = ImGui::GetWindowSize();
@@ -6303,7 +6393,12 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
             // has a live count - namely the one that came from the game.
             const bool autoMode = !config->FGXeFGInterpolationCount.has_value();
 
-            const int currentCount = (int) fgOutput->GetInterpolatedFrameCount();
+            // Dynamic MFG moves the live count around; an explicit choice is its ceiling and stays the one shown
+            const bool dynamicCeiling =
+                !autoMode && config->FGXeFGDynamicMFG.value_or_default() && XeFGProxy::Version().major >= 3;
+            const int currentCount = dynamicCeiling
+                                         ? std::min(config->FGXeFGInterpolationCount.value(), maxInterpolationCount)
+                                         : (int) fgOutput->GetInterpolatedFrameCount();
             const int currentSet = currentCount - 1;
 
             // Only an explicit choice can be "custom". While auto is following the game
@@ -6449,6 +6544,70 @@ void MenuCommon::RenderFrameGenerationRuntimeSettings(RenderMenuContext& ctx)
                        "frames over at once and only spaces out the last one, which\n"
                        "reads as judder at 4X and above\n\n"
                        "NEEDS GAME RESTART TO BE ACTIVE!");
+
+        if (XeFGProxy::Version().major >= 3)
+        {
+            ImGui::BeginDisabled(maxInterpolationCount <= 1);
+            bool dynamicMfg = config->FGXeFGDynamicMFG.value_or_default();
+            if (ImGui::Checkbox("Dynamic MFG##xefg", &dynamicMfg))
+                config->FGXeFGDynamicMFG = dynamicMfg;
+            ShowHelpMarker("Picks the multiplier every frame, up to the MFG setting,\n"
+                           "the lowest that reaches the target. It can go above the target,\n"
+                           "only the FPS limit or V-Sync caps the presented frame rate.\n"
+                           "When the target can't be reached, a higher multiplier is kept\n"
+                           "only if it raises the frame rate enough: each generated frame\n"
+                           "costs GPU time.");
+            ImGui::EndDisabled();
+
+            if (dynamicMfg && maxInterpolationCount > 1)
+            {
+                ImGui::SameLine(0.0f, 16.0f);
+                const UINT liveCount = fgOutput->GetInterpolatedFrameCount();
+                ImGui::TextDisabled("Output: %uX", liveCount + 1);
+
+                static float targetFps = config->FGXeFGFramerateTargetDMFG.value_or_default();
+                ImGui::PushItemWidth(95.0f * menuResScale);
+                ImGui::SliderFloat("DMFG FPS Target##xefg", &targetFps, 0.0f, 360.0f, "%.1f");
+                ShowHelpMarker("0 means OptiScaler's FPS limit, or without one just under the display\n"
+                               "refresh rate (116 at 120 Hz). A target above the FPS limit uses the limit.");
+                ImGui::PopItemWidth();
+
+                ImGui::BeginDisabled(targetFps == config->FGXeFGFramerateTargetDMFG.value_or_default());
+                ImGui::SameLine(0.0f, 16.0f);
+                if (ImGui::Button("Apply Target##xefg"))
+                    config->FGXeFGFramerateTargetDMFG = targetFps;
+                ImGui::EndDisabled();
+
+                ImGui::BeginDisabled(!config->FGXeFGFramerateTargetDMFG.has_value());
+                ImGui::SameLine(0.0f, 16.0f);
+                if (ImGui::Button("Reset Target##xefg"))
+                {
+                    config->FGXeFGFramerateTargetDMFG.reset();
+                    targetFps = config->FGXeFGFramerateTargetDMFG.value_or_default();
+                }
+                ImGui::EndDisabled();
+
+                int rounding = std::clamp(config->FGXeFGRoundingDMFG.value_or_default(), 0, 2);
+                const char* roundingItems[] = { "Down", "Nearest", "Up" };
+                ImGui::PushItemWidth(95.0f * menuResScale);
+                if (ImGui::Combo("DMFG Rounding##xefg", &rounding, roundingItems, 3))
+                    config->FGXeFGRoundingDMFG = rounding;
+                ShowHelpMarker("How the multiplier the target asks for (target / real frame rate) is rounded.\n"
+                               "It changes only when clearly off, so the frame rate can sit under the target.\n"
+                               "Down: stays under the target (2X from 61% of it).\n"
+                               "Nearest: around the target (2X from 71%, 6X from 88%).\n"
+                               "Up: reaches the target (2X from 87%, 6X from 95%).");
+                ImGui::PopItemWidth();
+
+                ImGui::SameLine(0.0f, 16.0f);
+                bool allow1x = config->FGXeFGDynamicAllow1X.value_or_default();
+                if (ImGui::Checkbox("Allow 1X##xefg", &allow1x))
+                    config->FGXeFGDynamicAllow1X = allow1x;
+                ShowHelpMarker("Lets Dynamic MFG turn frame generation off (1X) when the game alone\n"
+                               "is close enough to the target (to nearest: from 56% of it).\n"
+                               "Turning it back on shows one real frame without generated frames.");
+            }
+        }
 
         bool fgDV = config->FGXeFGDebugView.value_or_default();
         if (ImGui::Checkbox("Debug View##2", &fgDV))
@@ -9485,7 +9644,7 @@ void MenuCommon::RenderKeybindSettings(RenderMenuContext& ctx)
         ScopedIndent indent {};
         ImGui::Spacing();
 
-        ImGui::Text("Key combinations are currently NOT supported!");
+        ImGui::Text("Hold Ctrl, Shift, Alt or Tab with a key for a combination");
         ImGui::Text("Escape to cancel, Backspace to unbind");
         ImGui::Spacing();
 
@@ -9494,13 +9653,50 @@ void MenuCommon::RenderKeybindSettings(RenderMenuContext& ctx)
         static auto fpsOverlayCycle = Keybind("FPS Overlay Cycle", 12);
         static auto fgEnable = Keybind("Frame Generation", 13);
         static auto dlssNrToggle = Keybind("Neural Rendering", 14);
+        static auto screenshot = Keybind("Screenshot", 15);
 
         menu.Render(config->ShortcutKey);
         fpsOverlay.Render(config->FpsShortcutKey);
         fpsOverlayCycle.Render(config->FpsCycleShortcutKey);
         fgEnable.Render(config->FGShortcutKey);
         dlssNrToggle.Render(config->DlssNrToggleKey);
+        screenshot.Render(config->ScreenshotKey);
+
+        bool withMenu = config->ScreenshotWithMenu.value_or_default();
+        if (ImGui::Checkbox("Also save a copy with the menu when it is open", &withMenu))
+            config->ScreenshotWithMenu = withMenu;
+        ShowHelpMarker("The same frame twice: without OptiScaler's overlays, and as shown with the menu on it,\n"
+                       "named \"... (menu).png\".");
+
+        // Where the screenshot key saves, without OptiScaler's overlays.
+        const auto folder = Screenshot::Folder();
+        ImGui::TextDisabled("Screenshots: %s", wstring_to_string(folder.wstring()).c_str());
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Open"))
+        {
+            std::error_code error;
+            std::filesystem::create_directories(folder, error);
+            ShellExecuteW(nullptr, L"open", folder.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        }
+        ImGui::SameLine();
+        ImGui::BeginDisabled(Screenshot::Picking());
+        if (ImGui::SmallButton("Change folder..."))
+            Screenshot::PickFolder();
+        ImGui::EndDisabled();
+        if (config->ScreenshotPath.has_value() && !config->ScreenshotPath.value().empty())
+        {
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Default"))
+                config->ScreenshotPath.reset();
+            ImGui::SetItemTooltip("Back to %s", wstring_to_string(Screenshot::DefaultFolder().wstring()).c_str());
+        }
     }
+}
+
+void MenuCommon::RenderKeybind(const char* name, int id, CustomOptional<int>& key)
+{
+    static std::unordered_map<int, Keybind> binds;
+    binds.try_emplace(id, name, id).first->second.Render(key);
 }
 
 // One pill per component the game can reach OptiScaler through: a green dot when it is there, a grey

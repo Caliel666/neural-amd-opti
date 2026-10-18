@@ -117,6 +117,19 @@ One leftover: without `MochizukiTemporal`, `LmxxfTemporal` decides.
 Multi frame generation reads `[XeFG]`: `InterpolationCount` (`auto` follows the game, 1 to 7 is
 2X to 8X), `UnlockMFG`, `MaxInterpolatedFrames` (default 7) and `ExtraPacing`.
 
+### Keys and screenshots
+
+| Key (`[Menu]`) | Default | What it does |
+|---|---|---|
+| `ShortcutKey` | Insert | Menu |
+| `FpsShortcutKey`, `FpsCycleShortcutKey` | Page Up, Page Down | FPS overlay on and off, its layout |
+| `FGShortcutKey` | End | Frame generation on and off |
+| `ScreenshotKey` | F6 | Saves the presented frame, NR included, without OptiScaler's overlays: `<exe> <date> <time>.png` in `ScreenshotPath` (default `<Pictures>\OptiScaler\<exe name>\`, also set from the menu with Change folder...); HDR games also get a `.jxr` with the HDR data, the `.png` mapped to SDR. With the menu open and `ScreenshotWithMenu` (default true), a second `... (menu).png` of the same frame with the menu on it |
+| `[DlssNr] ToggleKey` | Numpad 5 | NR on and off |
+
+Any of them takes a combination with Ctrl, Shift, Alt or Tab: bind it in the menu's Keybinds section or
+write `Ctrl+Shift+Home` in the INI. A key fires only with exactly its modifiers held.
+
 ## Building
 
 Visual Studio with the v143 toolset, `Release|x64`, after `git submodule update --init`. Keep

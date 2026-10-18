@@ -906,6 +906,11 @@ class Config
     CustomOptional<float> FontSize { 14.0f };
     CustomOptional<std::wstring, NoDefault> TTFFontPath;
     CustomOptional<int> FGShortcutKey { VK_END };
+    // Saves the presented frame without OptiScaler's overlays. ScreenshotPath empty means
+    // <Pictures>\OptiScaler\<exe name>. With the menu open, ScreenshotWithMenu adds a copy with it.
+    CustomOptional<int> ScreenshotKey { VK_F6 };
+    CustomOptional<std::wstring, NoDefault> ScreenshotPath;
+    CustomOptional<bool> ScreenshotWithMenu { true };
     CustomOptional<bool> LightTheme { false };
     CustomOptional<bool> OverlaysUseTheme { true };
     CustomOptional<float> MenuAccentColorR { 0.86f };
@@ -1440,6 +1445,8 @@ class Config
     std::optional<std::wstring> readWString(std::string section, std::string key, bool lowercase = false);
     std::optional<float> readFloat(std::string section, std::string key);
     std::optional<int> readInt(std::string section, std::string key);
+    // A shortcut: the int form, or a readable one such as Ctrl+Shift+Home (menu/input/shortcut_keys.h).
+    std::optional<int> readShortcut(std::string section, std::string key);
     std::optional<uint32_t> readUInt(std::string section, std::string key);
     std::optional<bool> readBool(std::string section, std::string key);
 

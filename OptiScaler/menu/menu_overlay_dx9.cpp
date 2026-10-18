@@ -4,6 +4,7 @@
 
 #include <Config.h>
 #include <Logger.h>
+#include <misc/Screenshot.h>
 
 #include <imgui/imgui_impl_dx9.h>
 
@@ -36,6 +37,9 @@ void MenuOverlayDx9::BeforeReset()
 
 void MenuOverlayDx9::Present(IDirect3DDevice9* device, IDirect3DSurface9* backBuffer, HWND hWnd)
 {
+    // The bridge has drawn NR into the back buffer; the menu comes next.
+    Screenshot::Dx9(device, backBuffer);
+
     if (!Config::Instance()->OverlayMenu.value_or_default())
     {
         MenuOverlayBase::Present();
@@ -126,4 +130,7 @@ void MenuOverlayDx9::Present(IDirect3DDevice9* device, IDirect3DSurface9* backBu
 
     saved->Apply();
     saved->Release();
+
+    // The same frame with the menu on it, when the screenshot asked for that copy.
+    Screenshot::Dx9Menu(device, backBuffer);
 }

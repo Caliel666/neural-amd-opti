@@ -436,14 +436,23 @@ static VkResult hkvkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreateI
         return o_CreateSwapchainKHR(device, pCreateInfo, pAllocator, pSwapchain);
 
     VkSwapchainCreateInfoKHR requested = *pCreateInfo;
-    // Final-image NR copies the image in and out, so its swapchains need transfer usage.
-    if (Config::Instance()->DlssNrPresent.value_or_default() && !State::Instance().vulkanSkipHooks && _PD)
+    // Final-image NR copies the image in and out, so its swapchains need transfer usage. The screenshot key
+    // copies it out.
+    const bool screenshots =
+        Config::Instance()->OverlayMenu.value_or_default() && Config::Instance()->ScreenshotKey.value_or_default() > 0;
+    if ((Config::Instance()->DlssNrPresent.value_or_default() || screenshots) && !State::Instance().vulkanSkipHooks &&
+        _PD)
     {
         VkSurfaceCapabilitiesKHR capabilities {};
         if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(_PD, pCreateInfo->surface, &capabilities) == VK_SUCCESS)
         {
             constexpr auto transfers = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-            if ((capabilities.supportedUsageFlags & transfers) == transfers)
+            if (!Config::Instance()->DlssNrPresent.value_or_default())
+            {
+                if (capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT)
+                    requested.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+            }
+            else if ((capabilities.supportedUsageFlags & transfers) == transfers)
                 requested.imageUsage |= transfers;
             else
                 LOG_WARN("Vulkan final-image NR: swapchain does not support transfer source and destination");
@@ -514,7 +523,7 @@ static VkResult hkvkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreateI
             AmdVkPresent::Created(_instance, _PD, device, _hwnd, _nrGraphicsFamily, *pSwapchain, requested);
 
         if (Config::Instance()->OverlayMenu.value_or_default())
-            MenuOverlayVk::CreateSwapchain(device, _PD, _instance, _hwnd, pCreateInfo, pAllocator, pSwapchain);
+            MenuOverlayVk::CreateSwapchain(device, _PD, _instance, _hwnd, &requested, pAllocator, pSwapchain);
     }
 
     LOG_FUNC_RESULT(result);

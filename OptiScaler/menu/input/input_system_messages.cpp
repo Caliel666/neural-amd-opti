@@ -240,7 +240,11 @@ bool SetKeyUp(int vk, DWORD messageTime)
 
     const bool wasBlockedDown = key.BlockedDown;
 
-    if (key.Down)
+    // Print Screen often reaches the window as a key-up alone: the system keeps its key-down.
+    if (vk == VK_SNAPSHOT && !key.Down)
+        _state.LastPressedKey = vk;
+
+    if (key.Down || vk == VK_SNAPSHOT)
         key.Released = true;
 
     key.Down = false;

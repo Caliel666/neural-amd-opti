@@ -207,6 +207,8 @@ class MenuCommon
     static HWND Handle() { return _handle; }
 
     static bool RenderMenu();
+    // A key binding button as in the Keybinds section; id keeps its state and ImGui ID apart from the others.
+    static void RenderKeybind(const char* name, int id, CustomOptional<int>& key);
     static void Init(HWND InHwnd, bool isUWP);
     static void Shutdown();
     static void HideMenu();

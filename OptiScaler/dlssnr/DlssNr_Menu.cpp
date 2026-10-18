@@ -492,6 +492,9 @@ void RenderMenu(Config* config, float menuResScale)
         bool enabled = config->DlssNrEnabled.value_or_default();
         if (ImGui::Checkbox("Enable NR", &enabled))
             config->DlssNrEnabled = enabled;
+        // The same binding as Neural Rendering in Keybinds, with a state and ID of its own.
+        ImGui::SameLine(0.0f, 16.0f * menuResScale);
+        MenuCommon::RenderKeybind("Toggle key##DlssNrMenu", 16, config->DlssNrToggleKey);
         if (!enabled)
             if (const auto note = DlssNr::AmdBridge::StandDownNote(); !note.empty())
             {

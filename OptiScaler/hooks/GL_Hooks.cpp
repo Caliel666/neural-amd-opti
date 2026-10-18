@@ -9,6 +9,7 @@
 #include <menu/menu_overlay_gl.h>
 #include <dlssnr/amd/GLPresentExperimental.h>
 #include <misc/FrameLimit.h>
+#include <misc/Screenshot.h>
 
 #include <detours/detours.h>
 
@@ -183,9 +184,17 @@ static bool Present(HDC hdc)
             MenuOverlayGl::Setup(hwnd, _overlay.generation);
     }
 
+    // After NR, before the menu: the screenshot copy, or reading back the one made on an earlier frame.
+    if (Screenshot::GlWanted() && _overlay.Enter(hdc))
+        Screenshot::Gl(width, height, _overlay.generation);
+
     // The menu frame is built on the CPU; the overlay context is needed only to draw it.
     if (MenuOverlayGl::Frame() && _overlay.Enter(hdc))
         MenuOverlayGl::Draw(_overlay.generation);
+
+    // The same frame with the menu on it, when the screenshot asked for that copy.
+    if (Screenshot::GlMenuWanted() && _overlay.Enter(hdc))
+        Screenshot::GlMenu(width, height, _overlay.generation);
 
     // XeFG gets the back buffer with the menu on it, so the menu shows over the generated frames.
     if (nr && _overlay.Enter(hdc))

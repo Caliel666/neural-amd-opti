@@ -7,6 +7,7 @@
 #include "nvapi/fakenvapi.h"
 #include <hooks/Streamline_Hooks.h>
 #include <misc/IdentifyGpu.h>
+#include <menu/input/shortcut_keys.h>
 
 #include <SimpleIni.h>
 
@@ -478,7 +479,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrApplyAfterRR.set_from_config(readBool("DlssNr", "ApplyAfterRR"));
             DlssNrRRPasses.set_from_config(readUInt("DlssNr", "RRPasses"));
             DlssNrRRWorkingScale.set_from_config(readFloat("DlssNr", "RRWorkingScale"));
-            DlssNrToggleKey.set_from_config(readInt("DlssNr", "ToggleKey"));
+            DlssNrToggleKey.set_from_config(readShortcut("DlssNr", "ToggleKey"));
             DlssNrTransferStrength.set_from_config(readFloat("DlssNr", "TransferStrength"));
             DlssNrColourStrength.set_from_config(readFloat("DlssNr", "ColourStrength"));
             DlssNrMaxRatio.set_from_config(readFloat("DlssNr", "MaxRatio"));
@@ -837,7 +838,7 @@ bool Config::Reload(std::filesystem::path iniPath)
 
             // Don't enable again if set false because of Linux issue
             OverlayMenu.set_from_config(readBool("Menu", "OverlayMenu"));
-            ShortcutKey.set_from_config(readInt("Menu", "ShortcutKey"));
+            ShortcutKey.set_from_config(readShortcut("Menu", "ShortcutKey"));
             ExtendedLimits.set_from_config(readBool("Menu", "ExtendedLimits"));
             ShowFps.set_from_config(readBool("Menu", "ShowFps"));
             UseHQFont.set_from_config(readBool("Menu", "UseHQFont"));
@@ -854,8 +855,8 @@ bool Config::Reload(std::filesystem::path iniPath)
                 FpsOverlayType.set_from_config((FpsOverlay) std::clamp(setting.value(), 0U, FpsOverlay_COUNT - 1));
             }
 
-            FpsShortcutKey.set_from_config(readInt("Menu", "FpsShortcutKey"));
-            FpsCycleShortcutKey.set_from_config(readInt("Menu", "FpsCycleShortcutKey"));
+            FpsShortcutKey.set_from_config(readShortcut("Menu", "FpsShortcutKey"));
+            FpsCycleShortcutKey.set_from_config(readShortcut("Menu", "FpsCycleShortcutKey"));
             FpsOverlayHorizontal.set_from_config(readBool("Menu", "FpsOverlayHorizontal"));
 
             if (auto setting = readFloat("Menu", "FpsOverlayAlpha"); setting.has_value())
@@ -867,7 +868,10 @@ bool Config::Reload(std::filesystem::path iniPath)
             FontSize.set_from_config(readFloat("Menu", "FontSize"));
             TTFFontPath.set_from_config(readWString("Menu", "TTFFontPath"));
 
-            FGShortcutKey.set_from_config(readInt("Menu", "FGShortcutKey"));
+            FGShortcutKey.set_from_config(readShortcut("Menu", "FGShortcutKey"));
+            ScreenshotKey.set_from_config(readShortcut("Menu", "ScreenshotKey"));
+            ScreenshotPath.set_from_config(readWString("Menu", "ScreenshotPath"));
+            ScreenshotWithMenu.set_from_config(readBool("Menu", "ScreenshotWithMenu"));
 
             LightTheme.set_from_config(readBool("Menu", "LightTheme"));
             OverlaysUseTheme.set_from_config(readBool("Menu", "OverlaysUseTheme"));
@@ -2061,6 +2065,14 @@ bool Config::SaveIni()
         ini.SetValue("Menu", "FGShortcutKey",
                      GetIntValue(Instance()->FGShortcutKey.value_for_config(), setting > 0).c_str());
 
+        setting = Instance()->ScreenshotKey.value_for_config();
+        ini.SetValue("Menu", "ScreenshotKey",
+                     GetIntValue(Instance()->ScreenshotKey.value_for_config(), setting > 0).c_str());
+        ini.SetValue("Menu", "ScreenshotPath",
+                     wstring_to_string(Instance()->ScreenshotPath.value_for_config_or(L"auto")).c_str());
+        ini.SetValue("Menu", "ScreenshotWithMenu",
+                     GetBoolValue(Instance()->ScreenshotWithMenu.value_for_config()).c_str());
+
         setting = Instance()->FpsShortcutKey.value_for_config();
         ini.SetValue("Menu", "FpsShortcutKey",
                      GetIntValue(Instance()->FpsShortcutKey.value_for_config(), setting > 0).c_str());
@@ -2509,6 +2521,19 @@ std::optional<float> Config::readFloat(std::string section, std::string key)
     {
         return std::nullopt;
     }
+}
+
+std::optional<int> Config::readShortcut(std::string section, std::string key)
+{
+    auto value = readString(section, key);
+    if (!value.has_value())
+        return std::nullopt;
+
+    auto parsed = ShortcutKeys::Parse(*value);
+    if (!parsed.has_value())
+        LOG_WARN("{}.{}: \"{}\" is not a key or key combination", section, key, *value);
+
+    return parsed;
 }
 
 std::optional<int> Config::readInt(std::string section, std::string key)

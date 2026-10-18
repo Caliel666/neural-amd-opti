@@ -10,6 +10,7 @@
 #include <Config.h>
 #include <hooks/FG_Hooks.h>
 #include <proxies/XeFGPacing.h>
+#include <misc/Screenshot.h>
 
 #include <imgui/imgui_impl_dx11.h>
 #include <imgui/imgui_impl_dx12.h>
@@ -728,6 +729,12 @@ void MenuOverlayDx::Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
             }
         }
     }
+
+    // The frame as it goes to the screen, NR included, before OptiScaler's overlay is drawn on it. With frame
+    // generation this is the swapchain frame generation presents to, so a generated frame can be the one saved.
+    if (!(Flags & DXGI_PRESENT_TEST) && pDevice)
+        Screenshot::Dxgi(pSwapChain, pDevice, _dx10Target);
+
     if (!Config::Instance()->OverlayMenu.value_or_default())
     {
         MenuOverlayBase::Present();
@@ -829,6 +836,11 @@ void MenuOverlayDx::Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         else if (_dx12Device)
             RenderImGui_DX12(pSwapChain);
     }
+
+    // The same frame again with the menu drawn on it, when the screenshot asked for that copy: the D3D11 draw and
+    // the D3D12 list are in, the real present not yet.
+    if (!(Flags & DXGI_PRESENT_TEST))
+        Screenshot::DxgiMenu(pSwapChain, pDevice, _dx10Target);
 
     // release used objects
     if (cq != nullptr)

@@ -10,6 +10,7 @@
 #include <imgui/imgui_impl_win32.h>
 
 #include <misc/IdentifyGpu.h>
+#include <misc/Screenshot.h>
 
 // Vulkan overlay code adopted from here:
 // https://gist.github.com/mem99/0ec31ca302927457f86b1d6756aaa8c4
@@ -26,6 +27,11 @@ struct ImGui_ImplVulkanH_Frame* _ImVulkan_Frames = VK_NULL_HANDLE;
 static VkSemaphore* _ImVulkan_Semaphores = VK_NULL_HANDLE;
 static VkRenderPass _vkRenderPass = VK_NULL_HANDLE;
 static uint32_t _scImageCount;
+// What the screenshot copy needs to know of the swapchain.
+static VkFormat _scFormat = VK_FORMAT_UNDEFINED;
+static VkColorSpaceKHR _scColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+static VkExtent2D _scExtent {};
+static bool _scTransferSource = false;
 static ULONG64 _frameCount;
 
 static void DestroyVulkanObjectsLocked(bool shutdown);
@@ -118,6 +124,11 @@ static void CreateVulkanObjects(VkDevice device, VkPhysicalDevice pd, VkInstance
     // Vulkan hooks and DestroyVulkanObjects on this thread. Everything below is Vulkan object creation
     // and the ImGui backend, with no path back into the hooks.
     std::lock_guard<std::mutex> lock(_vkCleanMutex);
+
+    _scFormat = pCreateInfo->imageFormat;
+    _scColorSpace = pCreateInfo->imageColorSpace;
+    _scExtent = pCreateInfo->imageExtent;
+    _scTransferSource = (pCreateInfo->imageUsage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
 
     ImGuiIO& io = ImGui::GetIO();
     io.DisplaySize.x = static_cast<float>(pCreateInfo->imageExtent.width);
@@ -565,6 +576,22 @@ bool MenuOverlayVk::QueuePresent(VkQueue queue, VkPresentInfoKHR* pPresentInfo)
 
     LOG_DEBUG("rendering menu, swapchain count: {0}", pPresentInfo->swapchainCount);
 
+    // NR's final image is in the image already (AmdVkPresent::Process); the menu is not yet.
+    Screenshot::VulkanTarget target {};
+    if (pPresentInfo->pImageIndices[0] < _scImageCount)
+    {
+        target.device = _ImVulkan_Info.Device;
+        target.physicalDevice = _ImVulkan_Info.PhysicalDevice;
+        target.queue = _ImVulkan_Info.Queue;
+        target.family = _ImVulkan_Info.QueueFamily;
+        target.image = _ImVulkan_Frames[pPresentInfo->pImageIndices[0]].Backbuffer;
+        target.format = _scFormat;
+        target.colorSpace = _scColorSpace;
+        target.extent = _scExtent;
+        target.transferSource = _scTransferSource;
+        Screenshot::Vulkan(target, *pPresentInfo);
+    }
+
     ImGuiIO& io = ImGui::GetIO();
     (void) io;
     io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
@@ -651,6 +678,10 @@ bool MenuOverlayVk::QueuePresent(VkQueue queue, VkPresentInfoKHR* pPresentInfo)
 
                 pPresentInfo->waitSemaphoreCount = 1;
                 pPresentInfo->pWaitSemaphores = &_ImVulkan_Semaphores[semaphoreIndex];
+
+                // The copy with the menu waits for the menu's submit, and the present for the copy.
+                if (target.image == _ImVulkan_Frames[idx].Backbuffer)
+                    Screenshot::VulkanMenu(target, *pPresentInfo);
             }
             else
             {
