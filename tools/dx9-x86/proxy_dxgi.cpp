@@ -1,10 +1,12 @@
-// 32-bit dxgi.dll for the D3D10 games OptiScaler.dll (x64 only) cannot load into. It forwards every export to the
-// system dxgi.dll and, at each Present of a swap chain on a D3D10 device, hands the back buffer to the same 64-bit
-// host as the D3D9 proxy (host.cpp, through bridge.h), which runs OptiScaler on a D3D11 swap chain on a child of the
-// game's window. d3d10.dll and d3d10_1.dll make their swap chains through the dxgi.dll beside the game, so this one
-// proxy covers both. Swap chains of other devices (a D3D11 game, an overlay's) are presented natively.
+// 32-bit dxgi.dll for the D3D10 and D3D11 games OptiScaler.dll (x64 only) cannot load into. It forwards every export
+// to the system dxgi.dll and, at each Present of a swap chain on a D3D10 or D3D11 device, hands the back buffer to the
+// same 64-bit host as the D3D9 proxy (host.cpp, through bridge.h), which runs OptiScaler on a D3D11 swap chain on a
+// child of the game's window. d3d10.dll, d3d10_1.dll and d3d11.dll (D3D11CreateDeviceAndSwapChain too) make their
+// swap chains through the dxgi.dll beside the game, so this one proxy covers all three. Swap chains of other devices
+// (a D3D12 queue's) are presented natively.
 #include <windows.h>
-#include <d3d10.h>
+#include <d3d10_1.h>
+#include <d3d11.h>
 #include <dxgi1_2.h>
 
 namespace
@@ -79,12 +81,13 @@ uint32_t Wire(uint32_t format)
     return 0;
 }
 
-// The D3D10 side of the bridge (bridge.h). The swap chain stands for the device: it names the window and the device.
-struct D3D10
+// The DXGI side of the bridge (bridge.h), for D3D10 and D3D11 devices. The swap chain stands for the device: it names
+// the window and the device.
+struct Dxgi
 {
     using Device = IDXGISwapChain;
-    using Back = ID3D10Texture2D;
-    static constexpr const char* Name = "D3D10";
+    using Back = IDXGISurface;
+    static constexpr const char* Name = "DXGI";
 
     static HWND Window(IDXGISwapChain* swap, HWND& focus)
     {
@@ -108,13 +111,17 @@ struct D3D10
     // A removed device presents natively, which gives the game the error it recreates its device on.
     static bool Lost(IDXGISwapChain* swap)
     {
-        ComPtr<ID3D10Device> device;
-        return FAILED(swap->GetDevice(IID_PPV_ARGS(&device))) || device->GetDeviceRemovedReason() != S_OK;
+        ComPtr<ID3D11Device> d3d11;
+        if (SUCCEEDED(swap->GetDevice(IID_PPV_ARGS(&d3d11))))
+            return d3d11->GetDeviceRemovedReason() != S_OK;
+        ComPtr<ID3D10Device> d3d10;
+        return FAILED(swap->GetDevice(IID_PPV_ARGS(&d3d10))) || d3d10->GetDeviceRemovedReason() != S_OK;
     }
-    static bool Describe(ID3D10Texture2D* back, UINT& width, UINT& height, uint32_t& format)
+    static bool Describe(IDXGISurface* back, UINT& width, UINT& height, uint32_t& format)
     {
-        D3D10_TEXTURE2D_DESC desc {};
-        back->GetDesc(&desc);
+        DXGI_SURFACE_DESC desc {};
+        if (FAILED(back->GetDesc(&desc)))
+            return false;
         width = desc.Width;
         height = desc.Height;
         format = desc.Format;
@@ -122,12 +129,18 @@ struct D3D10
     }
 
     // The copy of the back buffer the host reads: a texture shared by its handle, or one read back into a section of
-    // memory when the device cannot share one. A multisampled back buffer is resolved into it.
+    // memory when the device cannot share one. A multisampled back buffer is resolved into it. Made on the game's own
+    // device: D3D10, or D3D11 (d3d11 set) through its immediate context.
     struct Stage
     {
-        ComPtr<ID3D10Device> owner;
-        ComPtr<ID3D10Texture2D> texture, readback;
-        ComPtr<ID3D10Query> done;
+        ComPtr<IUnknown> owner;
+        ComPtr<ID3D10Device> d3d10;
+        ComPtr<ID3D10Texture2D> texture10, readback10;
+        ComPtr<ID3D10Query> done10;
+        ComPtr<ID3D11Device> d3d11;
+        ComPtr<ID3D11DeviceContext> context;
+        ComPtr<ID3D11Texture2D> texture11, readback11;
+        ComPtr<ID3D11Query> done11;
         HANDLE shared = nullptr;
         Handle section;
         void* view = nullptr;
@@ -140,16 +153,86 @@ struct D3D10
                 UnmapViewOfFile(view);
             view = nullptr;
             section.reset();
-            done.Reset();
-            readback.Reset();
-            texture.Reset();
+            done10.Reset();
+            readback10.Reset();
+            texture10.Reset();
+            d3d10.Reset();
+            done11.Reset();
+            readback11.Reset();
+            texture11.Reset();
+            context.Reset();
+            d3d11.Reset();
             owner.Reset();
             shared = nullptr;
             width = height = 0;
             format = wire = 0;
         }
-        bool Made() const { return texture != nullptr; }
+        bool Made() const { return texture10 || texture11; }
 
+        bool Section(UINT w, UINT h)
+        {
+            const DWORD bytes = w * h * 4;
+            section.reset(CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, bytes, nullptr));
+            view = section ? MapViewOfFile(section.value, FILE_MAP_WRITE, 0, 0, bytes) : nullptr;
+            return view != nullptr;
+        }
+        bool Make10(UINT w, UINT h, bool cpu)
+        {
+            D3D10_TEXTURE2D_DESC desc {};
+            desc.Width = w;
+            desc.Height = h;
+            desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1;
+            desc.Format = static_cast<DXGI_FORMAT>(wire);
+            desc.Usage = D3D10_USAGE_DEFAULT;
+            desc.BindFlags = D3D10_BIND_RENDER_TARGET | D3D10_BIND_SHADER_RESOURCE;
+            desc.MiscFlags = D3D10_RESOURCE_MISC_SHARED;
+            ComPtr<IDXGIResource> resource;
+            if (cpu || FAILED(d3d10->CreateTexture2D(&desc, nullptr, &texture10)) || FAILED(texture10.As(&resource)) ||
+                FAILED(resource->GetSharedHandle(&shared)) || !shared)
+            {
+                texture10.Reset();
+                shared = nullptr;
+                desc.MiscFlags = 0;
+                if (FAILED(d3d10->CreateTexture2D(&desc, nullptr, &texture10)))
+                    return false;
+                desc.BindFlags = 0;
+                desc.Usage = D3D10_USAGE_STAGING;
+                desc.CPUAccessFlags = D3D10_CPU_ACCESS_READ;
+                if (FAILED(d3d10->CreateTexture2D(&desc, nullptr, &readback10)) || !Section(w, h))
+                    return false;
+            }
+            D3D10_QUERY_DESC query { D3D10_QUERY_EVENT, 0 };
+            return SUCCEEDED(d3d10->CreateQuery(&query, &done10));
+        }
+        bool Make11(UINT w, UINT h, bool cpu)
+        {
+            d3d11->GetImmediateContext(&context);
+            D3D11_TEXTURE2D_DESC desc {};
+            desc.Width = w;
+            desc.Height = h;
+            desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1;
+            desc.Format = static_cast<DXGI_FORMAT>(wire);
+            desc.Usage = D3D11_USAGE_DEFAULT;
+            desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+            desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
+            ComPtr<IDXGIResource> resource;
+            if (cpu || FAILED(d3d11->CreateTexture2D(&desc, nullptr, &texture11)) || FAILED(texture11.As(&resource)) ||
+                FAILED(resource->GetSharedHandle(&shared)) || !shared)
+            {
+                texture11.Reset();
+                shared = nullptr;
+                desc.MiscFlags = 0;
+                if (FAILED(d3d11->CreateTexture2D(&desc, nullptr, &texture11)))
+                    return false;
+                desc.BindFlags = 0;
+                desc.Usage = D3D11_USAGE_STAGING;
+                desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+                if (FAILED(d3d11->CreateTexture2D(&desc, nullptr, &readback11)) || !Section(w, h))
+                    return false;
+            }
+            D3D11_QUERY_DESC query { D3D11_QUERY_EVENT, 0 };
+            return SUCCEEDED(d3d11->CreateQuery(&query, &done11));
+        }
         bool Make(IDXGISwapChain* swap, UINT w, UINT h, uint32_t f, bool cpu)
         {
             wire = Wire(f);
@@ -160,81 +243,90 @@ struct D3D10
             }
             if (FAILED(swap->GetDevice(IID_PPV_ARGS(&owner))))
                 return false;
-            D3D10_TEXTURE2D_DESC desc {};
-            desc.Width = w;
-            desc.Height = h;
-            desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1;
-            desc.Format = static_cast<DXGI_FORMAT>(wire);
-            desc.Usage = D3D10_USAGE_DEFAULT;
-            desc.BindFlags = D3D10_BIND_RENDER_TARGET | D3D10_BIND_SHADER_RESOURCE;
-            desc.MiscFlags = D3D10_RESOURCE_MISC_SHARED;
-            ComPtr<IDXGIResource> resource;
-            if (cpu || FAILED(owner->CreateTexture2D(&desc, nullptr, &texture)) || FAILED(texture.As(&resource)) ||
-                FAILED(resource->GetSharedHandle(&shared)) || !shared)
-            {
-                texture.Reset();
-                shared = nullptr;
-                desc.MiscFlags = 0;
-                if (FAILED(owner->CreateTexture2D(&desc, nullptr, &texture)))
-                    return false;
-                desc.BindFlags = 0;
-                desc.Usage = D3D10_USAGE_STAGING;
-                desc.CPUAccessFlags = D3D10_CPU_ACCESS_READ;
-                if (FAILED(owner->CreateTexture2D(&desc, nullptr, &readback)))
-                    return false;
-                const DWORD bytes = w * h * 4;
-                section.reset(CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, bytes, nullptr));
-                view = section ? MapViewOfFile(section.value, FILE_MAP_WRITE, 0, 0, bytes) : nullptr;
-                if (!view)
-                    return false;
-            }
-            D3D10_QUERY_DESC query { D3D10_QUERY_EVENT, 0 };
-            return SUCCEEDED(owner->CreateQuery(&query, &done));
+            if (SUCCEEDED(owner.As(&d3d11)))
+                return Make11(w, h, cpu);
+            return SUCCEEDED(owner.As(&d3d10)) && Make10(w, h, cpu);
         }
 
-        // DXGI presents the whole back buffer: there are no rectangles.
-        bool Capture(IDXGISwapChain*, ID3D10Texture2D* back, const RECT*, const RECT*, HWND)
+        // The copy into the shared texture done on the GPU, before the host reads it.
+        template <class Done> static bool Wait(Done done)
         {
-            D3D10_TEXTURE2D_DESC desc {};
-            back->GetDesc(&desc);
-            if (desc.SampleDesc.Count > 1)
-                owner->ResolveSubresource(texture.Get(), 0, back, 0, static_cast<DXGI_FORMAT>(wire));
-            else
-                owner->CopyResource(texture.Get(), back);
-            if (shared)
-            {
-                done->End();
-                const ULONGLONG deadline = GetTickCount64() + GpuWaitMs;
-                HRESULT hr = S_FALSE;
-                while ((hr = done->GetData(nullptr, 0, 0)) == S_FALSE && GetTickCount64() < deadline)
-                    YieldProcessor();
-                return hr == S_OK;
-            }
-            owner->CopyResource(readback.Get(), texture.Get());
-            D3D10_MAPPED_TEXTURE2D from {};
-            if (FAILED(readback->Map(0, D3D10_MAP_READ, 0, &from)))
-                return false;
+            const ULONGLONG deadline = GetTickCount64() + GpuWaitMs;
+            HRESULT hr = S_FALSE;
+            while ((hr = done()) == S_FALSE && GetTickCount64() < deadline)
+                YieldProcessor();
+            return hr == S_OK;
+        }
+        void Store(const void* from, UINT pitch)
+        {
             const UINT row = width * 4;
             for (UINT y = 0; y < height; ++y)
                 std::memcpy(static_cast<BYTE*>(view) + size_t(y) * row,
-                            static_cast<const BYTE*>(from.pData) + size_t(y) * from.RowPitch, row);
-            readback->Unmap(0);
+                            static_cast<const BYTE*>(from) + size_t(y) * pitch, row);
+        }
+
+        // DXGI presents the whole back buffer: there are no rectangles.
+        bool Capture(IDXGISwapChain*, IDXGISurface* back, const RECT*, const RECT*, HWND)
+        {
+            DXGI_SURFACE_DESC desc {};
+            back->GetDesc(&desc);
+            const auto resolved = static_cast<DXGI_FORMAT>(wire);
+            if (d3d11)
+            {
+                ComPtr<ID3D11Texture2D> source;
+                if (FAILED(back->QueryInterface(IID_PPV_ARGS(&source))))
+                    return false;
+                if (desc.SampleDesc.Count > 1)
+                    context->ResolveSubresource(texture11.Get(), 0, source.Get(), 0, resolved);
+                else
+                    context->CopyResource(texture11.Get(), source.Get());
+                if (shared)
+                {
+                    context->End(done11.Get());
+                    return Wait([&] { return context->GetData(done11.Get(), nullptr, 0, 0); });
+                }
+                context->CopyResource(readback11.Get(), texture11.Get());
+                D3D11_MAPPED_SUBRESOURCE from {};
+                if (FAILED(context->Map(readback11.Get(), 0, D3D11_MAP_READ, 0, &from)))
+                    return false;
+                Store(from.pData, from.RowPitch);
+                context->Unmap(readback11.Get(), 0);
+                return true;
+            }
+            ComPtr<ID3D10Texture2D> source;
+            if (FAILED(back->QueryInterface(IID_PPV_ARGS(&source))))
+                return false;
+            if (desc.SampleDesc.Count > 1)
+                d3d10->ResolveSubresource(texture10.Get(), 0, source.Get(), 0, resolved);
+            else
+                d3d10->CopyResource(texture10.Get(), source.Get());
+            if (shared)
+            {
+                done10->End();
+                return Wait([&] { return done10->GetData(nullptr, 0, 0); });
+            }
+            d3d10->CopyResource(readback10.Get(), texture10.Get());
+            D3D10_MAPPED_TEXTURE2D from {};
+            if (FAILED(readback10->Map(0, D3D10_MAP_READ, 0, &from)))
+                return false;
+            Store(from.pData, from.RowPitch);
+            readback10->Unmap(0);
             return true;
         }
     };
 };
 // Never destroyed, as the D3D9 proxy's: nothing of it is released from DllMain at process exit.
-Bridge<D3D10>& bridge = *new Bridge<D3D10>;
+Bridge<Dxgi>& bridge = *new Bridge<Dxgi>;
 
 thread_local bool inPresent = false;
 
-// Runs the bridge for one Present of a D3D10 swap chain; false means present natively.
+// Runs the bridge for one Present of a D3D10 or D3D11 swap chain; false means present natively.
 bool Bridged(IDXGISwapChain* swap, UINT interval, UINT flags)
 {
     if (inPresent || (flags & DXGI_PRESENT_TEST))
         return false;
     std::lock_guard guard(lock);
-    ComPtr<ID3D10Device> device;
+    ComPtr<IUnknown> device;
     DXGI_SWAP_CHAIN_DESC desc {};
     // A frame latency object is signalled by the swap chain's own Present, which the game would then wait for forever.
     if (FAILED(swap->GetDevice(IID_PPV_ARGS(&device))) || FAILED(swap->GetDesc(&desc)) ||
@@ -243,7 +335,7 @@ bool Bridged(IDXGISwapChain* swap, UINT interval, UINT flags)
     // A new swap chain at the address of one the game released: the copy belongs to the old device.
     if (bridge.stage.owner && bridge.stage.owner.Get() != device.Get())
         bridge.Drop();
-    ComPtr<ID3D10Texture2D> back;
+    ComPtr<IDXGISurface> back;
     if (FAILED(swap->GetBuffer(0, IID_PPV_ARGS(&back))))
         return false;
     bridge.SetInterval(swap, interval);
@@ -279,7 +371,7 @@ HRESULT STDMETHODCALLTYPE HookPresent1(IDXGISwapChain1* swap, UINT interval, UIN
 HWND WindowOf(IDXGISwapChain* swap)
 {
     HWND focus = nullptr;
-    return D3D10::Window(swap, focus);
+    return Dxgi::Window(swap, focus);
 }
 // A fullscreen swap chain owns the display, and the host's swap chain on its window would never be seen: the swap
 // chain stays windowed and its window becomes a borderless one over the monitor (bridge.h, Restyle), which the game
@@ -341,16 +433,18 @@ void HookSwapChain(IDXGISwapChain* swap)
         Hook(&(*reinterpret_cast<void***>(swap1.Get()))[22], reinterpret_cast<void*>(HookPresent1),
              reinterpret_cast<void**>(&present1));
 }
-// Only swap chains of D3D10 devices; a D3D11 device's is left as it is.
-bool OfD3D10(IUnknown* device)
+// Only swap chains of D3D10 and D3D11 devices; a D3D12 queue's is left as it is.
+bool Bridgeable(IUnknown* device)
 {
     ComPtr<ID3D10Device> d3d10;
-    return device && SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&d3d10)));
+    ComPtr<ID3D11Device> d3d11;
+    return device && (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&d3d11))) ||
+                      SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&d3d10))));
 }
 HRESULT STDMETHODCALLTYPE HookCreateSwapChain(IDXGIFactory* factory, IUnknown* device, DXGI_SWAP_CHAIN_DESC* desc,
                                               IDXGISwapChain** out)
 {
-    if (!OfD3D10(device) || !desc)
+    if (!Bridgeable(device) || !desc)
         return createSwapChain(factory, device, desc, out);
     DXGI_SWAP_CHAIN_DESC local = *desc;
     const bool borderless = !local.Windowed && Setting(L"ForceWindowed", true);
@@ -378,7 +472,7 @@ HRESULT STDMETHODCALLTYPE HookCreateSwapChainForHwnd(IDXGIFactory2* factory, IUn
                                                      const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* fullscreen,
                                                      IDXGIOutput* output, IDXGISwapChain1** out)
 {
-    if (!OfD3D10(device))
+    if (!Bridgeable(device))
         return createSwapChainForHwnd(factory, device, window, desc, fullscreen, output, out);
     DXGI_SWAP_CHAIN_FULLSCREEN_DESC local {};
     const bool borderless = fullscreen && !fullscreen->Windowed && Setting(L"ForceWindowed", true);

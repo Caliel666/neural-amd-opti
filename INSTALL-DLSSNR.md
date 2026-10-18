@@ -266,8 +266,9 @@ with the menu and the FPS overlay drawn over them; the child window is hidden wh
 game is in the background. While the
 window is being resized the game's image is shown as it is, and NR and XeFG start again
 once the size has held for 300 ms. The menu's V-Sync settings set the game's swap
-interval (`wglSwapIntervalEXT`). Only 64-bit games are covered; for 32-bit OpenGL games
-use the ReShade add-on.
+interval (`wglSwapIntervalEXT`). This DLL covers 64-bit games; a 32-bit OpenGL game takes
+the package's `x86\opengl32.dll` and the 64-bit host in `OptiScaler64\` instead
+(`tools/dx9-x86/README.md`).
 
 ## Optional DLSS Frame Generation
 

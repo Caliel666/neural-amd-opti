@@ -191,8 +191,9 @@ $ini = [regex]::Replace($ini, '(?ms)^\[DlssNr\].*?(?=^\[|\z)', @"
 Enabled=false
 RunBeforeSR=true
 ; danielblnc or mochizuki on the final D3D9, D3D10, D3D11, D3D12, Vulkan or OpenGL image of a game without an
-; upscaler, HUD included. Off by default; Vulkan needs it on before the game starts. A 32-bit D3D9 or D3D10 game
-; runs this from OptiScaler64\, beside x86\d3d9.dll or x86\dxgi.dll (the installer puts them in place).
+; upscaler, HUD included. Off by default; Vulkan needs it on before the game starts. A 32-bit D3D9, D3D10, D3D11 or
+; OpenGL game runs this from OptiScaler64\, beside x86\d3d9.dll, x86\dxgi.dll or x86\opengl32.dll (the installer puts
+; them in place).
 PresentWithoutUpscaler=false
 ; NR runtime: daniel (dlssnr_amd_pass1-3.dll and dlssnr_on_amd_weights.bin), lmxxf
 ; (LmxxfNrRuntime.dll, lmxxf-modules\, shaders\ and native-game-tiled-assets\) or mochizuki
@@ -481,11 +482,13 @@ New-Item -ItemType Directory -Path (Join-Path $stage 'shaders') -Force | Out-Nul
 Get-ChildItem -LiteralPath (Join-Path $root 'third_party/lmxxf/shaders') -Filter '*.hlsl' -File |
     Copy-Item -Destination (Join-Path $stage 'shaders') -Force
 
-# The 32-bit proxies and their 64-bit host (tools\build-dx9-x86.cmd): a 32-bit D3D9 or D3D10 game gets d3d9.dll or
-# dxgi.dll beside it, and everything else here in OptiScaler64\ with OptiScalerDx9Host.exe, which runs OptiScaler.
+# The 32-bit proxies and their 64-bit host (tools\build-dx9-x86.cmd): a 32-bit D3D9, D3D10 or D3D11, or OpenGL game
+# gets d3d9.dll, dxgi.dll or opengl32.dll beside it, and everything else here in OptiScaler64\ with
+# OptiScalerDx9Host.exe, which runs OptiScaler.
 $x86Dir = Join-Path $stage 'x86'
 New-Item -ItemType Directory -Force -Path $x86Dir | Out-Null
 foreach ($pair in @(@('exports/dx9-x86/d3d9.dll', 'd3d9.dll'), @('exports/dxgi-x86/dxgi.dll', 'dxgi.dll'),
+        @('exports/gl-x86/opengl32.dll', 'opengl32.dll'),
         @('exports/dx9-x86/OptiScaler64/OptiScalerDx9Host.exe', 'OptiScalerDx9Host.exe'))) {
     $from = Join-Path $root $pair[0]
     if (!(Test-Path -LiteralPath $from -PathType Leaf)) {

@@ -1,4 +1,4 @@
-# OptiScaler for 32-bit D3D9 games
+# OptiScaler for 32-bit D3D9, D3D10, D3D11 and OpenGL games
 
 OptiScaler.dll is x64 only, and so are the NR runtimes and XeFG, so a 32-bit game cannot load any of
 them. This folder holds a pair that brings the 64-bit OptiScaler to such a game without changing it:
@@ -19,17 +19,31 @@ them. This folder holds a pair that brings the 64-bit OptiScaler to such a game 
 - `bridge.h` is what the game side of every 32-bit API shares: starting the host, the child window, the
   input held back while the menu is open, and the bridge itself, over an `Api` that brings the device, its
   window and adapter, and the copy of the back buffer. `proxy.cpp` is the D3D9 one.
-- `proxy_dxgi.cpp` builds a 32-bit `dxgi.dll` for D3D10 games (`exports\dxgi-x86`). `d3d10.dll` and
-  `d3d10_1.dll` make their swap chains through the `dxgi.dll` beside the game, so this one proxy covers
-  both: it hooks the factory's swap chain creation and the Present of swap chains on a D3D10 device, and
-  hands the back buffer (resolved first when multisampled) to the same host through a texture shared by
-  handle. Swap chains of other devices are presented natively.
+- `proxy_dxgi.cpp` builds a 32-bit `dxgi.dll` for D3D10 and D3D11 games (`exports\dxgi-x86`). `d3d10.dll`,
+  `d3d10_1.dll` and `d3d11.dll` make their swap chains through the `dxgi.dll` beside the game
+  (`D3D11CreateDeviceAndSwapChain` included), so this one proxy covers all three: it hooks the factory's swap
+  chain creation and the Present of swap chains on a D3D10 or D3D11 device, and hands the back buffer
+  (resolved first when multisampled) to the same host through a texture shared by handle, copied on the
+  game's own device (for D3D11, on its immediate context). Swap chains of other devices (a D3D12 queue's) and
+  swap chains with a frame latency waitable object are presented natively.
+- `proxy_gl.cpp` builds a 32-bit `opengl32.dll` for OpenGL games (`exports\gl-x86`), forwarding every
+  export (`exports_opengl32.inc`) to the system one. Its `wglSwapBuffers` (gdi32's `SwapBuffers` reaches it
+  too) and `wglSwapLayerBuffers` hand the default framebuffer to the same host. The frame crosses through a
+  D3D11 texture of a device of the proxy's own on the context's GPU, shared by its (KMT) handle and
+  imported into the game's context with `GL_EXT_memory_object_win32`: one blit, flipped to D3D's row order
+  (resolved first when multisampled), then `glFinish`. AMD drivers expose both that extension and
+  `WGL_NV_DX_interop2` in 32-bit processes (measured on an RX 9070 XT, Adrenalin 26.9.2); the memory object
+  needs no lock per frame. A context without it, or `SharedMemory=true`, sends the rows through memory
+  (`glReadPixels`). A swap from another context than the one the copy was made in makes a new copy, and
+  while the host presents the game's swap is skipped, as its Present is in D3D.
 
 A game that asks for fullscreen (either API) stays windowed, since an exclusive fullscreen swap chain owns the
 display and the host's would never show: its window becomes a borderless one over its monitor, made on the
 window's own thread, and a DXGI game is told it is fullscreen (`ForceWindowed=0` in `[Dx9X86]` or `[DxgiX86]`
 opts out). While the menu is open, DirectInput 8 devices read as untouched as well (state zeroed, buffered data
-keeps only releases), for games that read the mouse there. `tools\test-dx10-x86.cmd` runs it end to end.
+keeps only releases), for games that read the mouse there. `tools\test-dx10-x86.cmd` and
+`tools\test-dx11-x86.cmd` run it end to end. An OpenGL game that goes fullscreen through a mode change or a popup
+window over its monitor is followed like any resize (the child window takes the new client area).
 
 While the host presents, the game's own Present is skipped: one presenter owns the picture for the
 whole session, whatever NR, frame generation or the menu do, so turning them on and off never hands
@@ -110,10 +124,12 @@ menu (`OptiScalerAddText`): OptiScaler cannot hook a window procedure in another
 
 ## Install
 
-Put these where the game loads `d3d9.dll` from (for Half-Life 2 that is `bin`):
+Put these where the game loads `d3d9.dll` from (for Half-Life 2 that is `bin`), with `dxgi.dll` in place of
+`d3d9.dll` for a D3D10 or D3D11 game and `opengl32.dll` for an OpenGL game (beside the executable that makes the
+context); one proxy per game:
 
 ```
-d3d9.dll                      the 32-bit proxy
+d3d9.dll                      the 32-bit proxy (or dxgi.dll, or opengl32.dll)
 OptiScaler64\
   OptiScalerDx9Host.exe
   OptiScaler.dll              the 64-bit OptiScaler build
@@ -136,7 +152,9 @@ FGInput=upscaler
 FGOutput=xefg
 ```
 
-The `[FrameGen]` part is only for XeFG. The proxy reads its own keys from the same file:
+The `[FrameGen]` part is only for XeFG. The proxy reads its own keys from the same file, under `[Dx9X86]` for
+`d3d9.dll`, `[DxgiX86]` for `dxgi.dll` (`Enabled`, `ForceWindowed`, `SharedMemory`, `Pipelined`) and `[GlX86]` for
+`opengl32.dll` (`Enabled`, `SharedMemory`, `Pipelined`):
 
 ```ini
 [Dx9X86]
@@ -154,14 +172,21 @@ SharedMemory=false
 Pipelined=true
 ```
 
-Logs, all in `OptiScaler64`: `dx9-x86.log` (game side), `dx9-host.log` (host), `OptiScaler.log`
+Logs, all in `OptiScaler64`: `dx9-x86.log`, `dxgi-x86.log` or `opengl32-x86.log` (game side), `dx9-host.log`
+(host), `OptiScaler.log`
 (with `LogToFile=true`; the one from the host before is kept as `OptiScaler.previous.log`) and
 `amd_presr.log` (NR).
 
 ## Build and test
 
-`tools\build-dx9-x86.cmd` builds the proxy, the host and the x86 smoke program into
-`exports\dx9-x86`. `tools\test-dx9-x86.cmd` builds them, stages `exports\release-local\OptiScaler.dll`
+`tools\build-dx9-x86.cmd` builds the proxies, the host and the x86 smoke program into
+`exports\dx9-x86`, `exports\dxgi-x86` and `exports\gl-x86`. `tools\test-dx11-x86.cmd` and `tools\test-gl-x86.cmd`
+take an installed folder as `tools\test-dx10-x86.cmd` does and run `tests\dx11_x86_smoke.cpp`
+(`D3D11CreateDeviceAndSwapChain`, the factory's `CreateSwapChain`, a flip swap chain) and `tests\gl_x86_smoke.cpp`
+(gdi32's `SwapBuffers` or `wglSwapBuffers`, the shared texture or memory): the host presents most frames without a
+fault, the screen over the window shows the scene upright and changed by the network (read through GDI while it
+holds still), the menu opens with Insert, the host follows a resize and a fullscreen toggle, and the program ends
+within a minute of its run. `tools\test-dx9-x86.cmd` builds them, stages `exports\release-local\OptiScaler.dll`
 with a runtime and XeFG, and runs `tests\dx9_x86_smoke.cpp` through every case under the GPU lock:
 native D3D9, the bridge on D3D9 and D3D9Ex, the memory transport, NR with its toggle key, NR with
 XeFG with the frame generation key and a device Reset to a new size, NR and frame generation both

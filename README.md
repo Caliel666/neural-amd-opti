@@ -80,6 +80,17 @@ The [AMD-NR ReShade Installer](https://github.com/zmodelerlover/AMD-NR-ReShade-I
 or later) does all of this in one step for DirectX 12 games, lmxxf weights included, and lets you
 pick which release goes in. It does not set up mochizuki yet.
 
+**32-bit games.** `OptiScaler.dll` is 64-bit only. The package's `x86\` folder has a 32-bit proxy per
+API and `OptiScalerDx9Host.exe`, a 64-bit host that runs OptiScaler (NR without upscaling, XeFG, the
+menu) on the game's frames from an `OptiScaler64\` folder beside the proxy
+([tools/dx9-x86/README.md](tools/dx9-x86/README.md)):
+
+| Game | Proxy beside the executable |
+|---|---|
+| D3D9 | `d3d9.dll` |
+| D3D10, D3D11 | `dxgi.dll` |
+| OpenGL | `opengl32.dll` |
+
 ## Settings
 
 All in `OptiScaler.ini`, section `[DlssNr]`, and in the **Neural** tab of the overlay.
