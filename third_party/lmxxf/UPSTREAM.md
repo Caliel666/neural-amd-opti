@@ -1,7 +1,7 @@
 # lmxxf runtime source pin
 
 - Upstream: https://github.com/lmxxf/dlss5-on-amd-9070xt-porting
-- Commit: `3a1be68c35dbac7d7edeb2073723e82076bb1a39` (0.42 and after, synced 2026-10-14)
+- Commit: `1a0579839b025e6b2b041c1414c4531aa7a4ce03` (synced 2026-10-17)
 - License: MIT, Copyright (c) 2026 Kien (`LICENSE`)
 - `hip_api.h` also carries the AMD HIP runtime API MIT notice from ROCm 7.1.1
 
@@ -135,6 +135,17 @@ Upstream includes `native_split.h` (the D3D12 network body) without using it. Th
   with `DLSS5_MULTI_PASS_PREDICT=0`, and as fast (29.0 ms at 1080p). Upstream's default (predict on) runs two passes and
   estimates the third (`mp_predict`): 19.9 ms, 35.4 dB from the real third pass.
 - gfx1200 modules built but not run here (no RX 9060).
+
+### Sync to 0.43 (2026-10-17)
+- Upstream `1a057983` (0.43, payload source `10982cf4`). Only `hip/deep_fast.hip`, `hip/multihead_fast_padded.hip`,
+  `hip/SHA256SUMS` and `Development/HIP/hip_reference_network.h` changed in the vendored set: decoder Up39/48 and
+  downsample Down8/14/22/30 read FP8 weights in the W16 layout (`NR_DS_F8_W16`, on unless set to 0) and FP8 layouts get
+  their own cache keys. The bridge, `src/` and the shaders are unchanged; nothing to merge.
+- Modules: 40 per architecture rebuilt here with the driver's COMGR (14 gfx1201 modules changed); `hip/SHA256SUMS`,
+  `modules/SHA256SUMS` and `modules-gfx1200/SHA256SUMS` hold the local hashes.
+- e2e harness against the 0.5.3 release: 1 and 3 passes byte-identical at 1920x1080, 1600x900, 1280x720 and 1707x960.
+  1080p median 10.21 -> 10.11 ms, 900p within noise. Upstream's 0.53-0.60 ms over 0.42 is mostly the October 14 work
+  that 0.5.3 already ships; the October 17 part is ~20-35 us by its own ABBA.
 
 ## Shipping modules (`.hsaco`)
 

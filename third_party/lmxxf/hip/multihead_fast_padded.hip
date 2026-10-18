@@ -407,18 +407,28 @@ DEV void mh_pool_project_fused_body(const float*raw,const float*w,float*output,u
 // out[t][c] = in[raster(t)][ch(c)]), so the separate vit_gather launch disappears; values unchanged, only addresses.
 DEV uint pg_tinv(uint r){return (r&~15u)|((r&7u)<<1)|((r>>3)&1u);}
 DEV uint pg_cinv(uint k){return (k&~31u)|((k>>1)&1u)|((k&1u)<<1)|((k>>4)&1u)<<2|((k>>2)&1u)<<3|((k>>3)&1u)<<4;}
-template<uint C,bool Gout=false,bool HalfIn=false,bool ByteOut=false>
+template<uint C,bool Gout=false,bool HalfIn=false,bool ByteOut=false,bool F8W16=false>
 DEV void mh_pool_project_group_body(const float*raw,const float*wf,float*output,uint width,uint height,uint source_width,uint valid_width,uint valid_height){
  const uint M=width*height,N=2*C,S=C+8;uint tile=__builtin_amdgcn_workgroup_id_x();if(tile>=(M+15)/16)return;
  uint first=tile*16,t=__builtin_amdgcn_workitem_id_x(),wave=t/32,l=t%32,rc=l&15,g=l>>4,colg=wave*64;
- __attribute__((shared)) _Float16 pooled[16*S];
- for(uint k=0;k<16;k++){uint p=first+k,c=t;float v=0.f;if(p<M&&!(valid_width&&(p%width>=valid_width||p/width>=valid_height))){uint base=((p/width)*2*source_width+(p%width)*2)*C;auto rd=[&](uint i)->float{if constexpr(HalfIn)return float(reinterpret_cast<const _Float16*>(raw)[i]);else return raw[i];};float top=H(rd(base+c)+rd(base+C+c)),bottom=H(rd(base+source_width*C+c)+rd(base+(source_width+1)*C+c));v=F(H(H(top+bottom)*.25f));}pooled[k*S+c]=(_Float16)v;}
+ __attribute__((shared)) unsigned char pooled8[F8W16?16*S:1];
+ __attribute__((shared)) _Float16 pooled[F8W16?1:16*S];
+ for(uint k=0;k<16;k++){uint p=first+k,c=t;float v=0.f;if(p<M&&!(valid_width&&(p%width>=valid_width||p/width>=valid_height))){uint base=((p/width)*2*source_width+(p%width)*2)*C;auto rd=[&](uint i)->float{if constexpr(HalfIn)return float(reinterpret_cast<const _Float16*>(raw)[i]);else return raw[i];};float top=H(rd(base+c)+rd(base+C+c)),bottom=H(rd(base+source_width*C+c)+rd(base+(source_width+1)*C+c));v=F(H(H(top+bottom)*.25f));}if constexpr(F8W16)pooled8[k*S+c]=static_cast<unsigned char>(__builtin_amdgcn_cvt_pk_fp8_f32(v,0.f,0,false));else pooled[k*S+c]=(_Float16)v;}
  WG_FENCE(3);__builtin_amdgcn_s_barrier();WG_FENCE(2);
  const _Float16*w16=reinterpret_cast<const _Float16*>(wf);
  f8 acc[4]{};
  for(uint chunk=0;chunk<C/32;chunk++){f8 sum[4]{};
+  if constexpr(F8W16){
+   using pool_i4=int __attribute__((ext_vector_type(4)));
+   i2 a0,a1;__builtin_memcpy(&a0,pooled8+rc*S+chunk*32+g*8,8);__builtin_memcpy(&a1,pooled8+rc*S+chunk*32+16+g*8,8);
+   for(uint j=0;j<4;j++){pool_i4 b;__builtin_memcpy(&b,reinterpret_cast<const unsigned char*>(wf)+(((colg/16+j)*(C/32)+chunk)*512)+(g*16+rc)*16,16);
+    sum[j]=__builtin_amdgcn_wmma_f32_16x16x16_fp8_fp8_w32_gfx12(a0,i2{b[0],b[1]},sum[j]);
+    sum[j]=__builtin_amdgcn_wmma_f32_16x16x16_fp8_fp8_w32_gfx12(a1,i2{b[2],b[3]},sum[j]);
+   }
+  }else{
   for(uint half=0;half<2;half++){uint sidx=chunk*2+half;h8 a;__builtin_memcpy(&a,pooled+rc*S+sidx*16+g*8,16);
    for(uint j=0;j<4;j++){h8 b;uint nt=colg/16+j;__builtin_memcpy(&b,w16+(nt*(C/16)+sidx)*256+(g*16+rc)*8,16);sum[j]=__builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(a,b,sum[j]);}}
+  }
   for(uint j=0;j<4;j++)for(uint e=0;e<8;e++)acc[j][e]=H(acc[j][e]+sum[j][e]);
  }
  _Pragma("unroll") for(uint e=0;e<8;e++){uint q=first+g*8+e;if(q<M){bool inv=valid_width&&(q%width>=valid_width||q/width>=valid_height);_Pragma("unroll") for(uint j=0;j<4;j++){float a=acc[j][e],ac=__builtin_amdgcn_fmed3f(a+0.f,-448.f,448.f);int b8=__builtin_amdgcn_cvt_pk_fp8_f32(ac,0.f,0,false);uint idx=Gout?pg_tinv(q)*N+pg_cinv(colg+j*16+rc):q*N+colg+j*16+rc;if constexpr(ByteOut)reinterpret_cast<unsigned char*>(output)[idx]=inv?0u:static_cast<unsigned char>(b8);else output[idx]=inv?0.f:__builtin_amdgcn_cvt_f32_fp8(b8,0);}}}
@@ -1218,3 +1228,27 @@ KERNEL __attribute__((amdgpu_flat_work_group_size(128,128))) void mh_ffn_fused_c
 KERNEL __attribute__((amdgpu_flat_work_group_size(128,128))) void mh_ffn_fused_c64_project_mapped_g128_qkv_bytein_fb_pdl(const float*in,const float*w,const float*aw,unsigned char*out,unsigned char*norm,uint tokens,uint width,uint height,uint workw,uint sx,uint sy,const uint*pflags,uint pepoch,uint pww,uint psx,uint psy,uint*fflags,uint fepoch){pdl_ffn_wait(pflags,pepoch,pww,psx,psy,tokens,width,height,workw,sx,sy);mh_ffn_qkv_body<64,false,true,true,true,true,true>(in,w,out,tokens,width,height,workw,sx,sy,aw,norm);pdl_publish(fflags,__builtin_amdgcn_workgroup_id_x());}
 KERNEL __attribute__((amdgpu_flat_work_group_size(128,128))) void mh_ffn_fused_c64_project_mapped_g128_qkv_fb_pdl(const float*in,const float*w,const float*aw,unsigned char*out,unsigned char*norm,uint tokens,uint width,uint height,uint workw,uint sx,uint sy,const uint*pflags,uint pepoch,uint pww,uint psx,uint psy,uint*fflags,uint fepoch){pdl_ffn_wait(pflags,pepoch,pww,psx,psy,tokens,width,height,workw,sx,sy);mh_ffn_qkv_body<64,false,true,true,true,false,true>(in,w,out,tokens,width,height,workw,sx,sy,aw,norm);pdl_publish(fflags,__builtin_amdgcn_workgroup_id_x());}
 #endif
+
+KERNEL __attribute__((amdgpu_flat_work_group_size(64,64))) void mh_pool_project_group_c64_f8w16(const float*raw,const float*w,float*output,uint width,uint height,uint source_width,uint valid_width,uint valid_height){mh_pool_project_group_body<64,false,false,false,true>(raw,w,output,width,height,source_width,valid_width,valid_height);}
+
+KERNEL __attribute__((amdgpu_flat_work_group_size(64,64))) void mh_pool_project_group_c64_out8_f8w16(const float*raw,const float*w,float*output,uint width,uint height,uint source_width,uint valid_width,uint valid_height){mh_pool_project_group_body<64,false,false,true,true>(raw,w,output,width,height,source_width,valid_width,valid_height);}
+
+KERNEL __attribute__((amdgpu_flat_work_group_size(64,64))) void mh_pool_project_group_c64_hin_f8w16(const float*raw,const float*w,float*output,uint width,uint height,uint source_width,uint valid_width,uint valid_height){mh_pool_project_group_body<64,false,true,false,true>(raw,w,output,width,height,source_width,valid_width,valid_height);}
+
+KERNEL __attribute__((amdgpu_flat_work_group_size(64,64))) void mh_pool_project_group_c64_hin_out8_f8w16(const float*raw,const float*w,float*output,uint width,uint height,uint source_width,uint valid_width,uint valid_height){mh_pool_project_group_body<64,false,true,true,true>(raw,w,output,width,height,source_width,valid_width,valid_height);}
+
+KERNEL __attribute__((amdgpu_flat_work_group_size(128,128))) void mh_pool_project_group_c128_f8w16(const float*raw,const float*w,float*output,uint width,uint height,uint source_width,uint valid_width,uint valid_height){mh_pool_project_group_body<128,false,false,false,true>(raw,w,output,width,height,source_width,valid_width,valid_height);}
+
+KERNEL __attribute__((amdgpu_flat_work_group_size(128,128))) void mh_pool_project_group_c128_out8_f8w16(const float*raw,const float*w,float*output,uint width,uint height,uint source_width,uint valid_width,uint valid_height){mh_pool_project_group_body<128,false,false,true,true>(raw,w,output,width,height,source_width,valid_width,valid_height);}
+
+KERNEL __attribute__((amdgpu_flat_work_group_size(128,128))) void mh_pool_project_group_c128_hin_f8w16(const float*raw,const float*w,float*output,uint width,uint height,uint source_width,uint valid_width,uint valid_height){mh_pool_project_group_body<128,false,true,false,true>(raw,w,output,width,height,source_width,valid_width,valid_height);}
+
+KERNEL __attribute__((amdgpu_flat_work_group_size(128,128))) void mh_pool_project_group_c128_hin_out8_f8w16(const float*raw,const float*w,float*output,uint width,uint height,uint source_width,uint valid_width,uint valid_height){mh_pool_project_group_body<128,false,true,true,true>(raw,w,output,width,height,source_width,valid_width,valid_height);}
+
+KERNEL __attribute__((amdgpu_flat_work_group_size(256,256))) void mh_pool_project_group_c256_f8w16(const float*raw,const float*w,float*output,uint width,uint height,uint source_width,uint valid_width,uint valid_height){mh_pool_project_group_body<256,false,false,false,true>(raw,w,output,width,height,source_width,valid_width,valid_height);}
+
+KERNEL __attribute__((amdgpu_flat_work_group_size(256,256))) void mh_pool_project_group_c256_out8_f8w16(const float*raw,const float*w,float*output,uint width,uint height,uint source_width,uint valid_width,uint valid_height){mh_pool_project_group_body<256,false,false,true,true>(raw,w,output,width,height,source_width,valid_width,valid_height);}
+
+KERNEL __attribute__((amdgpu_flat_work_group_size(512,512))) void mh_pool_project_group_c512_f8w16(const float*raw,const float*w,float*output,uint width,uint height,uint source_width,uint valid_width,uint valid_height){mh_pool_project_group_body<512,false,false,false,true>(raw,w,output,width,height,source_width,valid_width,valid_height);}
+
+KERNEL __attribute__((amdgpu_flat_work_group_size(512,512))) void mh_pool_project_group_c512_out8_f8w16(const float*raw,const float*w,float*output,uint width,uint height,uint source_width,uint valid_width,uint valid_height){mh_pool_project_group_body<512,false,false,true,true>(raw,w,output,width,height,source_width,valid_width,valid_height);}

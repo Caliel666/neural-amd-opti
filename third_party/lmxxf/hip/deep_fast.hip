@@ -512,10 +512,25 @@ WAVE void decoder_project2x_h16w_byteout_f8(const float*in,const float*w,const f
 #if HIP_DEC_WIDE
 /* 2026-10-01 bitexact-pm: W8 = the HIP_DEC_F8W main loop (E4M3 weights, fp8 WMMA, identical to decoder_project2x_h16w_body<..,W8=true>)
    under the wide epilogue; exported as *_w_f8 when both HIP_DEC_WIDE and HIP_DEC_F8W are set. */
-template<bool FullTile,bool ByteOutput,bool W8=false,bool ByteInput=false>
+template<bool FullTile,bool ByteOutput,bool W8=false,bool ByteInput=false,bool W16=false>
 DEV void decoder_project2x_h16w_wide_body(const float*in,const float*w,const float*skip,float*out,uint iw,uint ih,uint ow,uint oh,uint inputs,uint outputs){
  uint first=bid()/(outputs/16)*16,row=bid()%(outputs/16)*16;if(first>=iw*ih)return;uint parts=inputs==1024?4:1;f8 total{};const _Float16*w16=reinterpret_cast<const _Float16*>(w);
+ if constexpr(W16){
+  using dec_i4=int __attribute__((ext_vector_type(4)));
+  for(uint p=0;p<parts;p++){f8 a{};
+   for(uint k=p*(inputs/parts);k<(p+1)*(inputs/parts);k+=32){
+    dec_i4 bw;__builtin_memcpy(&bw,reinterpret_cast<const unsigned char*>(w)+((row/16)*(inputs/32)+k/32)*512+(gr()*16+rc())*16,16);
+    i2 x0{},x1{};if(FullTile||first+rc()<iw*ih){
+     __builtin_memcpy(&x0,reinterpret_cast<const unsigned char*>(in)+(first+rc())*inputs+k+gr()*8,8);
+     __builtin_memcpy(&x1,reinterpret_cast<const unsigned char*>(in)+(first+rc())*inputs+k+16+gr()*8,8);
+    }
+    a=__builtin_amdgcn_wmma_f32_16x16x16_fp8_fp8_w32_gfx12(x0,i2{bw[0],bw[1]},a);
+    a=__builtin_amdgcn_wmma_f32_16x16x16_fp8_fp8_w32_gfx12(x1,i2{bw[2],bw[3]},a);
+   }for(uint e=0;e<8;e++)total[e]=p?total[e]+a[e]:a[e];
+  }
+ }else{
  for(uint p=0;p<parts;p++){f8 a{};for(uint k=p*(inputs/parts);k<(p+1)*(inputs/parts);k+=16){h8 x{},y;if constexpr(ByteInput){if(FullTile||first+rc()<iw*ih){i2 b8;__builtin_memcpy(&b8,reinterpret_cast<const unsigned char*>(in)+(first+rc())*inputs+k+gr()*8,8);for(uint e=0;e<8;e++)x[e]=(_Float16)__builtin_amdgcn_cvt_f32_fp8(int((uint(b8[e/4])>>(8*(e%4)))&255u),0);}}else{for(uint e=0;e<8;e++){uint j=k+gr()*8+e;x[e]=(FullTile||first+rc()<iw*ih)?(_Float16)in[(first+rc())*inputs+j]:(_Float16)0;}}if constexpr(W8){i2 y8;__builtin_memcpy(&y8,reinterpret_cast<const unsigned char*>(w)+(row+rc())*inputs+k+gr()*8,8);a=__builtin_amdgcn_wmma_f32_16x16x16_fp8_fp8_w32_gfx12(dec_pack8(x),y8,a);}else{__builtin_memcpy(&y,w16+(row+rc())*inputs+k+gr()*8,16);a=__builtin_amdgcn_wmma_f32_16x16x16_f16_w32_gfx12(x,y,a);}}for(uint e=0;e<8;e++)total[e]=p?total[e]+a[e]:a[e];}
+ }
  __attribute__((shared)) float tl[16*17];
  for(uint e=0;e<8;e++)tl[(gr()*8+e)*17+rc()]=H(total[e]);
  WG_FENCE(3);__builtin_amdgcn_s_barrier();WG_FENCE(2);
@@ -529,14 +544,17 @@ DEV void decoder_project2x_h16w_wide_body(const float*in,const float*w,const flo
   if constexpr(ByteOutput){uint wv[4];for(uint q=0;q<4;q++){uint v=0;for(uint b=0;b<4;b++)v|=(uint(__builtin_amdgcn_cvt_pk_fp8_f32(r[q*4+b],0.f,0,false))&255u)<<(8*b);wv[q]=v;}__builtin_memcpy(__builtin_assume_aligned(reinterpret_cast<unsigned char*>(out)+base,16),wv,16);}
   else __builtin_memcpy(__builtin_assume_aligned(out+base,16),r,64);}
 }
-template<bool ByteOutput,bool W8=false,bool ByteInput=false>
+template<bool ByteOutput,bool W8=false,bool ByteInput=false,bool W16=false>
 DEV void decoder_project2x_h16w_wide_fixed(const float*in,const float*w,const float*skip,float*out,uint iw,uint ih,uint ow,uint oh,uint inputs,uint outputs){
  uint first=bid()/(outputs/16)*16,n=iw*ih;
- if(first<n&&n-first>=16)decoder_project2x_h16w_wide_body<true,ByteOutput,W8,ByteInput>(in,w,skip,out,iw,ih,ow,oh,inputs,outputs);
- else decoder_project2x_h16w_wide_body<false,ByteOutput,W8,ByteInput>(in,w,skip,out,iw,ih,ow,oh,inputs,outputs);
+ if(first<n&&n-first>=16)decoder_project2x_h16w_wide_body<true,ByteOutput,W8,ByteInput,W16>(in,w,skip,out,iw,ih,ow,oh,inputs,outputs);
+ else decoder_project2x_h16w_wide_body<false,ByteOutput,W8,ByteInput,W16>(in,w,skip,out,iw,ih,ow,oh,inputs,outputs);
 }
 WAVE void decoder_project2x_h16w_w(const float*in,const float*w,const float*skip,float*out,uint iw,uint ih,uint ow,uint oh,uint inputs,uint outputs){if(inputs==1024&&outputs==512)decoder_project2x_h16w_wide_fixed<false>(in,w,skip,out,iw,ih,ow,oh,1024,512);}
 WAVE void decoder_project2x_h16w_byteout_w(const float*in,const float*w,const float*skip,float*out,uint iw,uint ih,uint ow,uint oh,uint inputs,uint outputs){if(inputs==512&&outputs==256)decoder_project2x_h16w_wide_fixed<true>(in,w,skip,out,iw,ih,ow,oh,512,256);else if(inputs==1024&&outputs==512)decoder_project2x_h16w_wide_fixed<true>(in,w,skip,out,iw,ih,ow,oh,1024,512);}
+// Byte input + W16 E4M3 weights; same K16 accumulation and wide epilogue.
+WAVE void decoder_project2x_h16w_w_bin_f8w16(const float*in,const float*w,const float*skip,float*out,uint iw,uint ih,uint ow,uint oh,uint inputs,uint outputs){if(inputs==1024&&outputs==512)decoder_project2x_h16w_wide_fixed<false,true,true,true>(in,w,skip,out,iw,ih,ow,oh,1024,512);}
+WAVE void decoder_project2x_h16w_byteout_w_bin_f8w16(const float*in,const float*w,const float*skip,float*out,uint iw,uint ih,uint ow,uint oh,uint inputs,uint outputs){if(inputs==1024&&outputs==512)decoder_project2x_h16w_wide_fixed<true,true,true,true>(in,w,skip,out,iw,ih,ow,oh,1024,512);else if(inputs==512&&outputs==256)decoder_project2x_h16w_wide_fixed<true,true,true,true>(in,w,skip,out,iw,ih,ow,oh,512,256);}
 WAVE void decoder_project2x_h16w_w_bin(const float*in,const float*w,const float*skip,float*out,uint iw,uint ih,uint ow,uint oh,uint inputs,uint outputs){if(inputs==1024&&outputs==512)decoder_project2x_h16w_wide_fixed<false,false,true>(in,w,skip,out,iw,ih,ow,oh,1024,512);}
 WAVE void decoder_project2x_h16w_byteout_w_bin(const float*in,const float*w,const float*skip,float*out,uint iw,uint ih,uint ow,uint oh,uint inputs,uint outputs){if(inputs==512&&outputs==256)decoder_project2x_h16w_wide_fixed<true,false,true>(in,w,skip,out,iw,ih,ow,oh,512,256);else if(inputs==1024&&outputs==512)decoder_project2x_h16w_wide_fixed<true,false,true>(in,w,skip,out,iw,ih,ow,oh,1024,512);}
 #if HIP_DEC_F8W
