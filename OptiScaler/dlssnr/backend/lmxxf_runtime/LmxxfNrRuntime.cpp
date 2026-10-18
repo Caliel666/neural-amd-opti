@@ -1214,7 +1214,7 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
             const bool temporal = info->struct_size >= noSmoothSize && (info->flags & LMXXF_NR_FRAME_FLAG_TEMPORAL) &&
                                   info->motion && !(info->flags & LMXXF_NR_FRAME_FLAG_CODEC_PASSTHROUGH);
             const uint32_t style = (info->flags & LMXXF_NR_FRAME_FLAG_STYLE) &&
-                                           info->struct_size >= sizeof(LmxxfNrFrameInfo)
+                                           info->struct_size > noStyleSize
                                        ? std::min(info->style, 2u)
                                        : 1u;
             const bool smooth = temporal && info->struct_size >= noStyleSize &&
