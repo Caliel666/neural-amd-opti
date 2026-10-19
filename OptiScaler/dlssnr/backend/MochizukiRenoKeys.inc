@@ -80,7 +80,9 @@ MZR_F(MochizukiRenoChromaClamp, 1.0f, 0.25f, 2.0f, 6, "Chroma clamp (stops)", re
 MZR_U(MochizukiRenoTransferMode, 0u, 0, 1, 6, "Transfer mode", reno_transfer_mode,
       "Bounded ratio, RenoDX's default, or Consistent.")
 MZR_F(MochizukiRenoStyleHighlightGuard, 0.0f, 0.0f, 2.0f, 6, "Highlight guard (stops)", reno_style_highlight_guard,
-      "Holds back the model's change on highlights, in stops; 0 is off.")
+      "The most the model may darken a highlight, in stops: lower holds highlights more (0.25 is strong), 2 changes "
+      "nothing and 0 is off. HDR games on the Display codec only (Codec Auto picks it for most), and only where the "
+      "model darkens bright areas, as the Natural and Cinematic styles do.")
 MZR_U(MochizukiRenoDetailStability, 0u, 0, 2, 6, "Detail stability", reno_detail_stability,
       "Steadies fine detail between frames. Auto decides from where NR runs.")
 MZR_U(MochizukiRenoSdrBlackRestore, 0u, 0, 2, 6, "SDR black restore", reno_sdr_black_restore,
