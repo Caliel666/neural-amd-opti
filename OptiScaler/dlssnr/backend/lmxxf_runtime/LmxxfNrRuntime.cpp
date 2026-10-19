@@ -15,6 +15,9 @@
 #include "native_temporal_sample.h"
 #include "hip_d3d12_bridge.h"
 
+#include <d3dcompiler.h>
+
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -563,6 +566,186 @@ struct TemporalChain
     }
 };
 
+// LMXXF_NR_FRAME_FLAG_AUTO_WHITE: the frame's brightness, measured on the GPU into a 1x1 R32_FLOAT that lmxxf's codec
+// reads as the game's exposure (NATIVE_CODEC_EXPOSURE), so the codec itself is unchanged. Its own estimate (25 points,
+// every frame, toward mid-grey both ways) made a dark scene clean but pulsed with the camera and dimmed bright scenes
+// (KCD2). This is a log average of 16x16 points of the colour, so one light barely moves it, eased over about half a
+// second, and only ever a gain: a dark scene is lifted toward lmxxf's mid-grey, at most 8x, and a scene already that
+// bright gets 1x, as with the option off.
+static const char kAutoExposureHlsl[] = R"(
+Texture2D<float4> Colour : register(t0);
+RWTexture2D<float> Exposure : register(u0);
+cbuffer Constants : register(b0) { uint2 Size; float Blend; uint Reset; };
+groupshared float logs[256];
+[numthreads(16, 16, 1)]
+void main(uint3 t : SV_GroupThreadID)
+{
+    const uint i = t.y * 16 + t.x;
+    const uint2 p = min(uint2((float2(t.xy) + 0.5) * float2(Size) / 16.0), Size - 1);
+    const float3 c = max(Colour.Load(int3(p, 0)).rgb, 0.0);
+    logs[i] = log2(max(dot(c, float3(0.2126, 0.7152, 0.0722)), 1e-5));
+    GroupMemoryBarrierWithGroupSync();
+    for (uint step = 128; step > 0; step >>= 1)
+    {
+        if (i < step)
+            logs[i] += logs[i + step];
+        GroupMemoryBarrierWithGroupSync();
+    }
+    if (i == 0)
+    {
+        // lmxxf's white point for a mean is mean / 0.2086 (WhitePointForMean: mid-grey 0.45 encoded); as a gain on
+        // the colour, 0.2086 / mean.
+        const float target = clamp(0.2086 / exp2(logs[0] / 256.0), 1.0, 8.0);
+        const float previous = Exposure[uint2(0, 0)];
+        Exposure[uint2(0, 0)] = Reset != 0 || !(previous >= 1.0 && previous <= 8.0)
+            ? target : exp2(lerp(log2(previous), log2(target), Blend));
+    }
+}
+)";
+
+struct AutoExposure
+{
+    ID3D12RootSignature* root = nullptr;
+    ID3D12PipelineState* pso = nullptr;
+    ID3D12DescriptorHeap* heap = nullptr;
+    ID3D12Resource* value = nullptr; // the exposure, kept in UNORDERED_ACCESS between frames
+    UINT increment = 0;
+    UINT slot = 0;           // descriptors rotate over kSlots pairs, so a frame still in flight keeps its own
+    LARGE_INTEGER last {};   // the last measurement, for the easing
+    static constexpr UINT kSlots = 8;
+
+    void Create(ID3D12Device* d)
+    {
+        auto check = [](HRESULT hr, const char* what)
+        {
+            if (FAILED(hr))
+                throw std::runtime_error(std::string("auto exposure: ") + what);
+        };
+        ID3DBlob* code = nullptr;
+        ID3DBlob* errors = nullptr;
+        const HRESULT compiled = D3DCompile(kAutoExposureHlsl, sizeof kAutoExposureHlsl - 1, "auto_exposure", nullptr,
+                                            nullptr, "main", "cs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code,
+                                            &errors);
+        if (errors)
+            errors->Release();
+        check(compiled, "shader compile");
+        D3D12_DESCRIPTOR_RANGE ranges[2] {};
+        ranges[0] = { D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 0, 0 };
+        ranges[1] = { D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0, 0, 1 };
+        D3D12_ROOT_PARAMETER params[2] {};
+        params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        params[0].DescriptorTable = { 2, ranges };
+        params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        params[1].Constants = { 0, 0, 4 };
+        D3D12_ROOT_SIGNATURE_DESC rd { 2, params, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE };
+        ID3DBlob* sig = nullptr;
+        HRESULT hr = D3D12SerializeRootSignature(&rd, D3D_ROOT_SIGNATURE_VERSION_1, &sig, nullptr);
+        if (SUCCEEDED(hr))
+            hr = d->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(), IID_PPV_ARGS(&root));
+        if (sig)
+            sig->Release();
+        if (FAILED(hr))
+            code->Release();
+        check(hr, "root signature");
+        D3D12_COMPUTE_PIPELINE_STATE_DESC pd {};
+        pd.pRootSignature = root;
+        pd.CS = { code->GetBufferPointer(), code->GetBufferSize() };
+        hr = d->CreateComputePipelineState(&pd, IID_PPV_ARGS(&pso));
+        code->Release();
+        check(hr, "pipeline");
+        D3D12_DESCRIPTOR_HEAP_DESC hd { D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, kSlots * 2,
+                                        D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, 0 };
+        check(d->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&heap)), "descriptor heap");
+        increment = d->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        D3D12_HEAP_PROPERTIES hp {};
+        hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+        D3D12_RESOURCE_DESC td {};
+        td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        td.Width = td.Height = 1;
+        td.DepthOrArraySize = td.MipLevels = 1;
+        td.Format = DXGI_FORMAT_R32_FLOAT;
+        td.SampleDesc.Count = 1;
+        td.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+        check(d->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+                                         IID_PPV_ARGS(&value)),
+              "texture");
+    }
+
+    // Measures the colour's top-left w x h, in `state`, into value (left in UNORDERED_ACCESS).
+    void Record(ID3D12GraphicsCommandList* c, ID3D12Device* d, ID3D12Resource* colour, D3D12_RESOURCE_STATES state,
+                UINT w, UINT h)
+    {
+        LARGE_INTEGER now {}, frequency {};
+        QueryPerformanceCounter(&now);
+        QueryPerformanceFrequency(&frequency);
+        const double dt = last.QuadPart ? double(now.QuadPart - last.QuadPart) / double(frequency.QuadPart) : 1e9;
+        last = now;
+        // A gap of more than a second (a load, the menu) takes the new value at once.
+        const bool reset = dt > 1.0;
+        const float blend = reset ? 1.0f : float(1.0 - std::exp(-std::max(dt, 0.0) / 0.5));
+
+        const DXGI_FORMAT f = colour->GetDesc().Format;
+        D3D12_SHADER_RESOURCE_VIEW_DESC sv {};
+        sv.Format = NativeIsGameColor(f) || f == DXGI_FORMAT_R9G9B9E5_SHAREDEXP || f == DXGI_FORMAT_R16G16B16A16_FLOAT
+                        ? NativeViewFormat(f)
+                    : NativeFallbackColorView(f) != DXGI_FORMAT_UNKNOWN ? NativeFallbackColorView(f)
+                                                                        : NativeViewFormat(f);
+        sv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        sv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        sv.Texture2D.MipLevels = 1;
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uv {};
+        uv.Format = DXGI_FORMAT_R32_FLOAT;
+        uv.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+        auto cpu = heap->GetCPUDescriptorHandleForHeapStart();
+        auto gpu = heap->GetGPUDescriptorHandleForHeapStart();
+        cpu.ptr += SIZE_T(slot) * 2 * increment;
+        gpu.ptr += UINT64(slot) * 2 * increment;
+        slot = (slot + 1) % kSlots;
+        d->CreateShaderResourceView(colour, &sv, cpu);
+        cpu.ptr += increment;
+        d->CreateUnorderedAccessView(value, nullptr, &uv, cpu);
+
+        const bool readable = (state & D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE) != 0;
+        D3D12_RESOURCE_BARRIER b {};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition = { colour, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, state,
+                         D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE };
+        if (!readable)
+            c->ResourceBarrier(1, &b);
+        c->SetDescriptorHeaps(1, &heap);
+        c->SetComputeRootSignature(root);
+        c->SetPipelineState(pso);
+        c->SetComputeRootDescriptorTable(0, gpu);
+        const UINT constants[4] = { std::max(w, 1u), std::max(h, 1u), 0, reset ? 1u : 0u };
+        c->SetComputeRoot32BitConstants(1, 4, constants, 0);
+        c->SetComputeRoot32BitConstants(1, 1, &blend, 2);
+        c->Dispatch(1, 1, 1);
+        D3D12_RESOURCE_BARRIER after[2] {};
+        after[0].Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+        after[0].UAV.pResource = value;
+        UINT count = 1;
+        if (!readable)
+        {
+            after[1] = b;
+            std::swap(after[1].Transition.StateBefore, after[1].Transition.StateAfter);
+            count = 2;
+        }
+        c->ResourceBarrier(count, after);
+    }
+
+    ~AutoExposure()
+    {
+        if (value)
+            value->Release();
+        if (heap)
+            heap->Release();
+        if (pso)
+            pso->Release();
+        if (root)
+            root->Release();
+    }
+};
+
 struct Session
 {
     ID3D12Device* device = nullptr;
@@ -584,6 +767,9 @@ struct Session
     bool failed = false; /* Fail-closed poisoning */
     hip_reference::D3D12Bridge* bridge = nullptr;
     NativeGameCodec* encode = nullptr;
+    // The codec was made reading autoExposure's value (LMXXF_NR_FRAME_FLAG_AUTO_WHITE); switching it makes it again.
+    bool codecAutoWhite = false;
+    AutoExposure* autoExposure = nullptr;
     NativeGameRgbInput* rgbInput = nullptr;
     NativeRgbTexture* rgbTex = nullptr;
     NativeGameCodec* decode = nullptr;
@@ -746,6 +932,7 @@ struct Session
         firstTex = nullptr;
         rgbInput = nullptr;
         encode = nullptr;
+        autoExposure = nullptr;
         // The queue may still own GPU work. Keep our reference on fail-closed teardown.
         fallbackConsumerQueue = nullptr;
         if (queue)
@@ -807,6 +994,8 @@ struct Session
         rgbInput = nullptr;
         delete encode;
         encode = nullptr;
+        delete autoExposure;
+        autoExposure = nullptr;
         if (queue)
             queue->Release();
         queue = nullptr;
@@ -1335,11 +1524,12 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
             const DXGI_FORMAT cfmt = cdesc.Format;
             const UINT cw = static_cast<UINT>(cdesc.Width);
             const UINT ch = cdesc.Height;
+            const bool autoWhite = (info->flags & LMXXF_NR_FRAME_FLAG_AUTO_WHITE) != 0;
             const bool geoChanged =
                 session->encode &&
                 (session->job.width != info->color_width || session->job.height != info->color_height ||
                  session->colorFormat != cfmt || (session->job.width && cw != session->job.width) ||
-                 (session->job.height && ch != session->job.height));
+                 (session->job.height && ch != session->job.height) || session->codecAutoWhite != autoWhite);
             const bool pointerChanged = session->encode && color != session->job.color;
 
             if (session->encode && geoChanged)
@@ -1385,15 +1575,30 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
                 {
                     const bool privateFloatOutput = cfmt == DXGI_FORMAT_R9G9B9E5_SHAREDEXP ||
                                                     NativeFallbackColor(cfmt) != DXGI_FORMAT_UNKNOWN;
+                    if (autoWhite && !session->autoExposure)
+                    {
+                        auto* meter = new AutoExposure();
+                        try
+                        {
+                            meter->Create(session->device);
+                        }
+                        catch (...)
+                        {
+                            delete meter;
+                            throw;
+                        }
+                        session->autoExposure = meter;
+                    }
+                    ID3D12Resource* exposure = autoWhite ? session->autoExposure->value : nullptr;
                     enc = new NativeGameCodec();
-                    enc->Create(session->device, { color }, session->shaderDir, privateFloatOutput);
+                    enc->Create(session->device, { color }, session->shaderDir, privateFloatOutput, exposure);
                     rgbIn = new NativeGameRgbInput();
                     rgbIn->Create(session->device, enc->Output(), session->shaderDir);
                     rgbOut = new NativeRgbTexture();
                     rgbOut->Create(session->device, session->bridge->Output(), session->shaderDir);
                     dec = new NativeGameCodec();
                     dec->Create(session->device, { enc->Output(), rgbOut->Output(), color }, session->shaderDir,
-                                privateFloatOutput);
+                                privateFloatOutput, exposure);
                     if (dec->BufferOutput())
                     {
                         D3D12_RESOURCE_DESC td = cdesc;
@@ -1418,6 +1623,7 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
                     throw;
                 }
                 session->encode = enc;
+                session->codecAutoWhite = autoWhite;
                 session->rgbInput = rgbIn;
                 session->rgbTex = rgbOut;
                 session->decode = dec;
@@ -1545,12 +1751,11 @@ int32_t RecordInputs(void* context, void* job, void* command_list)
                 return Fail(LMXXF_NR_INVALID_ARGUMENT, "RecordInputs: job not in PREPARED state");
             ListContract(session, list);
 
-            if (j->autoWhite)
+            if (session->codecAutoWhite)
             {
-                // The decode measures the same frame (the game's colour), so both sides take one white point.
-                NativeCodecParameters p = NativeGameCodec::LegacyParameters();
-                p.auto_white = true;
-                session->encode->Record(list, { j->colorState }, 1.f, p);
+                // Measured once here; the decode reads the same value, so both sides take one white point.
+                session->autoExposure->Record(list, session->device, j->color, j->colorState, j->width, j->height);
+                session->encode->Record(list, { j->colorState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS }, 1.f);
             }
             else
                 session->encode->Record(list, { j->colorState }, 1.f);
@@ -1761,7 +1966,7 @@ void RecordFirstPass(Session* session, ID3D12GraphicsCommandList* list, const Jo
         {
             tex->Create(session->device, source, session->shaderDir);
             dec->Create(session->device, { session->encode->Output(), tex->Output(), j.color }, session->shaderDir,
-                        privateFloatOutput);
+                        privateFloatOutput, session->codecAutoWhite ? session->autoExposure->value : nullptr);
             if (dec->BufferOutput())
             {
                 D3D12_RESOURCE_DESC td = j.color->GetDesc();
@@ -1790,10 +1995,11 @@ void RecordFirstPass(Session* session, ID3D12GraphicsCommandList* list, const Jo
         OutputDebugStringA("lmxxf: first pass output ready\n");
     }
     session->firstTex->Record(list);
-    session->firstDecode->Record(list,
-                                 { D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                                   D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, j.colorState },
-                                 1.f, codecParams);
+    std::vector<D3D12_RESOURCE_STATES> before { D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                                                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, j.colorState };
+    if (session->codecAutoWhite)
+        before.push_back(D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    session->firstDecode->Record(list, before, 1.f, codecParams);
     if (!session->firstDecode->BufferOutput())
         return;
     ID3D12Resource* src = session->firstDecode->Output();
@@ -1883,11 +2089,11 @@ int32_t RecordOutputs(void* context, void* job, void* command_list)
             codecParams.transfer_strength = j->transfer_strength;
             codecParams.color_strength = j->color_strength;
             codecParams.debug_view = static_cast<NativeCodecDebugView>(j->debug_view);
-            codecParams.auto_white = j->autoWhite;
-            session->decode->Record(list,
-                                    { D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                                      D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, j->colorState },
-                                    1.f, codecParams);
+            std::vector<D3D12_RESOURCE_STATES> before { D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                                                        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, j->colorState };
+            if (session->codecAutoWhite)
+                before.push_back(D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            session->decode->Record(list, before, 1.f, codecParams);
             if (session->decode->BufferOutput())
             {
                 if (!session->decodeDisplay)
