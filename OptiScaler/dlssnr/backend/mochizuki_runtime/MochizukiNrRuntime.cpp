@@ -137,6 +137,20 @@ std::wstring DataDirectory()
     return dir;
 }
 
+// dlssnr-amd\float-colour-shared: this game's colour has switched between R11G11B10_FLOAT and R16G16B16A16_FLOAT, so
+// its float frames run on one RGBA16F network (PrepareFrame). An empty file; the installer takes it on uninstall.
+std::wstring FloatSharedMarker() { return DataDirectory() + L"\\dlssnr-amd\\float-colour-shared"; }
+
+bool FloatShared() { return GetFileAttributesW(FloatSharedMarker().c_str()) != INVALID_FILE_ATTRIBUTES; }
+
+void MarkFloatShared()
+{
+    const HANDLE f = CreateFileW(FloatSharedMarker().c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                                 FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f != INVALID_HANDLE_VALUE)
+        CloseHandle(f);
+}
+
 // The runtime's folder as the core's RuntimeConfig::root, in UTF-8: with LC_CTYPE set to UTF-8 (UseUtf8Paths), the
 // core's narrow paths reach the file system unchanged, whatever the ANSI code page is.
 std::string RootUtf8(const std::wstring& dir)
@@ -1395,6 +1409,7 @@ struct Geometry
 {
     UINT width = 0, height = 0;
     DXGI_FORMAT colourFormat = DXGI_FORMAT_UNKNOWN;
+    VkFormat netFormat = VK_FORMAT_UNDEFINED; // the network's colour format where it is not the frame's (netImage)
     UINT64 colourWidth = 0;
     UINT colourHeight = 0;
     DXGI_FORMAT motionFormat = DXGI_FORMAT_UNKNOWN;
@@ -1502,6 +1517,7 @@ struct FrameBuffers
     SharedBuffer input, output, motionBuffer, depthBuffer;
     Image colourImage, motionImage, depthImage;
     Image motionScaled; // bucketed geometry with motion: the vectors laid over the subrect, at the bucket's extent
+    Image netImage;     // Geometry::netFormat: the frame converted to the network's format and back
     ID3D12Resource* result {};
     // Geometry::firstPass: the core's RGBA32F first pass, through a buffer of its own into an RGBA32F texture.
     Footprint firstFootprint;
@@ -1517,6 +1533,7 @@ struct FrameBuffers
             motionBuffer.Release(device);
             depthBuffer.Release(device);
             colourImage.Release(device);
+            netImage.Release(device);
             motionImage.Release(device);
             depthImage.Release(device);
             motionScaled.Release(device);
@@ -1767,6 +1784,10 @@ struct Session
     std::atomic<float> gameExposure { 0.f };
     // Set by the first frame that asks for the preprocess: from then on every network is built able to run it.
     bool prepWanted = false;
+    // The float colour format of the last frame that had one, and, once a frame came in the other one, RGBA16F for
+    // every float frame's network (render thread).
+    DXGI_FORMAT floatFormat = DXGI_FORMAT_UNKNOWN;
+    bool floatShared = false;
     // One bit a frame, newest lowest: its history was consumed. Written under submitMutex only.
     std::atomic<uint64_t> historyBits { 0 };
     std::atomic<uint32_t> historyCount { 0 };
@@ -1777,7 +1798,7 @@ struct Session
     Footprint colourFootprint, motionFootprint, depthFootprint;
     VkFormat colourVk = VK_FORMAT_UNDEFINED, motionVk = VK_FORMAT_UNDEFINED, depthVk = VK_FORMAT_UNDEFINED;
     SharedBuffer input, output, motionBuffer, depthBuffer;
-    Image colourImage, motionImage, motionScaled, depthImage;
+    Image colourImage, motionImage, motionScaled, depthImage, netImage;
     std::atomic<uint32_t> depthRefused { 0 }; // the DXGI format of a depth the runtime cannot take, logged once
     ID3D12Resource* result {};                // what Super Resolution gets in place of the game's colour
     // Geometry::firstPass: the core's first pass on its way out, and the texture person protection reads.
@@ -2529,6 +2550,7 @@ struct Session
         b.motionBuffer = std::exchange(motionBuffer, {});
         b.depthBuffer = std::exchange(depthBuffer, {});
         b.colourImage = std::exchange(colourImage, {});
+        b.netImage = std::exchange(netImage, {});
         b.motionImage = std::exchange(motionImage, {});
         b.depthImage = std::exchange(depthImage, {});
         b.motionScaled = std::exchange(motionScaled, {});
@@ -2577,7 +2599,8 @@ struct Session
     {
         const UINT64 scaled = g.bucketed ? MotionFormat(g.motionFormat).bytes : 0;
         const UINT64 first = g.firstPass ? 32 : 0; // its buffer and texture, RGBA32F
-        return (kFramePixelBytes + scaled + first + 2 * DepthFormat(g.depthFormat).bytes) * g.width * g.height;
+        const UINT64 net = g.netFormat ? 8 : 0;     // netImage, RGBA16F
+        return (kFramePixelBytes + scaled + first + net + 2 * DepthFormat(g.depthFormat).bytes) * g.width * g.height;
     }
 
     // A network measured: `bytes` is what it took, or gave back, in this process's VRAM.
@@ -2651,6 +2674,8 @@ struct Session
         b.input.Create(device, vk, b.colourFootprint.bytes);
         b.output.Create(device, vk, b.colourFootprint.bytes);
         b.colourImage.Create(vk, cf.vk, g.width, g.height);
+        if (g.netFormat)
+            b.netImage.Create(vk, g.netFormat, g.width, g.height);
         b.motionVk = mf.vk;
         if (mf.vk)
         {
@@ -2712,6 +2737,7 @@ struct Session
         motionBuffer = std::exchange(b.motionBuffer, {});
         depthBuffer = std::exchange(b.depthBuffer, {});
         colourImage = std::exchange(b.colourImage, {});
+        netImage = std::exchange(b.netImage, {});
         motionImage = std::exchange(b.motionImage, {});
         depthImage = std::exchange(b.depthImage, {});
         motionScaled = std::exchange(b.motionScaled, {});
@@ -3778,6 +3804,16 @@ struct Session
             Pad(c, colour.image, w, h, W, H);
             ready(colour.image);
         }
+        // Geometry::netFormat: the network runs on netImage, the frame converted to its format.
+        if (netImage.image)
+        {
+            ImageBarrier(c, netImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+                         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_ACCESS_TRANSFER_WRITE_BIT);
+            Blit(c, colour.image, netImage.image, { 0, 0 }, { int32_t(W), int32_t(H) }, { 0, 0 },
+                 { int32_t(W), int32_t(H) }, VK_FILTER_NEAREST);
+            ready(netImage.image);
+        }
         const bool motion = job.motion && motionImage.image;
         // The image the network reads the vectors from, and its extent: the uploaded one, or the bucket-sized one with
         // the vectors laid over the subrect (dynamic resolution).
@@ -3839,8 +3875,8 @@ struct Session
             throw std::runtime_error("MZ_TEST_ENQUEUE_THROW_AT: recording the network failed (test hook)");
 
         nr::EngineFrame frame {};
-        frame.colour.image = colour.image;
-        frame.colour.format = colourVk;
+        frame.colour.image = netImage.image ? netImage.image : colour.image;
+        frame.colour.format = netImage.image ? geometry.netFormat : colourVk;
         frame.colour.width = W;
         frame.colour.height = H;
         frame.colour.usage = kImageUsage;
@@ -3900,6 +3936,17 @@ struct Session
             gpuMsCount = std::min(gpuMsCount + 1, kGpuSamples);
         }
 
+        if (netImage.image)
+        {
+            // The answer back into the frame's format, where the write-back below takes it.
+            ImageBarrier(c, netImage.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+                         VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_ACCESS_TRANSFER_READ_BIT);
+            ImageBarrier(c, colour.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+            Blit(c, netImage.image, colour.image, { 0, 0 }, { int32_t(w), int32_t(h) }, { 0, 0 },
+                 { int32_t(w), int32_t(h) }, VK_FILTER_NEAREST);
+        }
         ImageBarrier(c, colour.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                      VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                      VK_ACCESS_TRANSFER_READ_BIT);
@@ -4193,6 +4240,32 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
             const UINT h = std::min<UINT>(info->color_height, cd.Height);
             Geometry g;
             g.colourFormat = cd.Format;
+            // A game that switches its colour between the two float formats (Neverness to Everness, with its phone
+            // open) had a network built for each, NR off for seconds at every switch. From the first switch on, float
+            // frames share one RGBA16F network: a B10G11R11 frame is converted to it and back (a blit each way, exact
+            // on the way in). A game with one format is left as it was. The first switch leaves FloatSharedMarker()
+            // behind, so the game's later sessions build the RGBA16F network from their first frame.
+            const bool floatColour =
+                cd.Format == DXGI_FORMAT_R11G11B10_FLOAT || cd.Format == DXGI_FORMAT_R16G16B16A16_FLOAT;
+            if (floatColour && !s->floatShared &&
+                (s->floatFormat == DXGI_FORMAT_UNKNOWN ? FloatShared() : s->floatFormat != cd.Format) &&
+                s->Blittable(VK_FORMAT_B10G11R11_UFLOAT_PACK32) && s->Blittable(VK_FORMAT_R16G16B16A16_SFLOAT))
+            {
+                s->floatShared = true;
+                if (s->floatFormat == DXGI_FORMAT_UNKNOWN)
+                    nr::logf("[mochizuki] the colour switched between float formats in an earlier session: one "
+                             "RGBA16F network for both");
+                else
+                {
+                    MarkFloatShared();
+                    nr::logf("[mochizuki] the colour switches between float formats: one RGBA16F network for both");
+                }
+            }
+            if (floatColour)
+                s->floatFormat = cd.Format;
+            const VkFormat netVk = floatColour && s->floatShared ? VK_FORMAT_R16G16B16A16_SFLOAT : cf.vk;
+            if (netVk != cf.vk)
+                g.netFormat = netVk;
             g.colourWidth = cd.Width;
             g.colourHeight = cd.Height;
             // The motion fields up to reset; a FrameInfo too short for them has no motion.
@@ -4321,7 +4394,7 @@ int32_t PrepareFrame(void* context, const LmxxfNrFrameInfo* info, LmxxfNrJob* jo
             const bool firstPass =
                 fullJob && (info->flags & LMXXF_NR_FRAME_FLAG_FIRST_PASS) && (renodx ? passes : maxPasses) > 1;
             g.firstPass = firstPass;
-            NetworkKey key { g.width,       g.height, cf.vk,   scale,    maxPasses, linear,
+            NetworkKey key { g.width,       g.height, netVk,   scale,    maxPasses, linear,
                              s->prepWanted, int4,     cascade, original, firstPass };
             // The RenoDX stage: its own extent, pass count, preprocess and units; the model scale and the pass extras
             // are the native route's.
