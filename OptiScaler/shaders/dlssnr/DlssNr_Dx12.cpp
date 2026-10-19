@@ -3714,8 +3714,7 @@ void EvaluateAtSeam(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* par
         return;
     }
 
-    // The AMD runtime has a separate HIP pipeline. It consumes the colour input
-    // before SR and must never fall through to the NVIDIA NGX backend.
+    // The selected AMD/NeuralHub route must not fall through to the local NVIDIA NGX pass.
     if (DlssNr::AmdBridge::HasFiles())
     {
         // Pre-SR the backend substitutes the upscaler's input. Post-upscale it edits the finished
@@ -3731,7 +3730,8 @@ void EvaluateAtSeam(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Parameter* par
         // it), so for them the key is ignored: a value left over from danielblnc would otherwise send
         // every frame to the seam they refuse, and NR would stay off.
         const auto kind = DlssNr::Backend::ActiveKindFromConfig();
-        const bool beforeSrOnly = kind == DlssNr::Backend::Kind::Lmxxf || kind == DlssNr::Backend::Kind::Mochizuki;
+        const bool beforeSrOnly = kind == DlssNr::Backend::Kind::Lmxxf || kind == DlssNr::Backend::Kind::Mochizuki ||
+                                  kind == DlssNr::Backend::Kind::NeuralHub;
         // danielblnc async runs after the finished frame: a correction one frame late would build up in the
         // upscaler's history before it.
         const bool placedAfter =

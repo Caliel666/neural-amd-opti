@@ -47,7 +47,7 @@ float NeuralMs();
 float NeuralMsLast();
 // A reading the final image took itself (PresentExperimental.h), into the same menu line, overlay line and graph.
 void ReportNeuralMs(float ms);
-// "danielblnc 0.5.1", "mochizuki" or "lmxxf": the runtime the backend was built for; empty before.
+// "danielblnc 0.5.1", "mochizuki", "lmxxf" or the NeuralHub host label; empty before.
 std::string NeuralRuntime();
 // Dynamic NR resolution: the scale in use and the rendered frame rate, or empty while it is off.
 std::string DynamicStatus();
