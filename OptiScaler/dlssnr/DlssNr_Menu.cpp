@@ -489,13 +489,21 @@ void RenderMenu(Config* config, float menuResScale)
     {
         ScopedIndent indent {};
         ImGui::Spacing();
+        const bool neuralHubSelected =
+            DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::NeuralHub;
 
+        ImGui::BeginDisabled(neuralHubSelected);
         bool enabled = config->DlssNrEnabled.value_or_default();
         if (ImGui::Checkbox("Enable NR", &enabled))
             config->DlssNrEnabled = enabled;
+        ImGui::EndDisabled();
         // The same binding as Neural Rendering in Keybinds, with a state and ID of its own.
+        ImGui::BeginDisabled(neuralHubSelected);
         ImGui::SameLine(0.0f, 16.0f * menuResScale);
         MenuCommon::RenderKeybind("Toggle key##DlssNrMenu", 16, config->DlssNrToggleKey);
+        ImGui::EndDisabled();
+        if (neuralHubSelected)
+            ImGui::TextWrapped("The NeuralHub host owns NR enablement and processing in this mode. Use NeuralHub to change its state.");
         if (!enabled)
             if (const auto note = DlssNr::AmdBridge::StandDownNote(); !note.empty())
             {
@@ -504,8 +512,10 @@ void RenderMenu(Config* config, float menuResScale)
                 ImGui::PopStyleColor();
             }
         bool present = config->DlssNrPresent.value_or_default();
+        ImGui::BeginDisabled(neuralHubSelected);
         if (ImGui::Checkbox("NR without upscaling (D3D9/D3D11/D3D12/Vulkan/OpenGL)", &present))
             config->DlssNrPresent = present;
+        ImGui::EndDisabled();
         HelpMarker("Runs NR on the D3D9, D3D11, D3D12, Vulkan or OpenGL frame when the game has no upscaler."
                    "\nRequires the danielblnc AMD runtime. The HUD is included."
                    "\nFidelityFX estimates motion. D3D11 uses a bound shader-readable depth buffer when available."
@@ -514,7 +524,7 @@ void RenderMenu(Config* config, float menuResScale)
                    "\nOpenGL needs OptiScaler installed as opengl32.dll and shares the back buffer with D3D12."
                    "\nScene cuts reset history; the runtime noise seed is fixed on supported versions.");
         if (const auto kind = DlssNr::Backend::ActiveKindFromConfig();
-            present && !DlssNr::Backend::PresentRuntimeSupported())
+            !neuralHubSelected && present && !DlssNr::Backend::PresentRuntimeSupported())
             ImGui::TextColored(ImVec4(0.95f, 0.70f, 0.20f, 1.0f), "%s",
                                kind == DlssNr::Backend::Kind::Off
                                    ? "NR without upscaling runs on the danielblnc and mochizuki runtimes. NrBackend"
@@ -540,6 +550,7 @@ void RenderMenu(Config* config, float menuResScale)
                        "\nOn: the model of 310.8, which int4 mixed needs. Switching rebuilds the network.");
         }
 
+        ImGui::BeginDisabled(neuralHubSelected);
         bool badge = config->DlssNrBadge.value_or_default();
         if (ImGui::Checkbox("NR ON badge", &badge))
             config->DlssNrBadge = badge;
@@ -560,6 +571,8 @@ void RenderMenu(Config* config, float menuResScale)
                 config->DlssNrBadgeScale = std::clamp(badgeScale, 0.5f, 3.0f);
         }
 
+        ImGui::EndDisabled();
+
         // With more than one runtime installed, choose the one the next launch uses. This session keeps the
         // one it started with: each installs its own D3D12 hooks as the device is created.
         {
@@ -574,29 +587,38 @@ void RenderMenu(Config* config, float menuResScale)
                 { Kind::Daniel, "daniel", "danielblnc", L"dlssnr_amd_pass1.dll" },
                 { Kind::Lmxxf, "lmxxf", "lmxxf", L"LmxxfNrRuntime.dll" },
                 { Kind::Mochizuki, "mochizuki", "mochizuki", L"MochizukiNrRuntime.dll" },
+                { Kind::NeuralHub, "neuralhub", "NeuralHub host", nullptr },
             };
             std::error_code ec;
             const auto dir = Util::DllPath().parent_path();
+            const auto raw = config->NrBackend.value_or_default();
+            const bool autoPick = raw.empty() || _stricmp(raw.c_str(), "auto") == 0;
+            const Kind picked = DlssNr::Backend::ParseKind(raw);
             bool installed[std::size(runtimes)] {};
             int count = 0;
             for (size_t i = 0; i < std::size(runtimes); ++i)
-                count += installed[i] = std::filesystem::exists(dir / runtimes[i].file, ec);
-            if (count > 1)
             {
-                const Kind running = DlssNr::Backend::ActiveKindFromConfig();
-                const Kind picked = DlssNr::Backend::ParseKind(config->NrBackend.value_or_default());
+                const bool present = runtimes[i].kind == Kind::NeuralHub
+                                         ? (DlssNr::Backend::NeuralHubHostDetected() || picked == Kind::NeuralHub)
+                                         : std::filesystem::exists(dir / runtimes[i].file, ec);
+                count += installed[i] = present;
+            }
+            const Kind running = DlssNr::Backend::ActiveKindFromConfig();
+            const Kind selected = autoPick ? running : picked;
+            if (count > 1 || DlssNr::Backend::NeuralHubHostDetected() || picked == Kind::NeuralHub)
+            {
                 const char* preview = runtimes[0].label;
                 for (const auto& r : runtimes)
-                    if (r.kind == picked)
+                    if (r.kind == selected)
                         preview = r.label;
                 if (ImGui::BeginCombo("NR runtime", preview))
                 {
                     for (size_t i = 0; i < std::size(runtimes); ++i)
-                        if (installed[i] && ImGui::Selectable(runtimes[i].label, runtimes[i].kind == picked))
+                        if (installed[i] && ImGui::Selectable(runtimes[i].label, runtimes[i].kind == selected))
                             config->NrBackend = std::string(runtimes[i].key);
                     ImGui::EndCombo();
                 }
-                if (picked != running)
+                if (!autoPick && picked != running)
                 {
                     ImGui::SameLine();
                     ImGui::TextColored(ImVec4(1.f, 0.8f, 0.f, 1.f), "(save and restart)");
@@ -606,9 +628,19 @@ void RenderMenu(Config* config, float menuResScale)
                            "\nResolution only. Detail, colour and debug view."
                            "\nmochizuki: open-source Vulkan network on its own device, before Super"
                            "\nResolution only. Its own passes, resolution, strengths and model controls."
-                           "\n\nThe choice is stored as NrBackend. Press Save Settings and restart the"
-                           "\ngame to switch.");
+                           "\nNeuralHub: separate host runtime. OptiScaler skips local NR when selected; set"
+                           "\nCompute.Backend=D3D12 inside NeuralHub to prevent fallback to HIP."
+                           "\n\nAuto selects NeuralHub when its ABI 1 host is loaded. Save and restart to switch.");
             }
+        }
+
+        if (neuralHubSelected)
+        {
+            HGap(0.12f);
+            ImGui::TextDisabled("%s", DlssNr::Backend::NeuralHubRuntimeLabel().c_str());
+            ImGui::TextWrapped("%s", DlssNr::Backend::NeuralHubHostStatus().c_str());
+            ImGui::TextWrapped("NeuralHub runs its own game hooks. This handoff bypasses OptiScaler's local pass runtimes; the OptiScaler NR controls below do not configure NeuralHub.");
+            return;
         }
 
         // lmxxf picks its own network tier from the input size and runs only before Super

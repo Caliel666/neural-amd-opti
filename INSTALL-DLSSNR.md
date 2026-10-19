@@ -139,6 +139,21 @@ Keep the game's genuine `nvngx_dlssd.dll` (RR) separate from `nvngx_dlssnr.dll` 
 For an RR-only comparison, disable the master NR switch; “Apply the model” merely hides the edit
 and still incurs NR's GPU cost. Successful RR initialization alone does not prove image quality.
 
+## NeuralHub v0.8.0 host mode
+
+This fork can hand NR processing to the Danielblnc NeuralHub host when it is already loaded in the game process. It does not call the host's private `NeuralHub_HostStart` lifecycle entry or pass frame resources to it; the host owns its own D3D12 game hooks.
+
+1. Keep NeuralHub's `version.dll` stub installed where its loader expects it. Install OptiScaler under a separate proxy name, usually `dxgi.dll`; do not overwrite NeuralHub's stub.
+2. In NeuralHub, set `Compute.Backend=D3D12` to require its D3D12 path. `Auto` may fall back to HIP.
+3. Set the OptiScaler setting below, save, and restart the game:
+
+```ini
+[DlssNr]
+NrBackend=neuralhub
+```
+
+The Neural tab reports whether `neuralhub_host.dll` is loaded and its ABI/version. With this mode selected, OptiScaler skips its local Daniel, lmxxf, and Mochizuki pass backends, and disables controls that NeuralHub owns. Change NeuralHub's own NR settings there. `NrBackend=auto` chooses NeuralHub when the compatible host is already loaded in the process.
+
 ## AMD games without an upscaler (experimental)
 
 The final-image route can run the danielblnc AMD runtime at D3D11, D3D12 or Vulkan

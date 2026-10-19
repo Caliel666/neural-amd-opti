@@ -469,6 +469,9 @@ bool HasFiles()
     std::error_code ec;
     const auto dir = Directory();
     const auto active = DlssNr::Backend::ActiveKindFromConfig();
+    // NeuralHub owns its D3D12 hooks; this selection intentionally suppresses every local pass backend.
+    if (active == DlssNr::Backend::Kind::NeuralHub)
+        return true;
     if (active == DlssNr::Backend::Kind::Lmxxf)
         return std::filesystem::exists(dir / L"LmxxfNrRuntime.dll", ec);
     if (active == DlssNr::Backend::Kind::Mochizuki)
@@ -539,6 +542,9 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
     }
     // Process exit has begun: the original colour goes to SR.
     if (Exiting())
+        return true;
+    // The v0.8 host is a separately loaded game-hooking runtime. Do not create the legacy pass DLL backend here.
+    if (DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::NeuralHub)
         return true;
     // This evaluate's colour is already the model's answer (DlssNrPreUpscale or DualFeature offering the pre-SR
     // seam a second time). Running again would only be refused, and would cost the model its history.
@@ -670,7 +676,7 @@ static bool Run(ID3D12GraphicsCommandList* cmd, NVSDK_NGX_Parameter* params, ID3
             const bool named = DlssNr::Backend::ParseKind(raw) != DlssNr::Backend::Kind::Daniel || raw.empty() ||
                                _stricmp(raw.c_str(), "auto") == 0 || _stricmp(raw.c_str(), "daniel") == 0;
             if (!named)
-                LOG_WARN("AMD neural: NrBackend={} is not a runtime (daniel, lmxxf, mochizuki, auto or off); "
+                LOG_WARN("AMD neural: NrBackend={} is not a runtime (daniel, lmxxf, mochizuki, neuralhub, auto or off); "
                          "danielblnc runs instead",
                          raw);
             LOG_INFO("AMD neural: NrBackend={} runs {}", raw, label);
@@ -1193,6 +1199,8 @@ void ReportNeuralMs(float ms)
 }
 std::string NeuralRuntime()
 {
+    if (DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::NeuralHub)
+        return DlssNr::Backend::NeuralHubRuntimeLabel();
     std::lock_guard guard(runtimeLabelMutex);
     return runtimeLabel;
 }
@@ -1262,6 +1270,8 @@ std::string StandDownNote()
 
 std::string Status()
 {
+    if (DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::NeuralHub)
+        return DlssNr::Backend::NeuralHubHostStatus();
     // The final image's status only while it is the path that runs: danielblnc or mochizuki, no upscaler.
     if (AmdPresentExperimental::IsTarget() && !State::Instance().currentFeature &&
         DlssNr::Backend::PresentRuntimeSupported())
@@ -1277,6 +1287,8 @@ std::string Status()
 }
 std::string RuntimeStatus()
 {
+    if (DlssNr::Backend::ActiveKindFromConfig() == DlssNr::Backend::Kind::NeuralHub)
+        return DlssNr::Backend::NeuralHubHostStatus();
     if (auto b = backend.load())
         return b->RuntimeStatus();
     return {};

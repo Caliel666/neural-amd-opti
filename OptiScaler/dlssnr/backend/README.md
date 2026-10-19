@@ -13,12 +13,15 @@ hooks when the device is created, so the menu's "NR runtime" combo applies on th
 | `daniel` | `DanielBackend`, runtime `dlssnr_amd_pass1-3.dll` |
 | `lmxxf` | `LmxxfBackend`, runtime `LmxxfNrRuntime.dll` |
 | `mochizuki` | `LmxxfBackend`, runtime `MochizukiNrRuntime.dll` |
+| `neuralhub` | External Danielblnc host, detected by its loaded ABI 1/version exports; OptiScaler skips its local pass chain |
 | `off` or `none` | None: no AMD Record, the original colour goes to SR |
-| `auto`, empty or missing | lmxxf when `LmxxfNrRuntime.dll` sits beside OptiScaler and `dlssnr_amd_pass1.dll` does not, otherwise daniel |
+| `auto`, empty or missing | NeuralHub when its compatible host is loaded; otherwise lmxxf when `LmxxfNrRuntime.dll` sits beside OptiScaler and `dlssnr_amd_pass1.dll` does not, otherwise daniel |
 | Anything else | daniel |
 
-`AmdBridge::HasFiles` looks for the active backend's runtime DLL. The `submission/` hooks are armed
+`AmdBridge::HasFiles` looks for the active local runtime file, or treats an explicitly selected NeuralHub mode as a handoff so the legacy NR path cannot run beside it. The `submission/` hooks are armed
 only while lmxxf or mochizuki is the active backend (`SubmissionHooksWanted`).
+
+NeuralHub v0.8.0 is not a pass-DLL replacement. This integration only detects the loaded host's `NeuralHub_HostAbi` and `NeuralHub_HostVersion` exports, verifies ABI 1, and leaves host startup to its stub. It does not call `NeuralHub_HostStart` or exchange D3D12 frame resources. Configure `Compute.Backend=D3D12` in NeuralHub; its `Auto` mode may fall back to HIP. See [INSTALL-DLSSNR.md](../../../INSTALL-DLSSNR.md#neuralhub-v080-host-mode).
 
 `LmxxfBackend::Record` refuses frames after the upscale (`afterUpscale`), so lmxxf runs only before
 Super Resolution. This is a local change on top of TheAutomatic's lmxxf files.

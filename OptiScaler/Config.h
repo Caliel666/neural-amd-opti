@@ -380,7 +380,7 @@ class Config
     // danielblnc async: the game's queue does not wait for the network, which runs after the finished frame and
     // lands a frame late. Read once per session.
     CustomOptional<bool> AmdAsync { false };
-    // NR host: daniel (default), lmxxf, mochizuki, off. Missing key = daniel. Restart to change.
+    // NR host: daniel (default), lmxxf, mochizuki, neuralhub (external host), off. Restart to change.
     CustomOptional<std::string> NrBackend { "daniel" };
     // lmxxf diagnostics: original/copy-current/staging-current/staging-previous,
     // proxy-original/split-original (NO NR). off requires a same-frame boundary. Restart to change.

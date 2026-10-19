@@ -8,11 +8,12 @@ enum class Kind
     Daniel,
     Lmxxf,
     Mochizuki,
+    NeuralHub,
     Off,
 };
 
 // Case-insensitive. Missing, empty, "auto", and unknown values are Daniel here; ActiveKindFromConfig
-// resolves "auto" against the runtimes present.
+// resolves "auto" against the runtimes available in this process.
 inline Kind ParseKind(std::string_view raw)
 {
     auto eq = [](std::string_view a, std::string_view b)
@@ -38,6 +39,8 @@ inline Kind ParseKind(std::string_view raw)
         return Kind::Lmxxf;
     if (eq(raw, "mochizuki"))
         return Kind::Mochizuki;
+    if (eq(raw, "neuralhub"))
+        return Kind::NeuralHub;
     return Kind::Daniel;
 }
 
@@ -52,6 +55,8 @@ inline Kind ActiveKind(Kind requested)
         return Kind::Lmxxf;
     if (requested == Kind::Mochizuki)
         return Kind::Mochizuki;
+    if (requested == Kind::NeuralHub)
+        return Kind::NeuralHub;
     return Kind::Daniel;
 }
 } // namespace DlssNr::Backend
