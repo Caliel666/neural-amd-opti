@@ -24,7 +24,7 @@ No runtime's weights are included; all three are derived from NVIDIA's model.
 
 **mochizuki is experimental.** This package has only its OptiScaler side: `NrBackend=mochizuki`, the
 `Mochizuki*` keys and its section in the Neural tab. The runtime (`MochizukiNrRuntime.dll` and its
-`dlssnr-amd\` folder) is not in it, and neither is the model, `dlssnr.bin`. The AMD-NR installer
+`dlssnr-amd\` folder) is not in it, and neither is the model, `dlssnr.bin`. The OpenNR installer
 sets up both. To do it by hand, build the runtime with `tools\build-mochizuki-runtime.cmd` and make
 the model as `third_party/mochizuki/UPSTREAM.md` ("The model") describes. On an RX 9070 XT the
 network takes about 8.5 ms per frame at 1080p. The first start in each game compiles its pipelines,
@@ -76,7 +76,7 @@ OptiScaler's copy.
 4. In game, press **Ins**, open the **Neural** tab and turn on **Enable NR**. In a game that uses
    Ray Reconstruction, set **Processing point** to **After the finished frame** (danielblnc only).
 
-The [AMD-NR ReShade Installer](https://github.com/zmodelerlover/AMD-NR-ReShade-Installer) (v0.5.0
+The [OpenNR Installer](https://github.com/zmodelerlover/OpenNR-Installer) (v0.5.0
 or later) does all of this in one step for DirectX 12 games, lmxxf weights included, and lets you
 pick which release goes in. It does not set up mochizuki yet.
 

@@ -494,6 +494,9 @@ bool Config::Reload(std::filesystem::path iniPath)
             DlssNrCompareSwap.set_from_config(readBool("DlssNr", "CompareSwap"));
             DlssNrCompareTags.set_from_config(readBool("DlssNr", "CompareTags"));
             DlssNrTagScale.set_from_config(readFloat("DlssNr", "TagScale"));
+            DlssNrBadge.set_from_config(readBool("DlssNr", "Badge"));
+            DlssNrBadgeCorner.set_from_config(readUInt("DlssNr", "BadgeCorner"));
+            DlssNrBadgeScale.set_from_config(readFloat("DlssNr", "BadgeScale"));
             DlssNrWorkingScale.set_from_config(readFloat("DlssNr", "WorkingScale"));
             DlssNrPreUpscale.set_from_config(readBool("DlssNr", "PreUpscale"));
             DlssNrDualFeature.set_from_config(readBool("DlssNr", "DualFeature"));
@@ -1685,6 +1688,9 @@ bool Config::SaveIni()
         ini.SetValue("DlssNr", "CompareSwap", GetBoolValue(Instance()->DlssNrCompareSwap.value_for_config()).c_str());
         ini.SetValue("DlssNr", "CompareTags", GetBoolValue(Instance()->DlssNrCompareTags.value_for_config()).c_str());
         ini.SetValue("DlssNr", "TagScale", GetFloatValue(Instance()->DlssNrTagScale.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "Badge", GetBoolValue(Instance()->DlssNrBadge.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "BadgeCorner", GetIntValue(Instance()->DlssNrBadgeCorner.value_for_config()).c_str());
+        ini.SetValue("DlssNr", "BadgeScale", GetFloatValue(Instance()->DlssNrBadgeScale.value_for_config()).c_str());
         ini.SetValue("DlssNr", "WorkingScale",
                      GetFloatValue(Instance()->DlssNrWorkingScale.value_for_config()).c_str());
         ini.SetValue("DlssNr", "PreUpscale", GetBoolValue(Instance()->DlssNrPreUpscale.value_for_config()).c_str());

@@ -635,6 +635,12 @@ class Config
     CustomOptional<bool> DlssNrCompareTags { false };
     CustomOptional<float> DlssNrTagScale { 1.5f };
 
+    // The "NR ON" badge in a corner of the frame while the model runs, so a screenshot or a video says
+    // NR was on. Corner: 0 top left, 1 top right, 2 bottom left, 3 bottom right.
+    CustomOptional<bool> DlssNrBadge { false };
+    CustomOptional<uint32_t> DlssNrBadgeCorner { 1 };
+    CustomOptional<float> DlssNrBadgeScale { 1.0f };
+
     // The fraction of the frame's resolution the model works at. The frame itself is never reduced --
     // only the model's contribution is computed small and enlarged, so the picture underneath is
     // untouched whatever this is set to. 1.0 is full resolution and behaves exactly as before.
