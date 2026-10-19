@@ -503,7 +503,8 @@ void RenderMenu(Config* config, float menuResScale)
         MenuCommon::RenderKeybind("Toggle key##DlssNrMenu", 16, config->DlssNrToggleKey);
         ImGui::EndDisabled();
         if (neuralHubSelected)
-            ImGui::TextWrapped("The NeuralHub host owns NR enablement and processing in this mode. Use NeuralHub to change its state.");
+            ImGui::TextWrapped("The NeuralHub host owns NR enablement and processing in this mode. "
+                               "Use NeuralHub to change its state.");
         if (!enabled)
             if (const auto note = DlssNr::AmdBridge::StandDownNote(); !note.empty())
             {
@@ -639,7 +640,9 @@ void RenderMenu(Config* config, float menuResScale)
             HGap(0.12f);
             ImGui::TextDisabled("%s", DlssNr::Backend::NeuralHubRuntimeLabel().c_str());
             ImGui::TextWrapped("%s", DlssNr::Backend::NeuralHubHostStatus().c_str());
-            ImGui::TextWrapped("NeuralHub runs its own game hooks. This handoff bypasses OptiScaler's local pass runtimes; the OptiScaler NR controls below do not configure NeuralHub.");
+            ImGui::TextWrapped("NeuralHub runs its own game hooks. This handoff bypasses "
+                               "OptiScaler's local pass runtimes; the OptiScaler NR controls "
+                               "below do not configure NeuralHub.");
             return;
         }
 
