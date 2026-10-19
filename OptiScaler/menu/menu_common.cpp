@@ -86,6 +86,28 @@ static Upscaler currentBackend = Upscaler::Reset;
 static std::string currentBackendName = "";
 static int refreshRate = 0;
 static ImVec2 lastPosition(-1000.0f, -1000.0f);
+// The menu's dock side (MenuDockSide) the dock layout was built for or last seen in; -1 builds it again.
+static int menuDockBuilt = -1;
+
+// MenuAnchor as a dock side: 0 floating, 1 left, 2 right, 5 top, 6 bottom. 3 and 4, bottom left and right when the
+// menu was held to a corner, are the left and right.
+static int MenuDockSide(int anchor)
+{
+    switch (anchor)
+    {
+    case 1:
+    case 3:
+        return 1;
+    case 2:
+    case 4:
+        return 2;
+    case 5:
+    case 6:
+        return anchor;
+    default:
+        return 0;
+    }
+}
 
 static ImVec2 splashPosition(-1000.0f, -1000.0f);
 static ImVec2 splashSize(0.0f, 0.0f);
@@ -1557,14 +1579,16 @@ void MenuCommon::UpdateMenuInputMode(RenderMenuContext& ctx)
         if (hasGamepad)
             io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
 
-        io.ConfigFlags = ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
+        io.ConfigFlags =
+            ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad | ImGuiConfigFlags_DockingEnable;
     }
     else
     {
         capturingKey = false;
         hasGamepad = (io.BackendFlags & ImGuiBackendFlags_HasGamepad) != 0;
         io.BackendFlags &= ~ImGuiBackendFlags_HasGamepad;
-        io.ConfigFlags = ImGuiConfigFlags_NoMouse | ImGuiConfigFlags_NoMouseCursorChange | ImGuiConfigFlags_NoKeyboard;
+        io.ConfigFlags = ImGuiConfigFlags_NoMouse | ImGuiConfigFlags_NoMouseCursorChange | ImGuiConfigFlags_NoKeyboard |
+                          ImGuiConfigFlags_DockingEnable;
     }
 }
 
@@ -2734,10 +2758,6 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
 
     if (currentFeature != nullptr && !currentFeature->IsFrozen())
     {
-        // UPSCALERS -----------------------------
-        ImGui::SeparatorText("Upscalers");
-        ShowTooltip("Which copium do you choose?");
-
         GetCurrentBackendInfo(state.api, currentBackend, &currentBackendName);
 
         std::string spoofingText;
@@ -8785,19 +8805,22 @@ void MenuCommon::RenderThemeSettings(RenderMenuContext& ctx)
             ApplyThemeStyle();
         }
 
-        const char* anchors[] = { "None (centred)", "Top left", "Top right", "Bottom left", "Bottom right" };
-        int anchor = std::clamp(config->MenuAnchor.value_or_default(), 0, 4);
+        // MenuAnchor values in the combo's order: floating, left, right, top, bottom.
+        static constexpr int dockSides[] = { 0, 1, 2, 5, 6 };
+        const char* docks[] = { "Floating", "Docked left", "Docked right", "Docked top", "Docked bottom" };
+        const int side = MenuDockSide(config->MenuAnchor.value_or_default());
+        int dock = int(std::find(std::begin(dockSides), std::end(dockSides), side) - std::begin(dockSides));
         ImGui::PushItemWidth(160.0f * ctx.menuResScale);
-        if (ImGui::Combo("Menu corner", &anchor, anchors, IM_ARRAYSIZE(anchors)))
+        if (ImGui::Combo("Menu docking", &dock, docks, IM_ARRAYSIZE(docks)))
         {
-            config->MenuAnchor = anchor;
-            if (anchor == 0)
+            config->MenuAnchor = dockSides[dock];
+            if (dock == 0)
                 lastPosition = { -1000.0f, -1000.0f }; // back to the centre
         }
         ImGui::PopItemWidth();
-        ShowHelpMarker("Holds the menu to a corner of the screen, as ReShade docks its overlay.\n"
-                       "Dragging the menu into a corner does the same; dragging it out lets it go.\n"
-                       "Saved with Save Settings.");
+        ShowHelpMarker("Docks the menu to a side of the screen, as ReShade docks its overlay.\n"
+                       "Drag its title bar out to float it; drag it onto an edge of the screen\n"
+                       "to dock it there again. Saved with Save Settings.");
 
         ImGui::SeparatorText("Accent Colour");
 
@@ -9769,6 +9792,37 @@ void MenuCommon::RenderMainMenuStatusPills(RenderMenuContext& ctx)
 static constexpr const char* kTabShort[] = { "NR", "UP", "FG", "IMG", "UI", "ADV" };
 static constexpr const char* kTabName[] = { "Neural", "Upscaling", "Frame Gen", "Image", "Interface", "Advanced" };
 static int selectedTab = 0;
+// The side bar's order, positions to sections, as MenuSectionOrder last gave it (tabOrderFrom).
+static std::array<int, std::size(kTabShort)> tabOrder {};
+static std::optional<std::string> tabOrderFrom;
+
+// MenuSectionOrder into tabOrder: the short names it gives, in its order, then the sections it leaves out.
+static void ReadTabOrder(const std::string& saved)
+{
+    std::vector<int> order;
+    size_t start = 0;
+    while (start <= saved.size())
+    {
+        const size_t comma = std::min(saved.find(',', start), saved.size());
+        const std::string name = saved.substr(start, comma - start);
+        for (int i = 0; i < static_cast<int>(std::size(kTabShort)); ++i)
+            if (_stricmp(name.c_str(), kTabShort[i]) == 0 && std::find(order.begin(), order.end(), i) == order.end())
+                order.push_back(i);
+        start = comma + 1;
+    }
+    for (int i = 0; i < static_cast<int>(std::size(kTabShort)); ++i)
+        if (std::find(order.begin(), order.end(), i) == order.end())
+            order.push_back(i);
+    std::copy(order.begin(), order.end(), tabOrder.begin());
+}
+
+static std::string TabOrderString()
+{
+    std::string text;
+    for (const int i : tabOrder)
+        text += (text.empty() ? "" : ",") + std::string(kTabShort[i]);
+    return text;
+}
 
 // Width of the side bar: its widest label in a button, at the menu's scale.
 static float MainMenuSideBarWidth()
@@ -9780,22 +9834,92 @@ static float MainMenuSideBarWidth()
     return widest + style.FramePadding.x * 4.0f + style.WindowPadding.x * 2.0f;
 }
 
+// The side bar's animation: each section's drawn offset from the top, eased toward its slot, and the section being
+// dragged with where on it the mouse took it. A drag swallows the click its release makes.
+static std::array<float, std::size(kTabShort)> tabY {};
+static bool tabYReady = false;
+static int draggedTab = -1;
+static float dragGrab = 0.0f;
+static bool dragSwallowClick = false;
+
 void MenuCommon::RenderMainMenuSideBar(RenderMenuContext& ctx)
 {
+    auto config = ctx.config;
     const auto& style = ImGui::GetStyle();
     const float height = ImGui::GetFrameHeight() * 1.6f;
-    for (int i = 0; i < static_cast<int>(std::size(kTabShort)); ++i)
+    const float step = height + style.ItemSpacing.y;
+    const int count = static_cast<int>(std::size(kTabShort));
+    if (const auto saved = config->MenuSectionOrder.value_or_default(); saved != tabOrderFrom)
     {
+        ReadTabOrder(saved);
+        tabOrderFrom = saved;
+        tabYReady = false;
+    }
+    if (!tabYReady)
+    {
+        for (int pos = 0; pos < count; ++pos)
+            tabY[tabOrder[pos]] = pos * step;
+        tabYReady = true;
+    }
+
+    // In the bar's own coordinates, as SetCursorPosY takes them.
+    const float top = ImGui::GetCursorPosY();
+    const float mouseY = ImGui::GetIO().MousePos.y - ImGui::GetWindowPos().y + ImGui::GetScrollY();
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left) && !ImGui::IsMouseReleased(ImGuiMouseButton_Left))
+        dragSwallowClick = false;
+    if (draggedTab >= 0 && !ImGui::IsMouseDown(ImGuiMouseButton_Left))
+        draggedTab = -1;
+    if (draggedTab >= 0)
+    {
+        // The dragged button sits under the mouse; once its middle passes another slot, it takes that slot and the
+        // buttons between move over. Save Settings keeps the order.
+        const float y = std::clamp(mouseY - dragGrab - top, 0.0f, (count - 1) * step);
+        tabY[draggedTab] = y;
+        const int slot = std::clamp(static_cast<int>(y / step + 0.5f), 0, count - 1);
+        const int from = static_cast<int>(std::find(tabOrder.begin(), tabOrder.end(), draggedTab) - tabOrder.begin());
+        if (slot != from)
+        {
+            if (slot < from)
+                std::rotate(tabOrder.begin() + slot, tabOrder.begin() + from, tabOrder.begin() + from + 1);
+            else
+                std::rotate(tabOrder.begin() + from, tabOrder.begin() + from + 1, tabOrder.begin() + slot + 1);
+            config->MenuSectionOrder = TabOrderString();
+            tabOrderFrom = config->MenuSectionOrder.value_or_default();
+        }
+    }
+    const float ease = 1.0f - std::exp(-ImGui::GetIO().DeltaTime * 18.0f);
+    for (int pos = 0; pos < count; ++pos)
+        if (const int i = tabOrder[pos]; i != draggedTab)
+            tabY[i] += (pos * step - tabY[i]) * ease;
+
+    auto button = [&](int i)
+    {
+        ImGui::SetCursorPosY(top + tabY[i]);
         const bool selected = i == selectedTab;
         ImGui::PushStyleColor(ImGuiCol_Button, style.Colors[selected ? ImGuiCol_TabSelected : ImGuiCol_Tab]);
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, style.Colors[ImGuiCol_TabHovered]);
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, style.Colors[ImGuiCol_TabSelected]);
-        if (ImGui::Button(kTabShort[i], ImVec2(-FLT_MIN, height)))
-            selectedTab = i;
+        const bool pressed = ImGui::Button(kTabShort[i], ImVec2(-FLT_MIN, height));
         ImGui::PopStyleColor(3);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", kTabName[i]);
-    }
+        if (pressed && !std::exchange(dragSwallowClick, false))
+            selectedTab = i;
+        if (draggedTab < 0 && ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 4.0f))
+        {
+            draggedTab = i;
+            dragGrab = mouseY - ImGui::GetMouseDragDelta(ImGuiMouseButton_Left).y - (top + tabY[i]);
+            dragSwallowClick = true;
+        }
+        else if (draggedTab < 0 && ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s\nDrag up or down to move it", kTabName[i]);
+    };
+    // The dragged button last, over the others.
+    for (int pos = 0; pos < count; ++pos)
+        if (tabOrder[pos] != draggedTab)
+            button(tabOrder[pos]);
+    if (draggedTab >= 0)
+        button(draggedTab);
+    ImGui::SetCursorPosY(top + count * step - style.ItemSpacing.y);
+    ImGui::Dummy(ImVec2(0.0f, 0.0f));
 }
 
 void MenuCommon::RenderMainMenuTabs(RenderMenuContext& ctx)
@@ -9846,106 +9970,156 @@ void MenuCommon::RenderMainMenuTabs(RenderMenuContext& ctx)
     }
 }
 
+// Height of the footer's row of graphs (RenderMainMenuGraphs).
+static float PerfRowHeight() { return ImGui::GetTextLineHeight() + ImGui::GetStyle().ItemSpacing.y; }
+
+// A footer graph's samples: the frames' mean every 100 ms, so a graph a few characters wide shows the trend and not
+// every frame's jitter (the overlay's wide graphs take every frame).
+struct CalmTimes
+{
+    RingBuffer<float, 40> points;
+    double sum = 0.0;
+    int frames = 0;
+
+    void Add(float ms, bool push)
+    {
+        sum += ms;
+        ++frames;
+        if (push)
+        {
+            points.Push(static_cast<float>(sum / frames));
+            sum = 0.0;
+            frames = 0;
+        }
+    }
+    // The last second's mean.
+    float Value() const
+    {
+        double total = 0.0;
+        for (size_t i = 30; i < 40; ++i)
+            total += points.At(i);
+        return static_cast<float>(total / 10.0);
+    }
+};
+static CalmTimes calmFrame, calmUpscaler, calmNeural;
+
+// The footer's first row: the frame time, the upscaler's GPU time and NR's, each as its name, a small graph in the
+// accent colour without a background and its value, side by side for as many as fit. Hovering the upscaler's lists
+// its shaders.
 void MenuCommon::RenderMainMenuGraphs(RenderMenuContext& ctx)
 {
+    static double nextPoint = 0.0;
+    const double now = ImGui::GetTime();
+    const bool push = now >= nextPoint;
+    if (push)
+        nextPoint = now + 0.1;
+    calmFrame.Add(gFrameTimes.At(plotWidth - 1), push);
+    calmUpscaler.Add(gUpscalerTimes.At(plotWidth - 1), push);
+    calmNeural.Add(gNeuralTimes.At(plotWidth - 1), push);
+
     auto& state = ctx.state;
     auto& currentFeature = ctx.currentFeature;
-    auto& frameTime = ctx.frameTime;
-    auto& frameRate = ctx.frameRate;
+    const auto& style = ImGui::GetStyle();
 
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-
-    if (ImGui::BeginTable("plots", 2, ImGuiTableFlags_SizingStretchSame))
+    const float plotW = ImGui::GetFontSize() * 4.0f, plotH = ImGui::GetTextLineHeight();
+    const float gap = ImGui::GetFontSize() * 1.5f;
+    const float right = ImGui::GetContentRegionAvail().x;
+    float used = 0.0f;
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(1.0f, 1.0f));
+    auto item = [&](const char* name, const char* id, CalmTimes& times)
     {
-        ImGui::TableNextColumn();
-        ImGui::Text("FrameTime");
-        auto ft = StrFmt("%7.2f ms / %6.1f fps", frameTime, frameRate);
+        const std::string text = StrFmt("%.1f ms", times.Value());
+        const float w = ImGui::CalcTextSize(name).x + plotW + ImGui::CalcTextSize(text.c_str()).x +
+                        style.ItemSpacing.x * 2.0f;
+        if (used > 0.0f && used + gap + w > right)
+            return false;
+        if (used > 0.0f)
+            ImGui::SameLine(0.0f, gap);
+        used += (used > 0.0f ? gap : 0.0f) + w;
+        ImGui::BeginGroup();
+        ImGui::TextUnformatted(name);
+        ImGui::SameLine();
         ImGui::PlotLines(
-            ft.c_str(), [](void* rb, int idx) -> float
-            { return static_cast<RingBuffer<float, plotWidth>*>(rb)->At(idx); }, &gFrameTimes, plotWidth);
+            id, [](void* buffer, int idx) -> float
+            { return static_cast<RingBuffer<float, 40>*>(buffer)->At(idx); }, &times.points, 40, 0, nullptr,
+            FLT_MAX, FLT_MAX, ImVec2(plotW, plotH));
+        ImGui::SameLine();
+        ImGui::TextUnformatted(text.c_str());
+        ImGui::EndGroup();
+        return true;
+    };
 
-        if (currentFeature != nullptr && !currentFeature->IsFrozen())
+    item("FrameTime", "##frametime", calmFrame);
+    if (currentFeature != nullptr && !currentFeature->IsFrozen() && item("Upscaler", "##upscaler", calmUpscaler) &&
+        ImGui::IsItemHovered() && !state.detailedGpuTimes.empty())
+    {
+        ImGui::BeginTooltip();
+
+        ImGui::TextDisabled("Per shader breakdown:");
+        if (ImGui::BeginTable("ShaderTimes", 2, ImGuiTableFlags_SizingStretchProp))
         {
-            ImGui::TableNextColumn();
-            ImGui::Text("Upscaler");
+            bool hasExtra = false;
 
-            ImGui::SameLine();
-            ImGui::TextDisabled("(?)");
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && !state.detailedGpuTimes.empty())
+            for (auto& [name, time, includedInUpscalerTime] : state.detailedGpuTimes)
             {
-                ImGui::BeginTooltip();
-
-                ImGui::TextDisabled("Per shader breakdown:");
-                if (ImGui::BeginTable("ShaderTimes", 2, ImGuiTableFlags_SizingStretchProp))
+                if (!includedInUpscalerTime)
                 {
-                    bool hasExtra = false;
-
-                    for (auto& [name, time, includedInUpscalerTime] : state.detailedGpuTimes)
-                    {
-                        if (!includedInUpscalerTime)
-                        {
-                            hasExtra = true;
-                            continue;
-                        }
-
-                        auto formattedTime = StrFmt("%7.2f ms", time);
-
-                        ImGui::TableNextColumn();
-                        ImGui::Text(name.c_str());
-
-                        ImGui::TableNextColumn();
-                        ImGui::Text(formattedTime.c_str());
-                    }
-
-                    std::optional<double> nrTime {};
-                    nrTime = DlssNr::LastGpuTime();
-                    if (hasExtra || nrTime.has_value())
-                    {
-                        ImGui::TableNextRow();
-                        ImGui::TableNextRow();
-                        ImGui::TableNextColumn();
-                        ImGui::TextDisabled("Extra shaders:");
-                        ImGui::TableNextColumn();
-                        ImGui::TextDisabled("");
-                        for (auto& [name, time, includedInUpscalerTime] : state.detailedGpuTimes)
-                        {
-                            if (includedInUpscalerTime)
-                                continue;
-
-                            auto formattedTime = StrFmt("%7.2f ms", time);
-
-                            ImGui::TableNextColumn();
-                            ImGui::Text(name.c_str());
-
-                            ImGui::TableNextColumn();
-                            ImGui::Text(formattedTime.c_str());
-                        }
-
-                        if (nrTime.has_value())
-                        {
-                            ImGui::TableNextColumn();
-                            ImGui::Text("Neural Rendering");
-                            ImGui::TableNextColumn();
-                            ImGui::Text(StrFmt("%.2f ms", nrTime.value()).c_str());
-                        }
-                    }
-
-                    ImGui::EndTable();
+                    hasExtra = true;
+                    continue;
                 }
 
-                ImGui::EndTooltip();
+                auto formattedTime = StrFmt("%7.2f ms", time);
+
+                ImGui::TableNextColumn();
+                ImGui::Text(name.c_str());
+
+                ImGui::TableNextColumn();
+                ImGui::Text(formattedTime.c_str());
             }
 
-            auto ups = StrFmt("%7.2f ms", state.upscaleTimes.back());
-            ImGui::PlotLines(
-                ups.c_str(), [](void* rb, int idx) -> float
-                { return static_cast<RingBuffer<float, plotWidth>*>(rb)->At(idx); }, &gUpscalerTimes, plotWidth);
+            std::optional<double> nrTime {};
+            nrTime = DlssNr::LastGpuTime();
+            if (hasExtra || nrTime.has_value())
+            {
+                ImGui::TableNextRow();
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::TextDisabled("Extra shaders:");
+                ImGui::TableNextColumn();
+                ImGui::TextDisabled("");
+                for (auto& [name, time, includedInUpscalerTime] : state.detailedGpuTimes)
+                {
+                    if (includedInUpscalerTime)
+                        continue;
+
+                    auto formattedTime = StrFmt("%7.2f ms", time);
+
+                    ImGui::TableNextColumn();
+                    ImGui::Text(name.c_str());
+
+                    ImGui::TableNextColumn();
+                    ImGui::Text(formattedTime.c_str());
+                }
+
+                if (nrTime.has_value())
+                {
+                    ImGui::TableNextColumn();
+                    ImGui::Text("Neural Rendering");
+                    ImGui::TableNextColumn();
+                    ImGui::Text(StrFmt("%.2f ms", nrTime.value()).c_str());
+                }
+            }
+
+            ImGui::EndTable();
         }
 
-        ImGui::EndTable();
+        ImGui::EndTooltip();
     }
+    if (gNeuralTimes.Average() > 0.0f)
+        item("NR", "##neural", calmNeural);
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
 }
 
 void MenuCommon::RenderMainMenuBottomBar(RenderMenuContext& ctx)
@@ -9957,24 +10131,42 @@ void MenuCommon::RenderMainMenuBottomBar(RenderMenuContext& ctx)
     auto& menuResScale = ctx.menuResScale;
     auto& style = ImGui::GetStyle();
 
-    // BOTTOM LINE — single tight row, flush with the window bottom / resize grip
+    // The footer: the graphs, then one tight row flush with the window bottom / resize grip.
     ImGui::Separator();
+    RenderMainMenuGraphs(ctx);
 
-    if (currentFeature != nullptr && !currentFeature->IsFrozen())
+    // What fits on the row, most needed last to go: Save Settings and Close, the scale, its label, the resolution.
+    const std::string resolution =
+        currentFeature != nullptr && !currentFeature->IsFrozen()
+            ? StrFmt("%dx%d -> %dx%d (%.1f) [%dx%d (%.1f)] %d", currentFeature->RenderWidth(),
+                     currentFeature->RenderHeight(), currentFeature->TargetWidth(), currentFeature->TargetHeight(),
+                     (float) currentFeature->TargetWidth() / (float) currentFeature->RenderWidth(),
+                     currentFeature->DisplayWidth(), currentFeature->DisplayHeight(),
+                     (float) currentFeature->DisplayWidth() / (float) currentFeature->RenderWidth(),
+                     currentFeature->FrameCount())
+            : std::string();
+    const float avail = ImGui::GetContentRegionAvail().x;
+    const float lineRight = ImGui::GetCursorPosX() + avail;
+    const float buttonsW = ImGui::CalcTextSize("Save Settings").x + ImGui::CalcTextSize("Close").x +
+                           style.FramePadding.x * 4.0f + 6.0f;
+    const float scaleW = 100.0f * menuResScale + 15.0f;
+    const float labelW = style.ItemInnerSpacing.x + ImGui::CalcTextSize("Menu Scale").x;
+    const float resolutionW = resolution.empty() ? 0.0f : ImGui::CalcTextSize(resolution.c_str()).x + 10.0f;
+    const bool showScale = scaleW + buttonsW <= avail;
+    const bool showLabel = scaleW + labelW + buttonsW <= avail;
+    const bool showResolution = !resolution.empty() && resolutionW + scaleW + labelW + buttonsW <= avail;
+
+    if (showResolution)
     {
-        ImGui::Text("%dx%d -> %dx%d (%.1f) [%dx%d (%.1f)]", currentFeature->RenderWidth(),
-                    currentFeature->RenderHeight(), currentFeature->TargetWidth(), currentFeature->TargetHeight(),
-                    (float) currentFeature->TargetWidth() / (float) currentFeature->RenderWidth(),
-                    currentFeature->DisplayWidth(), currentFeature->DisplayHeight(),
-                    (float) currentFeature->DisplayWidth() / (float) currentFeature->RenderWidth());
-
-        ImGui::SameLine(0.0f, 4.0f);
-
-        ImGui::Text("%d", currentFeature->FrameCount());
-
+        ImGui::TextUnformatted(resolution.c_str());
         ImGui::SameLine(0.0f, 10.0f);
     }
+    // The scale and the buttons held to the right.
+    const float rightW = (showScale ? scaleW + (showLabel ? labelW : 0.0f) : 0.0f) + buttonsW;
+    ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), lineRight - rightW));
 
+    if (showScale)
+    {
     ImGui::PushItemWidth(100.0f * menuResScale);
 
     auto autoText = config->MenuScale.has_value() ? "Auto" : StrFmt("Auto (%3.1f)", menuResScale);
@@ -9985,7 +10177,7 @@ void MenuCommon::RenderMainMenuBottomBar(RenderMenuContext& ctx)
 
     const char* selectedScaleName = uiScales[_selectedScale];
 
-    if (ImGui::BeginCombo("Menu Scale", selectedScaleName))
+    if (ImGui::BeginCombo(showLabel ? "Menu Scale###menuscale" : "###menuscale", selectedScaleName))
     {
         for (int n = 0; n < std::size(uiScales); n++)
         {
@@ -10006,6 +10198,7 @@ void MenuCommon::RenderMainMenuBottomBar(RenderMenuContext& ctx)
     ImGui::PopItemWidth();
 
     ImGui::SameLine(0.0f, 15.0f);
+    }
 
     if (ImGui::Button("Save Settings"))
         config->SaveIni();
@@ -10017,7 +10210,8 @@ void MenuCommon::RenderMainMenuBottomBar(RenderMenuContext& ctx)
         _isVisible = false;
         hasGamepad = (io.BackendFlags | ImGuiBackendFlags_HasGamepad) > 0;
         io.BackendFlags &= 30;
-        io.ConfigFlags = ImGuiConfigFlags_NoMouse | ImGuiConfigFlags_NoMouseCursorChange | ImGuiConfigFlags_NoKeyboard;
+        io.ConfigFlags = ImGuiConfigFlags_NoMouse | ImGuiConfigFlags_NoMouseCursorChange | ImGuiConfigFlags_NoKeyboard |
+                          ImGuiConfigFlags_DockingEnable;
 
         _showMipmapCalcWindow = false;
         _showHudlessWindow = false;
@@ -10029,50 +10223,13 @@ void MenuCommon::RenderMainMenuBottomBar(RenderMenuContext& ctx)
     auto winSize = ImGui::GetWindowSize();
     auto winPos = ImGui::GetWindowPos();
 
-    // Discord and Open Wiki — right-aligned, hidden when they would overlap Close / other controls
-    // (GetWindowContentRegionMax was removed in newer ImGui; use window width - padding.)
-    {
-        const float helpGap = style.ItemSpacing.x + ImGui::GetFontSize() * 0.9f; // room for "(?)" marker
-        const float discordBtnW = ImGui::CalcTextSize("Discord").x + style.FramePadding.x * 2.0f + style.ItemSpacing.x;
-        const float wikiBtnW = ImGui::CalcTextSize("Open Wiki").x + style.FramePadding.x * 2.0f + helpGap;
-        const float leftLimit = ImGui::GetItemRectMax().x - winPos.x + style.ItemSpacing.x; // past Close
-        const float contentRight = ImGui::GetWindowWidth() - style.WindowPadding.x;
-        const float wikiStartX = contentRight - wikiBtnW - discordBtnW;
-
-        if (wikiStartX >= leftLimit)
-        {
-            ImGui::SameLine(0.0f, 0.0f);
-            ImGui::SetCursorPosX(wikiStartX);
-
-            if (ImGui::Button("Discord"))
-            {
-                auto pIO = &ImGui::GetPlatformIO();
-                auto ctx = ImGui::GetCurrentContext();
-                pIO->Platform_OpenInShellFn(ctx, "https://discord.gg/wYhvS3JSHM");
-            }
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Join the AMD Neural Rendering Discord");
-            ImGui::SameLine();
-
-            if (ImGui::Button("Open Wiki"))
-            {
-                auto pIO = &ImGui::GetPlatformIO();
-                auto ctx = ImGui::GetCurrentContext();
-                pIO->Platform_OpenInShellFn(ctx, "https://github.com/optiscaler/OptiScaler/wiki");
-            }
-            ShowHelpMarker("Click to open the OptiScaler Wiki page\nin your default browser\n\n"
-                           "Compatibility list with known game issues\nand workarounds, FG options explained\n"
-                           "and other useful info");
-        }
-    }
-
     if (state.nvngxIniDetected)
     {
         ImGui::TextColored(toneMapColor(ImVec4(1.f, 0.f, 0.f, 1.f)),
                            "nvngx.ini detected, please move over to using OptiScaler.ini and delete the old config");
     }
 
-    if (config->MenuAnchor.value_or_default() == 0 &&
+    if (MenuDockSide(config->MenuAnchor.value_or_default()) == 0 &&
         (lastPosition.x < -900.0f || (lastPosition.x >= winPos.x - 1.0f && lastPosition.y >= winPos.y - 1.0f &&
                                       lastPosition.x <= winPos.x + 1.0f && lastPosition.y <= winPos.y + 1.0f)))
     {
@@ -10454,6 +10611,60 @@ void MenuCommon::RenderHudlessResourcesWindow(RenderMenuContext& ctx, ImGuiWindo
     }
 }
 
+// The AMD-NR Discord and the installer's GitHub, at the top left of every page.
+static void MainMenuLinks()
+{
+    auto link = [](const char* label, const char* url, const char* tip)
+    {
+        if (ImGui::Button(label))
+            ImGui::GetPlatformIO().Platform_OpenInShellFn(ImGui::GetCurrentContext(), url);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", tip);
+    };
+    link("Discord", "https://discord.gg/wYhvS3JSHM", "Join the AMD Neural Rendering Discord");
+    ImGui::SameLine();
+    link("GitHub", "https://github.com/zmodelerlover/AMD-NR-ReShade-Installer", "The AMD-NR installer on GitHub");
+}
+
+// The menu's own title bar, a fifth taller than ImGui's and across the whole menu, docked or floating (the dock node
+// shows no tab bar): dragging it moves the floating menu, or takes the docked one out of its node and moves it.
+static void MainMenuTitleBar(const std::string& title)
+{
+    ImGuiWindow* const window = ImGui::GetCurrentWindow();
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float height = (ImGui::GetFontSize() + style.FramePadding.y * 2.0f) * 1.2f;
+    const ImVec2 min = window->Pos;
+    const ImVec2 max(window->Pos.x + window->Size.x, window->Pos.y + height);
+
+    ImGui::PushClipRect(min, max, false);
+    const bool focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+    window->DrawList->AddRectFilled(min, max, ImGui::GetColorU32(focused ? ImGuiCol_TitleBgActive : ImGuiCol_TitleBg),
+                                    window->DockIsActive ? 0.0f : window->WindowRounding, ImDrawFlags_RoundCornersTop);
+    // "OptiScaler v<version>" in bold, the game after it as it is. No bold face is loaded: the name is drawn twice,
+    // a pixel apart.
+    static const std::string name = "OptiScaler v" VER_FORK_VERSION VER_FORK_TAG;
+    const size_t bold = title.rfind(name, 0) == 0 ? name.size() : 0;
+    const ImU32 text = ImGui::GetColorU32(ImGuiCol_Text);
+    const ImVec2 at(min.x + style.FramePadding.x, min.y + (height - ImGui::GetFontSize()) * 0.5f);
+    const float thick = std::max(1.0f, std::round(ImGui::GetFontSize() / 16.0f));
+    window->DrawList->AddText(at, text, title.c_str(), title.c_str() + bold);
+    window->DrawList->AddText(ImVec2(at.x + thick, at.y), text, title.c_str(), title.c_str() + bold);
+    const float after = bold ? ImGui::CalcTextSize(title.c_str(), title.c_str() + bold).x + thick : 0.0f;
+    window->DrawList->AddText(ImVec2(at.x + after, at.y), text, title.c_str() + bold);
+    ImGui::SetCursorScreenPos(min);
+    ImGui::InvisibleButton("##menu_title", ImVec2(window->Size.x, height));
+    if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left))
+    {
+        // Docked, the window itself is taken out, as a tab dragged off its node is; its node moved instead would
+        // float with the menu still docked in it, square and ImGui's.
+        if (window->DockIsActive)
+            ImGui::DockContextQueueUndockWindow(GImGui, window);
+        ImGui::StartMouseMovingWindow(window);
+    }
+    ImGui::PopClipRect();
+    ImGui::SetCursorScreenPos(ImVec2(min.x + style.WindowPadding.x, max.y + style.WindowPadding.y));
+}
+
 void MenuCommon::RenderMainMenuWindow(RenderMenuContext& ctx)
 {
     auto& state = ctx.state;
@@ -10527,14 +10738,6 @@ void MenuCommon::RenderMainMenuWindow(RenderMenuContext& ctx)
         CopyMemory(style.Colors, styleold.Colors, sizeof(style.Colors)); // Restore colors
     }
 
-    // First appearance / after load — keeps any size the user dragged to during the session
-    // Never larger than the screen: a size saved on a bigger display would put the resize grip off it.
-    const ImVec2 maxMenuSize(std::max(io.DisplaySize.x, minMenuWidth), std::max(io.DisplaySize.y, minMenuHeight));
-    ImGui::SetNextWindowSize(
-        ImVec2(std::min(defaultMenuWidth, maxMenuSize.x), std::min(defaultMenuHeight, maxMenuSize.y)),
-        ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSizeConstraints(ImVec2(minMenuWidth, minMenuHeight), maxMenuSize);
-
     // Main menu window
     if (windowTitle.empty())
     {
@@ -10543,44 +10746,100 @@ void MenuCommon::RenderMainMenuWindow(RenderMenuContext& ctx)
                              (state.detectedQuirks.size() > 0) ? "(Q)" : "", state.isOptiPatcherSucceed ? "(OP)" : "");
     }
 
-    // Held to a corner, as ReShade docks its overlay: re-placed every frame, so it stays there through a
-    // resize or a resolution change, except while it is being dragged.
-    ImGuiWindow* const menuWindow = ImGui::FindWindowByName(windowTitle.c_str());
-    const bool menuMoving = menuWindow != nullptr && GImGui->MovingWindow == menuWindow;
-    if (const int anchor = config->MenuAnchor.value_or_default(); anchor >= 1 && anchor <= 4 && !menuMoving)
+    // Docked as ReShade docks its overlay: an invisible host the size of the screen holds a dock space whose empty
+    // centre leaves the game its input, and the menu, of a class of its own so nothing else docks there, sits in a
+    // node on one side. Its title bar drags it out to float and onto an edge of the screen to dock it again; ImGui
+    // keeps that, and MenuAnchor follows it after Begin. The layout is built from MenuAnchor when the menu first
+    // shows and when the setting changes. The host goes before the menu's SetNextWindow* calls, which are the menu's.
+    const ImGuiViewport* const viewport = ImGui::GetMainViewport();
+    const ImGuiID dockId = ImGui::GetID("##OptiMenuDockSpace");
+    ImGuiWindowClass menuClass;
+    menuClass.ClassId = ImHashStr("OptiScalerMenu");
+    menuClass.DockingAllowUnclassed = false;
+    // No tab bar on its node: the menu's own title bar (MainMenuTitleBar) takes a docked menu out.
+    menuClass.DockNodeFlagsOverrideSet = ImGuiDockNodeFlags(ImGuiDockNodeFlags_NoTabBar);
+    if (const int side = MenuDockSide(config->MenuAnchor.value_or_default());
+        menuDockBuilt != side || !ImGui::DockBuilderGetNode(dockId))
     {
-        const float margin = 12.0f * menuResScale;
-        const bool right = anchor == 2 || anchor == 4, bottom = anchor >= 3;
-        ImGui::SetNextWindowPos(
-            ImVec2(right ? io.DisplaySize.x - margin : margin, bottom ? io.DisplaySize.y - margin : margin),
-            ImGuiCond_Always, ImVec2(right ? 1.0f : 0.0f, bottom ? 1.0f : 0.0f));
-    }
-
-    if (ImGui::Begin(windowTitle.c_str(), NULL, flags))
-    {
-        // Let go of after a drag: near a corner it is held there, anywhere else it is free.
+        ImGui::DockBuilderRemoveNode(dockId);
+        ImGui::DockBuilderAddNode(dockId, ImGuiDockNodeFlags_DockSpace);
+        ImGui::DockBuilderSetNodeSize(dockId, viewport->Size);
+        if (side != 0)
         {
-            static bool wasMoving = false;
-            const bool moving = GImGui->MovingWindow == ImGui::GetCurrentWindow();
-            if (wasMoving && !moving)
+            const bool across = side == 5 || side == 6;
+            const float ratio = std::clamp(across ? defaultMenuHeight / viewport->Size.y
+                                                  : defaultMenuWidth / viewport->Size.x,
+                                           0.2f, 0.8f);
+            const ImGuiDir dir = side == 1 ? ImGuiDir_Left : side == 2 ? ImGuiDir_Right
+                                 : side == 5 ? ImGuiDir_Up : ImGuiDir_Down;
+            ImGuiID node = 0, rest = 0;
+            ImGui::DockBuilderSplitNode(dockId, dir, ratio, &node, &rest);
+            ImGui::DockBuilderDockWindow(windowTitle.c_str(), node);
+        }
+        ImGui::DockBuilderFinish(dockId);
+        menuDockBuilt = side;
+    }
+    ImGui::SetNextWindowPos(viewport->Pos);
+    ImGui::SetNextWindowSize(viewport->Size);
+    ImGui::SetNextWindowViewport(viewport->ID);
+    ImGui::Begin("##OptiMenuDockHost", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove |
+                     ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoFocusOnAppearing |
+                     ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoBackground |
+                     ImGuiWindowFlags_NoSavedSettings);
+    ImGui::DockSpace(dockId, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_PassthruCentralNode, &menuClass);
+    ImGui::End();
+
+    // First appearance / after load — keeps any size the user dragged to during the session
+    // Never larger than the screen: a size saved on a bigger display would put the resize grip off it.
+    const ImVec2 maxMenuSize(std::max(io.DisplaySize.x, minMenuWidth), std::max(io.DisplaySize.y, minMenuHeight));
+    ImGui::SetNextWindowSize(
+        ImVec2(std::min(defaultMenuWidth, maxMenuSize.x), std::min(defaultMenuHeight, maxMenuSize.y)),
+        ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(minMenuWidth, minMenuHeight), maxMenuSize);
+
+    ImGui::SetNextWindowClass(&menuClass);
+    // Docked, square corners: the node's edges are the screen's, and rounded ones left gaps there.
+    const bool docked = menuDockBuilt > 0;
+    if (docked)
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    const bool menuOpen = ImGui::Begin(windowTitle.c_str(), NULL, flags | ImGuiWindowFlags_NoTitleBar);
+    if (docked)
+        ImGui::PopStyleVar();
+    if (menuOpen)
+    {
+        MainMenuTitleBar(windowTitle);
+
+        // Where ImGui has the menu now: in a node of the dock space (the side it fills), or floating. Dragged out
+        // of its node it stays where it was put down rather than going back to the centre.
+        ImGuiWindow* const menuWindow = ImGui::GetCurrentWindow();
+        {
+            int side = menuDockBuilt;
+            if (menuWindow->DockId == 0)
+                side = 0;
+            else if (const ImGuiDockNode* node = ImGui::DockBuilderGetNode(menuWindow->DockId);
+                     node != nullptr && node->Size.x > 0.0f && node->Size.y > 0.0f)
             {
-                const ImVec2 pos = ImGui::GetWindowPos(), size = ImGui::GetWindowSize();
-                const float reach = 48.0f * menuResScale;
-                const bool left = pos.x <= reach, top = pos.y <= reach;
-                const bool right = pos.x + size.x >= io.DisplaySize.x - reach;
-                const bool bottom = pos.y + size.y >= io.DisplaySize.y - reach;
-                if ((left || right) && (top || bottom))
-                    config->MenuAnchor = (bottom ? 3 : 1) + (right && !left ? 1 : 0);
+                const ImVec2 centre(node->Pos.x + node->Size.x * 0.5f, node->Pos.y + node->Size.y * 0.5f);
+                const ImVec2 middle(viewport->Pos.x + viewport->Size.x * 0.5f,
+                                    viewport->Pos.y + viewport->Size.y * 0.5f);
+                if (node->Size.x >= viewport->Size.x * 0.99f)
+                    side = centre.y < middle.y ? 5 : 6;
                 else
-                {
-                    config->MenuAnchor = 0;
-                    lastPosition = { -800.0f, -800.0f }; // where it was put down, not re-centred
-                }
+                    side = centre.x < middle.x ? 1 : 2;
             }
-            wasMoving = moving;
+            if (side != menuDockBuilt)
+            {
+                if (side == 0)
+                    lastPosition = { -800.0f, -800.0f };
+                config->MenuAnchor = side;
+                menuDockBuilt = side;
+            }
         }
 
-        // Keep live size in config so "Save Settings" can persist it
+        // Keep live size in config so "Save Settings" can persist it; docked, the size is the node's, not the
+        // menu's own.
+        if (menuWindow->DockId == 0)
         {
             const ImVec2 sz = ImGui::GetWindowSize();
             config->MenuWidth = sz.x;
@@ -10588,8 +10847,9 @@ void MenuCommon::RenderMainMenuWindow(RenderMenuContext& ctx)
         }
 
         // Pinned footer: body scrolls; bottom bar sits on the last row with the resize grip.
-        // One separator + one control row (+ optional nvngx warning line).
-        const float footerHeight = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y + 4.0f;
+        // One separator, the row of graphs and one control row (+ optional nvngx warning line).
+        const float footerHeight =
+            ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y + 4.0f + PerfRowHeight();
 
         // The sections down the left, held still; the page beside them scrolls.
         if (ImGui::BeginChild("##menu_tabs", ImVec2(MainMenuSideBarWidth(), -footerHeight), ImGuiChildFlags_Borders,
@@ -10600,13 +10860,12 @@ void MenuCommon::RenderMainMenuWindow(RenderMenuContext& ctx)
 
         if (ImGui::BeginChild("##menu_body", ImVec2(0.0f, -footerHeight), false))
         {
-            // Which of the game's upscaler routes are present, then any status message, then the page.
+            // The community's links on every page, then which of the game's upscaler routes are present, then any
+            // status message, then the page.
+            MainMenuLinks();
             RenderMainMenuStatusPills(ctx);
             RenderMainMenuHeaderMessages(ctx);
             RenderMainMenuTabs(ctx);
-
-            // Diagnostics below the page (still scrollable with the body).
-            RenderMainMenuGraphs(ctx);
         }
         ImGui::EndChild();
 
@@ -10776,6 +11035,7 @@ void MenuCommon::Init(HWND InHwnd, bool isUWP)
     _isVisible = false;
     _isUWP = isUWP;
     lastPosition = { -1000.0f, -1000.0f };
+    menuDockBuilt = -1;
 
     LOG_DEBUG("Handle: {0:X}", (size_t) _handle);
 
@@ -10792,7 +11052,8 @@ void MenuCommon::Init(HWND InHwnd, bool isUWP)
 
     hasGamepad = (io.BackendFlags | ImGuiBackendFlags_HasGamepad) > 0;
     io.BackendFlags &= 30;
-    io.ConfigFlags = ImGuiConfigFlags_NoMouse | ImGuiConfigFlags_NoMouseCursorChange | ImGuiConfigFlags_NoKeyboard;
+    io.ConfigFlags = ImGuiConfigFlags_NoMouse | ImGuiConfigFlags_NoMouseCursorChange | ImGuiConfigFlags_NoKeyboard |
+                          ImGuiConfigFlags_DockingEnable;
 
     io.MouseDrawCursor = _isVisible;
     io.WantCaptureKeyboard = _isVisible;

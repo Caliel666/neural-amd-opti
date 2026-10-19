@@ -886,9 +886,13 @@ class Config
     // Main overlay size in pixels (saved when "Save Settings" is pressed)
     CustomOptional<float, NoDefault> MenuWidth;
     CustomOptional<float, NoDefault> MenuHeight;
-    // Corner the main menu is held to: 0 none (centred, free to move), 1 top left, 2 top right,
-    // 3 bottom left, 4 bottom right. Dragging it into a corner sets this, dragging it out clears it.
+    // Side of the screen the main menu is docked to, as ReShade docks its overlay: 0 floating (centred until moved),
+    // 1 left, 2 right, 5 top, 6 bottom (3 and 4, the bottom corners before, are left and right). Docking or floating
+    // the menu by dragging it sets this.
     CustomOptional<int> MenuAnchor { 0 };
+    // Order of the menu's side bar buttons, their short names comma-separated ("NR,UP,FG,IMG,UI,ADV"). Dragging a
+    // button up or down sets it; a name left out goes after the ones given.
+    CustomOptional<std::string> MenuSectionOrder { "" };
     CustomOptional<bool> OverlayMenu { true };
     CustomOptional<int> ShortcutKey { VK_INSERT };
     CustomOptional<bool> ExtendedLimits { false };
